@@ -2,12 +2,15 @@
 //!
 //! `mock` is the simulated device used for development and regression tests.
 //!
-//! `real` is the hardware-backed device. It is deliberately conservative: at
-//! present it reports what standard Windows interfaces can actually tell us
-//! about the headphones, and nothing more. No vendor protocol is implemented,
-//! because none has been verified against the user's physical device yet. See
-//! `docs/protocol-notes.md` for the current state of that investigation.
+//! `real` is the hardware-backed device. It reports what standard Windows
+//! interfaces can tell us about the headphones (identity, connection, battery)
+//! and, for supported models, drives noise control over Bose's BMAP protocol.
+//!
+//! `bmap` is the Windows transport and verification layer for that protocol.
+//! The protocol implementation itself is vendored from upstream; see
+//! `vendor/bose-bmap/VENDORED.md` and `docs/protocol-notes.md`.
 
+pub mod bmap;
 pub mod mock;
 pub mod real;
 

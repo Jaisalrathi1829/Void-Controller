@@ -18,8 +18,8 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL, CM_GETIDLIST_FILTER_PRESENT, CR_SUCCESS,
 };
 use windows::Win32::Devices::Properties::{
-    DEVPROPKEY, DEVPROPTYPE, DEVPROP_TYPE_BOOLEAN, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_STRING,
-    DEVPROP_TYPE_UINT32,
+    DEVPROPKEY, DEVPROPTYPE, DEVPROP_TYPE_BOOLEAN, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_GUID,
+    DEVPROP_TYPE_STRING, DEVPROP_TYPE_UINT32,
 };
 
 /// `DEVPKEY_Device_FriendlyName` — {a45c254e-df1c-4efd-8020-67d146a850e0}, 14
@@ -54,6 +54,17 @@ pub const DEVPKEY_DEVICE_IS_CONNECTED: DEVPROPKEY = DEVPROPKEY {
     pid: 15,
 };
 
+/// `DEVPKEY_Device_ContainerId` — {8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c}, 2
+///
+/// Identifies the physical device. Windows gives every node that belongs to
+/// one device the same container id — the Bluetooth entries and the audio
+/// endpoints alike — which is what lets an audio endpoint be matched to the
+/// headphones without relying on what either is named.
+pub const DEVPKEY_DEVICE_CONTAINER_ID: DEVPROPKEY = DEVPROPKEY {
+    fmtid: windows::core::GUID::from_u128(0x8c7ed206_3f8a_4827_b3ab_ae9e1faefc6c),
+    pid: 2,
+};
+
 /// A value read from a PnP property.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropValue {
@@ -61,6 +72,8 @@ pub enum PropValue {
     Bool(bool),
     Number(u32),
     Byte(u8),
+    /// A GUID, upper-case and hyphenated, without braces.
+    Guid(String),
 }
 
 impl PropValue {
@@ -74,6 +87,13 @@ impl PropValue {
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_guid(&self) -> Option<&str> {
+        match self {
+            Self::Guid(g) => Some(g.as_str()),
             _ => None,
         }
     }
@@ -98,6 +118,13 @@ pub struct PnpDevice {
     /// Bluetooth SIG company identifier from the instance id, when present.
     /// `0x009E` is Bose Corporation.
     pub vendor_id: Option<u16>,
+    /// Vendor-assigned product identifier from the instance id, when present.
+    /// For Bose devices this is the id the BMAP catalog is keyed by.
+    pub product_id: Option<u16>,
+    /// Service class UUIDs Windows has a node for on this device, upper-case
+    /// and without braces. Windows creates these from the device's SDP
+    /// records, so this is what the device advertises, as Windows read it.
+    pub service_uuids: Vec<String>,
 }
 
 /// The 48-bit Bluetooth device address embedded in a PnP instance id.
@@ -157,7 +184,49 @@ pub fn vendor_id(instance_id: &str) -> Option<u16> {
     u16::from_str_radix(&field[4..], 16).ok()
 }
 
+/// Parses the product identifier out of a `PID&BBBB` field.
+///
+/// Only returned alongside a SIG-namespace vendor id, for the same reason
+/// [`vendor_id`] is: a product id is meaningless without knowing whose it is.
+pub fn product_id(instance_id: &str) -> Option<u16> {
+    vendor_id(instance_id)?;
+    let upper = instance_id.to_uppercase();
+    let idx = upper.find("PID&")? + 4;
+    let field: String = upper[idx..].chars().take(4).collect();
+    if field.len() != 4 || !field.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u16::from_str_radix(&field, 16).ok()
+}
+
+/// The service class UUID a Bluetooth Classic profile node belongs to.
+///
+/// ```text
+/// BTHENUM\{0000111E-0000-1000-8000-00805F9B34FB}_VID&0001009E_PID&4075\...
+///          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/// ```
+///
+/// Returned upper-case, without braces. `None` for nodes that are not a
+/// per-service child of a Classic device.
+pub fn service_uuid(instance_id: &str) -> Option<String> {
+    let upper = instance_id.to_uppercase();
+    let rest = upper.strip_prefix("BTHENUM\\{")?;
+    let (uuid, _) = rest.split_once('}')?;
+    let well_formed = uuid.len() == 36
+        && uuid.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    well_formed.then(|| uuid.to_string())
+}
+
 impl PnpDevice {
+    /// Whether Windows lists a service with this UUID for the device.
+    pub fn advertises_service(&self, uuid: u128) -> bool {
+        let wanted = format_uuid(uuid);
+        self.service_uuids.contains(&wanted)
+    }
+
     /// Whether this instance id refers to a top-level device rather than one of
     /// the per-profile child nodes Windows creates (AVRCP transport, Handsfree
     /// service, and so on). Those children duplicate the friendly name and
@@ -168,6 +237,20 @@ impl PnpDevice {
         let has_service_guid = id.contains('{');
         (id.starts_with("BTHENUM\\DEV_") || id.starts_with("BTHLE\\DEV_")) && !has_service_guid
     }
+}
+
+/// A UUID in the form Windows writes it in instance ids: upper-case,
+/// hyphenated, no braces.
+pub fn format_uuid(uuid: u128) -> String {
+    let hex = format!("{uuid:032X}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 fn wide_to_string(buf: &[u16]) -> String {
@@ -229,6 +312,7 @@ pub fn get_property(instance_id: &str, key: &DEVPROPKEY) -> Option<PropValue> {
             }
             t if t == DEVPROP_TYPE_BOOLEAN.0 => buf.first().map(|b| PropValue::Bool(*b != 0)),
             t if t == DEVPROP_TYPE_BYTE.0 => buf.first().map(|b| PropValue::Byte(*b)),
+            t if t == DEVPROP_TYPE_GUID.0 => guid_from_bytes(&buf).map(PropValue::Guid),
             t if t == DEVPROP_TYPE_UINT32.0 => {
                 if buf.len() >= 4 {
                     Some(PropValue::Number(u32::from_le_bytes([
@@ -241,6 +325,23 @@ pub fn get_property(instance_id: &str, key: &DEVPROPKEY) -> Option<PropValue> {
             _ => None,
         }
     }
+}
+
+/// Formats the 16 bytes of a GUID as Windows stores it: the first three
+/// fields little-endian, the last eight bytes as they are.
+fn guid_from_bytes(bytes: &[u8]) -> Option<String> {
+    let b: &[u8; 16] = bytes.get(..16)?.try_into().ok()?;
+    let value = (u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u128) << 96
+        | (u16::from_le_bytes([b[4], b[5]]) as u128) << 80
+        | (u16::from_le_bytes([b[6], b[7]]) as u128) << 64
+        | (u64::from_be_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]) as u128);
+    Some(format_uuid(value))
+}
+
+/// The container id of the physical device a node belongs to.
+pub fn container_id(instance_id: &str) -> Option<String> {
+    get_property(instance_id, &DEVPKEY_DEVICE_CONTAINER_ID)
+        .and_then(|v| v.as_guid().map(str::to_string))
 }
 
 /// Enumerates present device instance ids under the given enumerator prefix.
@@ -296,6 +397,7 @@ pub fn enumerate_bluetooth_devices() -> Vec<PnpDevice> {
         is_connected: Option<bool>,
         battery_percent: Option<u8>,
         vendor_id: Option<u16>,
+        product_id: Option<u16>,
     }
 
     let mut nodes: Vec<Node> = Vec::new();
@@ -315,6 +417,7 @@ pub fn enumerate_bluetooth_devices() -> Vec<PnpDevice> {
                 battery_percent: get_property(&instance_id, &DEVPKEY_BLUETOOTH_BATTERY)
                     .and_then(|v| v.as_percent()),
                 vendor_id: vendor_id(&instance_id),
+                product_id: product_id(&instance_id),
                 friendly_name,
                 instance_id,
             });
@@ -324,17 +427,28 @@ pub fn enumerate_bluetooth_devices() -> Vec<PnpDevice> {
     // Fold each device address into a single set of best-known values.
     let mut battery_by_address: BTreeMap<String, u8> = BTreeMap::new();
     let mut vendor_by_address: BTreeMap<String, u16> = BTreeMap::new();
+    let mut product_by_address: BTreeMap<String, u16> = BTreeMap::new();
     let mut connected_by_address: BTreeMap<String, bool> = BTreeMap::new();
+    let mut services_by_address: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for n in &nodes {
         let Some(addr) = device_address(&n.instance_id) else {
             continue;
         };
+        if let Some(uuid) = service_uuid(&n.instance_id) {
+            let list = services_by_address.entry(addr.clone()).or_default();
+            if !list.contains(&uuid) {
+                list.push(uuid);
+            }
+        }
         if let Some(b) = n.battery_percent {
             battery_by_address.entry(addr.clone()).or_insert(b);
         }
         if let Some(v) = n.vendor_id {
             vendor_by_address.entry(addr.clone()).or_insert(v);
+        }
+        if let Some(p) = n.product_id {
+            product_by_address.entry(addr.clone()).or_insert(p);
         }
         // Any node reporting connected means the device is connected.
         if n.is_connected == Some(true) {
@@ -349,7 +463,9 @@ pub fn enumerate_bluetooth_devices() -> Vec<PnpDevice> {
             is_connected: n.is_connected,
             battery_percent: n.battery_percent,
             vendor_id: n.vendor_id,
+            product_id: n.product_id,
             instance_id: n.instance_id,
+            service_uuids: Vec::new(),
         };
         if !dev.is_top_level() {
             continue;
@@ -358,10 +474,14 @@ pub fn enumerate_bluetooth_devices() -> Vec<PnpDevice> {
             Some(addr) => PnpDevice {
                 battery_percent: dev.battery_percent.or_else(|| battery_by_address.get(&addr).copied()),
                 vendor_id: dev.vendor_id.or_else(|| vendor_by_address.get(&addr).copied()),
+                product_id: dev
+                    .product_id
+                    .or_else(|| product_by_address.get(&addr).copied()),
                 is_connected: match connected_by_address.get(&addr) {
                     Some(true) => Some(true),
                     _ => dev.is_connected,
                 },
+                service_uuids: services_by_address.remove(&addr).unwrap_or_default(),
                 ..dev
             },
             None => dev,
@@ -383,7 +503,106 @@ mod tests {
             is_connected: None,
             battery_percent: None,
             vendor_id: None,
+            product_id: None,
+            service_uuids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn extracts_the_service_uuid_of_a_profile_node() {
+        assert_eq!(
+            service_uuid(
+                r"BTHENUM\{0000111E-0000-1000-8000-00805F9B34FB}_VID&0001009E_PID&4075\7&78167D1&0&E458BCF9F02E_C00000000"
+            )
+            .as_deref(),
+            Some("0000111E-0000-1000-8000-00805F9B34FB")
+        );
+        // Case is normalised: Windows is not consistent about it.
+        assert_eq!(
+            service_uuid(r"bthenum\{00000000-deca-fade-deca-deafdecacaff}_VID&0001009E_PID&4075\x")
+                .as_deref(),
+            Some("00000000-DECA-FADE-DECA-DEAFDECACAFF")
+        );
+    }
+
+    #[test]
+    fn nodes_without_a_service_have_no_service_uuid() {
+        assert_eq!(
+            service_uuid(r"BTHENUM\DEV_E458BCF9F02E\7&78167D1&0&BLUETOOTHDEVICE_E458BCF9F02E"),
+            None
+        );
+        // LE service nodes are a different shape and a different namespace.
+        assert_eq!(
+            service_uuid(r"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_DEV_VID&0017EF"),
+            None
+        );
+        assert_eq!(service_uuid(r"BTHENUM\{NOT-A-UUID}_VID&0001009E"), None);
+    }
+
+    /// A GUID's first three fields are stored little-endian and the rest in
+    /// order, so the bytes do not read left to right.
+    #[test]
+    fn a_guid_property_is_decoded_field_by_field() {
+        let bytes = [
+            0x06, 0xD2, 0x7E, 0x8C, // 8C7ED206
+            0x8A, 0x3F, // 3F8A
+            0x27, 0x48, // 4827
+            0xB3, 0xAB, 0xAE, 0x9E, 0x1F, 0xAE, 0xFC, 0x6C,
+        ];
+        assert_eq!(
+            guid_from_bytes(&bytes).as_deref(),
+            Some("8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C")
+        );
+        assert_eq!(guid_from_bytes(&bytes[..15]), None, "too short to be a GUID");
+    }
+
+    #[test]
+    fn uuids_are_formatted_the_way_windows_writes_them() {
+        assert_eq!(
+            format_uuid(0x00000000_deca_fade_deca_deafdecacaff),
+            "00000000-DECA-FADE-DECA-DEAFDECACAFF"
+        );
+        assert_eq!(
+            format_uuid(0x00001101_0000_1000_8000_00805F9B34FB),
+            "00001101-0000-1000-8000-00805F9B34FB"
+        );
+    }
+
+    #[test]
+    fn advertised_services_are_matched_by_uuid() {
+        let mut d = dev(r"BTHENUM\DEV_E458BCF9F02E\7&78167D1&0&BLUETOOTHDEVICE_E458BCF9F02E");
+        d.service_uuids = vec![
+            "0000111E-0000-1000-8000-00805F9B34FB".into(),
+            "00000000-DECA-FADE-DECA-DEAFDECACAFF".into(),
+        ];
+        assert!(d.advertises_service(0x00000000_deca_fade_deca_deafdecacaff));
+        assert!(!d.advertises_service(0x00001101_0000_1000_8000_00805F9B34FB));
+    }
+
+    #[test]
+    fn parses_the_product_id_of_the_test_headphones() {
+        // 0x4075 is "prince", QuietComfort Headphones, in the BMAP catalog.
+        assert_eq!(
+            product_id(
+                r"BTHENUM\{0000110B-0000-1000-8000-00805F9B34FB}_VID&0001009E_PID&4075\7&78167D1&0&E458BCF9F02E_C00000000"
+            ),
+            Some(0x4075)
+        );
+    }
+
+    /// The top-level device node carries no VID/PID at all; the value has to
+    /// be folded in from the profile child nodes.
+    #[test]
+    fn top_level_node_has_no_product_id_of_its_own() {
+        assert_eq!(
+            product_id(r"BTHENUM\DEV_E458BCF9F02E\7&78167D1&0&BLUETOOTHDEVICE_E458BCF9F02E"),
+            None
+        );
+    }
+
+    #[test]
+    fn product_id_is_ignored_without_a_sig_vendor_id() {
+        assert_eq!(product_id(r"BTHLEDEVICE\{0000180F-...}_DEV_VID&0002009E_PID&6134"), None);
     }
 
     // Instance ids below were captured from a real Bose QuietComfort

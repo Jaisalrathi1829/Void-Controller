@@ -41,6 +41,7 @@ export class BrowserSimulatedDevice {
   private connected = false;
   private batteryPercent = 78;
   private mode: NoiseControlMode = 'quiet';
+  private level = 6;
   private eq: EqSettings = { bass: 0, mid: 0, treble: 0 };
   private mutations = 0;
 
@@ -66,7 +67,13 @@ export class BrowserSimulatedDevice {
         ? { percent: this.batteryPercent, source: 'simulated', charging: false, readAt: now }
         : null,
       noiseControl: this.connected
-        ? { mode: this.mode, level: 10, source: 'simulated', readAt: now }
+        ? {
+            mode: this.mode,
+            // Like the real headphones: only the custom mode has a level.
+            ...(this.mode === 'custom' ? { level: this.level, label: 'Simulated custom' } : {}),
+            source: 'simulated',
+            readAt: now,
+          }
         : null,
       equalizer: this.connected ? { ...this.eq, source: 'simulated', readAt: now } : null,
       windowsAudio: null,
@@ -127,11 +134,20 @@ export class BrowserSimulatedDevice {
           reason: 'Windows audio is not reachable from the browser preview.',
         };
 
-      case 'setNoiseControlLevel':
-        return {
-          kind: 'unsupported',
-          reason: 'Continuous noise-control level requires a verified vendor protocol.',
-        };
+      case 'setNoiseControlLevel': {
+        if (!this.connected) return { kind: 'rejected', reason: 'No device is connected.' };
+        if (!Number.isInteger(command.level) || command.level < 0 || command.level > 10) {
+          return { kind: 'rejected', reason: 'Level must be a whole number from 0 to 10.' };
+        }
+        if (this.mode !== 'custom') {
+          return {
+            kind: 'unsupported',
+            reason: 'The simulated device only has an adjustable level in Custom mode.',
+          };
+        }
+        this.level = command.level;
+        return { kind: 'applied', verifiedAt: new Date().toISOString() };
+      }
 
       default:
         return { kind: 'applied', verifiedAt: new Date().toISOString() };

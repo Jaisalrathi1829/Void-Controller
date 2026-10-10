@@ -229,7 +229,18 @@ export function SegmentedControl<T extends string>({
   disabled,
   className,
 }: {
-  options: { value: T; label: string; icon?: ReactNode }[];
+  options: {
+    value: T;
+    label: string;
+    icon?: ReactNode;
+    /**
+     * Disables this option alone. It can still be shown as the active one —
+     * the device may report a state the application cannot request.
+     */
+    disabled?: boolean;
+    /** Why the option is disabled; shown as a tooltip. */
+    hint?: string;
+  }[];
   /**
    * `null` means the device has not told us which option is active, so none
    * is shown as selected. Defaulting to the first option would assert a
@@ -254,19 +265,25 @@ export function SegmentedControl<T extends string>({
     >
       {options.map((o) => {
         const active = o.value === value;
+        const off = disabled || !!o.disabled;
         return (
           <motion.button
             key={o.value}
             role="tab"
             aria-selected={active}
-            disabled={disabled}
-            onClick={() => !disabled && onChange(o.value)}
-            whileTap={{ scale: 0.94 }}
+            disabled={off}
+            title={o.disabled ? o.hint : undefined}
+            onClick={() => !off && onChange(o.value)}
+            whileTap={off ? undefined : { scale: 0.94 }}
             className={cn(
               "relative inline-flex items-center justify-center gap-2 rounded-md px-4 py-1.5 text-sm outline-none",
               "focus-visible:ring-2 focus-visible:ring-ring",
-              active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-              !disabled && "cursor-pointer",
+              active ? "text-foreground" : "text-muted-foreground",
+              !off && !active && "hover:text-foreground",
+              !off && "cursor-pointer",
+              // Dim a single disabled option only when the whole control is
+              // not already dimmed.
+              o.disabled && !disabled && "cursor-not-allowed opacity-45",
             )}
           >
             {active && (

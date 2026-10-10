@@ -18,6 +18,12 @@ No writes, no probe frames, no speculative commands. Opening a vendor RFCOMM
 channel is also excluded for now, because doing so can prevent Bose Music from
 connecting simultaneously.
 
+That is the posture of *discovery*. The application itself has, since
+2026-10-10, opened the BMAP control channel to supported headphones in order
+to read and switch the noise-control mode — see Experiment 5 in
+[protocol-notes.md](protocol-notes.md) and the hardware-safety section of
+[security.md](security.md).
+
 ## What works today
 
 `bluetooth/pnp.rs` reads, via CfgMgr32:

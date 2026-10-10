@@ -226,6 +226,7 @@ impl BoseDevice for MockBoseDevice {
             noise_control: connected.then(|| NoiseControlState {
                 mode: noise_mode,
                 level: Some(noise_level),
+                label: None,
                 source: StateSource::Simulated,
                 read_at: now.clone(),
             }),
@@ -279,6 +280,7 @@ impl BoseDevice for MockBoseDevice {
         Ok(Some(NoiseControlState {
             mode: s.noise_mode,
             level: Some(s.noise_level),
+            label: None,
             source: StateSource::Simulated,
             read_at: now_rfc3339(),
         }))
@@ -309,6 +311,36 @@ impl BoseDevice for MockBoseDevice {
         } else {
             Ok(CommandOutcome::sent_unverified(
                 "Readback did not match the requested mode.",
+            ))
+        }
+    }
+
+    async fn set_noise_control_level(&self, level: u8) -> DeviceResult<CommandOutcome> {
+        self.require_connected()?;
+        if level > 10 {
+            return Err(DeviceError::InvalidInput(
+                "noise control level out of range".to_string(),
+            ));
+        }
+        // Like the real backend: the level belongs to the custom mode.
+        if self.state.lock().noise_mode != NoiseControlMode::Custom {
+            return Ok(CommandOutcome::unsupported(
+                "The simulated device only has an adjustable level in Custom mode.",
+            ));
+        }
+        if self.should_be_unverified() {
+            self.state.lock().noise_level = level;
+            return Ok(CommandOutcome::sent_unverified(
+                "Simulated device did not echo the new level.",
+            ));
+        }
+        self.state.lock().noise_level = level;
+        let readback = self.state.lock().noise_level;
+        if readback == level {
+            Ok(CommandOutcome::applied())
+        } else {
+            Ok(CommandOutcome::sent_unverified(
+                "Readback did not match the requested level.",
             ))
         }
     }
@@ -409,6 +441,23 @@ mod tests {
             "mock identity must be self-labelling, got {:?}",
             id.name
         );
+    }
+
+    #[tokio::test]
+    async fn noise_level_round_trips_in_custom_mode_only() {
+        let dev = perfect();
+        dev.connect().await.unwrap();
+
+        // Not in Custom: nothing to adjust, and it says so.
+        let outcome = dev.set_noise_control_level(4).await.unwrap();
+        assert!(matches!(outcome, CommandOutcome::Unsupported { .. }));
+
+        dev.set_noise_control(NoiseControlMode::Custom).await.unwrap();
+        let outcome = dev.set_noise_control_level(4).await.unwrap();
+        assert!(outcome.is_confirmed());
+        assert_eq!(dev.noise_control().await.unwrap().unwrap().level, Some(4));
+
+        assert!(dev.set_noise_control_level(11).await.is_err());
     }
 
     #[tokio::test]

@@ -60,8 +60,13 @@ export type NoiseControlMode = 'quiet' | 'aware' | 'custom' | 'off';
 
 export interface NoiseControlState {
   mode: NoiseControlMode;
-  /** Devices with a continuous scale expose a level; absent unless observed. */
+  /**
+   * Noise-cancellation strength of the active mode, 0-10 where 10 is the
+   * most. Absent unless the device reported one.
+   */
   level?: number;
+  /** The device's own name for the active mode — a custom mode's name. */
+  label?: string;
   source: 'vendor-protocol' | 'simulated';
   readAt: string;
 }

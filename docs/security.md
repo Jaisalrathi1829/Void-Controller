@@ -6,7 +6,8 @@
    needed to render.
 2. Nothing leaves the machine. Ever.
 3. Device identifiers are not exposed, even to the local UI.
-4. The application does not write to Bluetooth hardware at all in this build.
+4. The application writes to Bluetooth hardware only through the narrow,
+   typed operations listed under "Hardware safety".
 
 ## No arbitrary Bluetooth writes
 
@@ -42,7 +43,12 @@ network call were introduced.
 
 | Data | Handling |
 | --- | --- |
-| Bluetooth address / PnP instance id | Stays in the native layer. Never sent to the UI. |
+| Bluetooth address / PnP instance id | Stays in the native layer. Never sent to the UI. The preferred device's instance id is kept in the local settings file so the same headphones are used next time; the UI is given only their name. |
+| Settings | `settings.json` in the application's config folder. Local only. |
+| Start with Windows | One entry in the current user's startup list (`HKCU\...\Run`), added and removed only by the switch. Per-user; no elevation. |
+| Notifications | Raised locally through Windows. Nothing is sent anywhere. |
+| Spoken announcements | Synthesized in this process by a local model. The text is composed natively from confirmed events, is not logged, and is not written to disk; synthesized audio is cached in memory only. |
+| Voice model | Installed by an explicit script, never by the application. Checked against pinned SHA-256 values before every load. |
 | Device id shown in UI and reports | Per-installation salted SHA-256 prefix |
 | Diagnostic captures | Local files, git-ignored |
 | Telemetry / analytics | None |
@@ -55,6 +61,33 @@ which asserts the raw address does not appear in the output.
 `.gitignore` excludes `device-report.json`, `device-report.txt`, `captures/`,
 `reports/` and `*.btcapture` so device data cannot be committed by accident.
 
+## Voice feedback
+
+Speech adds a native library and a large data file to the application, so it
+is held to the same constraints as everything else.
+
+- **The window cannot make the application say arbitrary things.** The only
+  speech command the UI has takes no argument and speaks one fixed sentence.
+  Every other sentence is built natively from a confirmed device event, and
+  the only variable parts are the headphones' name and a battery percentage.
+- **Nothing reaches the headphones but audio.** Speech is played through the
+  ordinary Windows audio output. It is not sent over the control link, and
+  nothing about voice feedback writes to the headphones.
+- **No network.** The speech runtime's DLLs (`sherpa-onnx-c-api.dll`,
+  `onnxruntime.dll`) import no networking library, and no HTTP or TLS client
+  is among the application's runtime dependencies. The model is fetched by
+  `tools/install-voice-model.ps1`, run by hand, which verifies a pinned
+  checksum before unpacking.
+- **The model is verified before the native runtime sees it.** That runtime
+  aborts the process on a file it cannot parse. Eight files are checked by
+  size and SHA-256 before every load, and a mismatch is a message on the
+  Settings page.
+- **The right DLL is the one loaded.** Windows ships an older
+  `onnxruntime.dll` in `System32`. The application's own copy sits beside the
+  executable, which Windows searches first.
+- **No system volume is touched.** Speech volume is a gain applied to the
+  speech samples.
+
 ## Logging
 
 Structured logging with explicit levels. Ordinary logs record command *names*
@@ -66,10 +99,31 @@ Never logged: credentials, tokens, secrets, raw Bluetooth addresses.
 
 ## Hardware safety
 
-The read-only posture is a security property as much as a correctness one.
-Until a protocol is verified:
+Writing to a device is the exception, and it is kept narrow.
 
-- No writes are sent to any Bluetooth device.
-- `set_noise_control` and `set_equalizer` return `Unsupported` with a reason.
+- **Three kinds of state-changing request exist.** A mode switch — to
+  Quiet, to Aware, or to one of the model's editable custom slots — a write of
+  a custom mode's level, and a write of the three equalizer gains (each
+  bounded to -10..+10). All are built by the vendored upstream codec. Nothing
+  in the application assembles a frame from caller-supplied bytes: the IPC
+  request types admit a mode name (`quiet`, `aware`, `custom`) and a level
+  from 0 to 10, and an index, a slot number, a frame or a byte string does not
+  deserialize. Which custom slot "custom" means is decided natively from the
+  list the headphones report.
+- **A level write may change one byte.** A custom mode's configuration is
+  written back whole, so before it goes out it is compared against what the
+  device just reported and must differ in the level and nothing else. Only
+  the mode the headphones are in is edited. Modes are never created, renamed
+  or deleted.
+- **They go only to a model on the allowlist** (`bose/bmap/mod.rs`), that
+  Windows shows advertising the BMAP service, on a channel that has answered a
+  read-only firmware request correctly, after a mode read in exactly the
+  documented shape.
+- **Channel selection is bounded.** The channel Windows resolves, then the
+  channels upstream documents for the model. No scanning.
+- **No authentication is attempted or bypassed.** The protocol as used needs
+  none; the link is the one pairing already established.
+- Everything else behind the vendor protocol — wind block, noise control
+  "off" — returns `Unsupported` with a reason and sends nothing.
 - No firmware operations of any kind exist in the codebase.
 - No fuzzing, brute-forcing, or authentication bypass.

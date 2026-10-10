@@ -27,7 +27,7 @@
         "center": true,
         "decorations": true,
         "transparent": false,
-        "visible": true,
+        "visible": false,
         "dragDropEnabled": false
       }
     ],
@@ -35,18 +35,17 @@
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'",
       "freezePrototype": true
     },
-    "trayIcon": {
-      "id": "main",
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": false,
-      "tooltip": "Bose QC Control Center"
-    },
     "withGlobalTauri": false
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
     "category": "Utility",
     "shortDescription": "Local control center for Bose QuietComfort headphones",
     "longDescription": "A fully local Windows control center for Bose QuietComfort headphones. Works offline with no cloud services, no accounts, and no telemetry.",
@@ -55,7 +54,9 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English"]
+        "languages": [
+          "English"
+        ]
       }
     }
   }

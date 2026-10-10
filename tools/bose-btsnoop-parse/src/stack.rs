@@ -266,16 +266,24 @@ impl Decoder {
             ((((data[3] as usize) << 7) | ((data[2] >> 1) as usize)), 4)
         };
 
-        if off + length > data.len() {
-            return Vec::new();
+        // A UIH frame on a data DLCI with P/F set carries a credit octet between
+        // the length field and the information field. It belongs to flow
+        // control, not to the application, so it is skipped.
+        //
+        // The length field does NOT count it. An earlier version of this
+        // parser subtracted one from `length` here as well, which silently
+        // dropped the final byte of every credit-carrying frame: Bose's
+        // six-byte mode switch `1F 03 05 02 00 00` was reported as the
+        // five-byte `1F 03 05 02 00`, and `00 01 01 00` as `00 01 01`. Frames
+        // replayed from that output were therefore incomplete, and the device
+        // — correctly treating RFCOMM as a byte stream — sat waiting for the
+        // rest of a frame that never came.
+        if kind == RfcommFrameKind::Uih && dlci != 0 && control & RFCOMM_PF != 0 {
+            off += 1;
         }
 
-        // A UIH frame on a data DLCI with P/F set carries a leading credit
-        // byte that belongs to flow control, not to the application.
-        let mut length = length;
-        if kind == RfcommFrameKind::Uih && dlci != 0 && control & RFCOMM_PF != 0 && length > 0 {
-            off += 1;
-            length -= 1;
+        if off + length > data.len() {
+            return Vec::new();
         }
 
         vec![RfcommFrame {
@@ -399,14 +407,62 @@ mod tests {
         for r in sig_connect_rfcomm(0x0C, 1, 0x0040, 0x0041) {
             d.push(&r);
         }
+        // Wire layout: address, control, LENGTH (information field only),
+        // CREDIT octet, information, FCS. The length field does not count the
+        // credit octet.
+        let info = b"data";
         let mut f = vec![(3 << 2) | 0x03, RFCOMM_UIH | RFCOMM_PF];
-        let payload = b"\x07data"; // first byte is credits
-        f.push(((payload.len() as u8) << 1) | 0x01);
-        f.extend_from_slice(payload);
-        f.push(0x00);
+        f.push(((info.len() as u8) << 1) | 0x01);
+        f.push(0x07); // credits
+        f.extend_from_slice(info);
+        f.push(0x00); // FCS
 
         let frames = d.push(&acl(0x0C, 0x0041, &f, Direction::Sent));
         assert_eq!(frames[0].payload, b"data");
+    }
+
+    /// Regression test for the bug that broke Experiment 4.
+    ///
+    /// The previous fixture for the credit-byte case was built with the same
+    /// wrong assumption as the code under test — that the length field counts
+    /// the credit octet — so the test passed while the parser dropped the last
+    /// byte of every such frame. This one uses the real Bose mode-switch frame.
+    #[test]
+    fn credit_carrying_frame_keeps_its_final_payload_byte() {
+        let mut d = Decoder::new();
+        d.push(&connection_complete(0x0C, [0; 6]));
+        for r in sig_connect_rfcomm(0x0C, 1, 0x0040, 0x0041) {
+            d.push(&r);
+        }
+        // START [31.3] quiet, silent: six bytes of BMAP.
+        let bmap = [0x1F, 0x03, 0x05, 0x02, 0x00, 0x00];
+        let mut f = vec![(16 << 2) | 0x03, RFCOMM_UIH | RFCOMM_PF]; // DLCI 16
+        f.push(((bmap.len() as u8) << 1) | 0x01);
+        f.push(0x01); // one credit granted
+        f.extend_from_slice(&bmap);
+        f.push(0x9A); // FCS (not validated)
+
+        let frames = d.push(&acl(0x0C, 0x0041, &f, Direction::Sent));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].dlci, 16);
+        assert_eq!(
+            frames[0].payload, bmap,
+            "the announce byte must survive credit stripping"
+        );
+    }
+
+    /// A credit-only frame: zero-length information field, credit octet present.
+    #[test]
+    fn credit_only_frame_has_an_empty_payload() {
+        let mut d = Decoder::new();
+        d.push(&connection_complete(0x0C, [0; 6]));
+        for r in sig_connect_rfcomm(0x0C, 1, 0x0040, 0x0041) {
+            d.push(&r);
+        }
+        let f = vec![(3 << 2) | 0x03, RFCOMM_UIH | RFCOMM_PF, 0x01, 0x21, 0x00];
+        let frames = d.push(&acl(0x0C, 0x0041, &f, Direction::Received));
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].payload.is_empty());
     }
 
     #[test]

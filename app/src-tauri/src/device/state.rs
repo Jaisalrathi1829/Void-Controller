@@ -115,8 +115,14 @@ pub enum StateSource {
 #[serde(rename_all = "camelCase")]
 pub struct NoiseControlState {
     pub mode: NoiseControlMode,
+    /// Noise-cancellation strength of the active mode, 0-10 where 10 is the
+    /// most. Present only when the device reported one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
+    /// The device's own name for the active mode, when it has one — a custom
+    /// mode's name. The presets are named by `mode`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub source: StateSource,
     pub read_at: String,
 }

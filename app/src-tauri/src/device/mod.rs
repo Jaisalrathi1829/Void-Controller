@@ -56,6 +56,11 @@ pub enum DeviceError {
     #[error("command rejected: {0}")]
     Rejected(String),
 
+    /// The control connection to the device failed. Says nothing about
+    /// whether a request in flight took effect.
+    #[error("the control connection to the headphones failed: {0}")]
+    ControlLink(String),
+
     #[error("Windows API error: {0}")]
     Platform(String),
 

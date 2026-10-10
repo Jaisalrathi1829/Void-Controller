@@ -3,14 +3,16 @@
 A fully local Windows control center for Bose QuietComfort headphones. No cloud
 services, no accounts, no telemetry, no network requests.
 
-> **Current state: hardware available, protocol partially verified.** A real
-> Bose QuietComfort ("Aurora") has been connected and interrogated. Battery,
-> device identity, connection state and Windows volume are **verified**
-> against the physical device. The vendor RFCOMM protocol for noise control
-> has been observed (via a Bose Music traffic capture) and replayed at the
-> device, but the device did not respond or change state — so noise control
-> and Aware mode remain `SUPPORTED`, not `VERIFIED`. See
-> [docs/protocol-notes.md](docs/protocol-notes.md) for the experiment log.
+> **Current state: noise control works on real hardware.** On a Bose
+> QuietComfort Headphones (product `0x4075`, firmware `1.0.6`), battery,
+> device identity, connection state, Windows volume, firmware version and
+> noise control are **verified** against the physical device. The application
+> switches between Quiet, Aware and the headphones' custom mode, and adjusts
+> that custom mode's noise-cancellation level with a slider. It also shows
+> the headphones' three-band hardware EQ and changes it. Every change is
+> confirmed by reading it back from the headphones. Everything else behind
+> the vendor protocol is not driven and remains `UNKNOWN`. See [docs/protocol-notes.md](docs/protocol-notes.md) for the
+> experiment log, including what earlier attempts got wrong.
 > Nothing is presented as working that has not been demonstrated.
 
 ## The guiding rule
@@ -49,6 +51,35 @@ Run the desktop application:
 npm run tauri:dev
 ```
 
+If a Bose device is already paired with the PC, the application starts on real
+hardware; otherwise it starts on a simulated device, labelled as such. Starting
+on real hardware only reads from the headphones.
+
+The Settings page controls starting with Windows, starting minimized, a
+system-tray icon, whether the application attaches to the headphones at launch
+and when they return, and notifications for connecting, disconnecting and low
+battery. "Start with Windows" needs an installed build (`npm run tauri:build`).
+
+Build installers with `npm run tauri:build` rather than a bare `tauri build`:
+the script adds `tauri.bundle.conf.json`, which packages the two speech-runtime
+DLLs the executable cannot start without.
+
+### Voice feedback (optional)
+
+The application can speak confirmed changes — "Quiet mode activated.",
+"Aurora connected.", a low-battery warning — through the headphones, using the
+Kokoro text-to-speech model running on this computer. It is off until switched
+on, and it needs the voice model, which is installed once by an explicit step
+(a 98 MB download; nothing is ever fetched by the application itself):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\install-voice-model.ps1
+```
+
+Then open Settings → Voice Feedback. See
+[docs/voice-feedback.md](docs/voice-feedback.md) for what is announced and
+when, where speech is played, and what has been measured.
+
 Run the frontend alone in a browser (simulated device, no native layer):
 
 ```bash
@@ -65,26 +96,96 @@ npm run rust:test
 npm run test:run
 ```
 
+The vendored protocol crate has its own suite:
+
+```bash
+cargo test --manifest-path vendor/bose-bmap/Cargo.toml
+```
+
+### Hardware tests
+
+These talk to real headphones and are skipped by default. Pair and connect a
+supported model first, and run them one at a time — the headphones accept one
+control connection.
+
+Read-only (endpoint validation, mode read, mode list, reconnection):
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_a hw_b0 hw_b2 hw_b3 hw_b4
+```
+
+Switches the noise-control mode and switches it back:
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b1
+```
+
+Changes one equalizer band by one step and restores it:
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b7
+```
+
+Switches to the custom mode, changes its level, and restores both (needs a
+custom mode set up on the headphones):
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b5
+```
+
+With the headphones switched off (the one test that needs them *not*
+connected):
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_c1
+```
+
+Voice feedback has real-model and real-headphones tests of its own, listed in
+[docs/voice-feedback.md](docs/voice-feedback.md#tests).
+
 ## Project layout
 
 ```
 app/
   frontend/       React + TypeScript + Tailwind UI
   src-tauri/      Rust native layer
+    autostart.rs  "Start with Windows" (the user's startup list)
+    settings.rs   Settings file
+    tray.rs       System-tray icon
+    watcher.rs    Background presence watcher and notifications
+    voice/        Voice feedback: announcement rules, queue, Kokoro, worker
+    audio/        Windows audio: endpoints, and playback of synthesized speech
     bluetooth/    Windows PnP + radio access (read-only)
     bose/         Mock and real device backends
+      bmap/       Windows transport and verification for the control protocol
     device/       Capability engine, typed commands, state
+vendor/
+  bose-bmap/          Bose BMAP protocol implementation, vendored (MIT)
 tools/
   bose-discovery/     Read-only device/GATT discovery, exports a shareable report
-  bose-rfcomm-listen/ Listen-only vendor RFCOMM capture — never transmits
+  bose-rfcomm-listen/ Listen-only RFCOMM capture — never transmits
   bose-btsnoop-parse/ Offline parser for Android Bluetooth HCI snoop logs
-  bose-anc-probe/     Replays observed noise-control frames, verifies by read-back
+  install-voice-model.ps1  One-time download of the Kokoro voice model
 docs/                 Architecture, capability matrix, protocol notes
 ```
 
-Each transmitting tool sends only byte sequences that were themselves observed
-in a capture — see [docs/protocol-notes.md](docs/protocol-notes.md) for what
-has been sent, what came back, and what remains unverified.
+None of the tools transmits. The only code that writes to the headphones is the
+application's control link, and what it can send is described in
+[docs/security.md](docs/security.md).
+
+## Third-party code
+
+The Bose BMAP protocol implementation in `vendor/bose-bmap` is the `bose-bmap`
+crate from [aaronsb/bosectl](https://github.com/aaronsb/bosectl), Copyright (c)
+2026 Aaron Bockelie, used under the MIT licence. Its licence file is kept
+alongside it, the exact upstream commit and the one build-configuration patch
+are recorded in `vendor/bose-bmap/VENDORED.md`, and the notice is reproduced in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Voice feedback uses sherpa-onnx (Apache-2.0), ONNX Runtime (MIT) and the Kokoro
+model (Apache-2.0), none of which is copied into this repository. The
+sherpa-onnx library contains eSpeak NG, which is GPL-3.0-or-later; what that
+means for anyone distributing a build is set out in the notices file.
 
 ## Security posture
 
@@ -92,7 +193,9 @@ The frontend has no Bluetooth surface. It cannot express an arbitrary write:
 there is no command variant carrying a UUID, characteristic handle, or byte
 array, and a test asserts that the serialized command surface contains none.
 All hardware operations pass through a typed, validated, allowlisted native
-layer.
+layer. Noise control is requested by mode name — `quiet`, `aware` or `custom` —
+and a level from 0 to 10; the request types accept nothing else, and "custom"
+carries no slot number.
 
 Bluetooth addresses never leave the native layer. Anything user-visible or
 exportable carries a per-installation salted hash instead, so a shared
@@ -109,4 +212,5 @@ See [docs/security.md](docs/security.md).
 | [capability-matrix.md](docs/capability-matrix.md) | What actually works, and what does not |
 | [protocol-notes.md](docs/protocol-notes.md) | Vendor protocol investigation status |
 | [security.md](docs/security.md) | Threat model and constraints |
+| [voice-feedback.md](docs/voice-feedback.md) | Spoken announcements: setup, rules, runtime, measurements |
 | [troubleshooting.md](docs/troubleshooting.md) | Common problems |

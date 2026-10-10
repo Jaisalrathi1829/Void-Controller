@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "target/release/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "target/release/onnxruntime.dll": "onnxruntime.dll"
+    }
+  }
+}

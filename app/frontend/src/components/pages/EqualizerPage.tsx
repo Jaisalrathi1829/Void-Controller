@@ -44,8 +44,11 @@ function matchesPreset(eq: EqValues, p: EqValues) {
 }
 
 export function EqualizerPage() {
-  const { hardwareEq, setHardwareEq, softwareEq, setSoftwareEq, capabilities } = useApp();
+  const { hardwareEq, setHardwareEq, softwareEq, setSoftwareEq, capabilities, snapshot, busy } = useApp();
   const hwDisabled = capabilities.eq === "unknown" || capabilities.eq === "unsupported";
+  const hwApplying = busy === "setEqualizer";
+  // Why the capability is in its current state, in the backend's own words.
+  const hwEvidence = snapshot?.capabilities.equalizer.evidence;
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -61,17 +64,23 @@ export function EqualizerPage() {
         <p className="mb-5 text-sm text-muted-foreground">
           Adjusts equalization on the headphone hardware itself.
         </p>
-        <EqControls value={hardwareEq} onChange={setHardwareEq} disabled={hwDisabled} />
+        <EqControls value={hardwareEq} onChange={setHardwareEq} disabled={hwDisabled || hwApplying} />
         {hwDisabled && (
-          <p className="mt-4 text-xs text-muted-foreground">
-            Hardware EQ is not fully verified on this device. Changes may not apply.
+          <p className="mt-4 text-xs text-muted-foreground" data-testid="eq-unavailable">
+            {hwEvidence ?? "Hardware EQ is not fully verified on this device. Changes may not apply."}
+          </p>
+        )}
+        {capabilities.eq === "experimental" && hwEvidence && (
+          <p className="mt-4 text-xs text-muted-foreground" data-testid="eq-experimental">
+            <span className="font-medium text-foreground">Experimental. </span>
+            {hwEvidence}
           </p>
         )}
         <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
           {presets.map((p) => (
             <button
               key={p.name}
-              disabled={hwDisabled}
+              disabled={hwDisabled || hwApplying}
               onClick={() => setHardwareEq(p.eq)}
               className={cn(
                 "rounded-md border px-2.5 py-1 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40",

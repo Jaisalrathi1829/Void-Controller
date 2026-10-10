@@ -146,8 +146,11 @@ impl DeviceCommand {
 /// The distinction between `Applied` and `SentUnverified` is the heart of the
 /// state verification rule: we only report success when the device's own
 /// reported state confirmed it.
+///
+/// Variant names are kebab-case on the wire (`sent-unverified`), matching the
+/// `CommandOutcome` union in `app/frontend/src/types/device.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CommandOutcome {
     /// The device's reported state was re-read and matches what we asked for.
     #[serde(rename_all = "camelCase")]

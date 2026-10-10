@@ -11,12 +11,32 @@
 //! required reverse engineering.
 
 #[cfg(windows)]
+pub mod playback;
+#[cfg(windows)]
 mod win;
 
 #[cfg(windows)]
 pub use win::*;
 
 use serde::{Deserialize, Serialize};
+
+/// An active output endpoint that speech can be played through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    pub id: String,
+    pub name: String,
+}
+
+/// How a playback ended.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Played {
+    /// False if it was stopped before the end.
+    pub completed: bool,
+    /// The highest level Windows' own meter for the endpoint showed while
+    /// this was playing, 0.0-1.0. Evidence that audio reached that endpoint's
+    /// stream — not that anyone heard it.
+    pub endpoint_peak: f32,
+}
 
 /// An audio output endpoint as Windows sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

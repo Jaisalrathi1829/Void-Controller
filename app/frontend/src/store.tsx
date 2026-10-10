@@ -99,10 +99,28 @@ interface AppState {
   /** Full per-capability detail, including the evidence behind each status. */
   snapshot: DeviceSnapshot | null;
 
+  /**
+   * The mode the device itself last reported, or null if it has not reported
+   * one. Never the mode that was merely requested.
+   */
   noise: NoiseMode | null;
   setNoise: (n: NoiseMode) => void;
-  ancLevel: number;
+  /** When the device reported `noise`. */
+  noiseReadAt: string | null;
+  /**
+   * Set when the latest attempt to read the device failed. Whatever state is
+   * on screen is then the last confirmed one, not a fresh reading.
+   */
+  deviceNotice: string | null;
+  /**
+   * Noise-cancellation strength the device reports for its active mode, 0-10
+   * where 10 is the most. Null when it has not reported one — which includes
+   * every time the headphones are in Quiet or Aware.
+   */
+  ancLevel: number | null;
   setAncLevel: (n: number) => void;
+  /** The device's own name for its active custom mode, if it is in one. */
+  noiseLabel: string | null;
   windBlock: boolean;
   setWindBlock: (b: boolean) => void;
 
@@ -132,8 +150,15 @@ interface AppState {
   theme: ThemePref;
   setTheme: (t: ThemePref) => void;
 
-  settings: Record<string, boolean>;
-  toggleSetting: (k: string) => void;
+  /** The Settings page switches, as the native layer reports them. */
+  settings: ipc.AppSettings;
+  toggleSetting: (k: ipc.SettingKey) => void;
+  /** Where voice feedback stands, as the native layer reports it. */
+  voice: ipc.VoiceStatus;
+  setVoiceOption: (option: ipc.VoiceOption) => void;
+  testVoice: () => void;
+  stopSpeaking: () => void;
+  recheckVoice: () => void;
   logLevel: string;
   setLogLevel: (s: string) => void;
 
@@ -148,25 +173,20 @@ const AppCtx = createContext<AppState | null>(null);
 
 const now = () => new Date().toLocaleTimeString([], { hour12: false });
 
+/**
+ * How often real, connected headphones are re-read. The mode can change from
+ * the headphones' own button or from a phone, and the screen should show what
+ * the device reports rather than what this app last asked for.
+ */
+const LIVE_REFRESH_MS = 5000;
+
+/** Whether a capability status means the control must not be offered. */
+export function isUnavailable(cap: CapabilityStatus): boolean {
+  return cap === "unknown" || cap === "unsupported";
+}
+
 const THEME_KEY = "bose-qc.theme";
 const PROFILES_KEY = "bose-qc.profiles";
-
-/**
- * Settings whose backing implementation does not exist yet.
- *
- * The Settings page reads this to disable the control and explain why, rather
- * than presenting a switch that silently does nothing.
- */
-export const UNIMPLEMENTED_SETTINGS = new Set([
-  "startWithWindows",
-  "startMinimized",
-  "minimizeToTray",
-  "autoConnect",
-  "autoReconnect",
-  "notifyConnected",
-  "notifyDisconnected",
-  "notifyLowBattery",
-]);
 
 function loadTheme(): ThemePref {
   if (typeof localStorage === "undefined") return "system";
@@ -229,26 +249,21 @@ function connectionFrom(snapshot: DeviceSnapshot | null): ConnectionState {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<DeviceSnapshot | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const busyRef = useRef(false);
   const [events, setEvents] = useState<DiagEvent[]>([]);
   const [capturing, setCapturing] = useState(false);
   const capturingRef = useRef(false);
 
-  const [ancLevel, setAncLevelRaw] = useState(6);
   const [windBlock, setWindBlockRaw] = useState(false);
   const [softwareEq, setSoftwareEqRaw] = useState<EqValues>({ bass: 0, mid: 0, treble: 0 });
 
   const [profiles, setProfiles] = useState<Profile[]>(loadProfiles);
   const [theme, setThemeRaw] = useState<ThemePref>(loadTheme);
-  const [settings, setSettings] = useState<Record<string, boolean>>({
-    startWithWindows: false,
-    startMinimized: false,
-    minimizeToTray: false,
-    autoConnect: false,
-    notifyConnected: false,
-    notifyDisconnected: false,
-    notifyLowBattery: false,
-    autoReconnect: false,
-  });
+  // Nothing is assumed about the settings until the native layer has said
+  // what they are; until then every switch is off and inert.
+  const [settings, setSettings] = useState<ipc.AppSettings>(() =>
+    ipc.unavailableSettings("Loading…"),
+  );
   const [logLevel, setLogLevel] = useState("Info");
 
   const nativeAvailable = ipc.hasNativeLayer();
@@ -305,6 +320,146 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
+  /* ---- settings ---- */
+  useEffect(() => {
+    let cancelled = false;
+    ipc
+      .getSettings()
+      .then((s) => {
+        if (!cancelled) setSettings(s);
+      })
+      .catch((e) => {
+        if (!cancelled) setSettings(ipc.unavailableSettings(ipc.toIpcError(e).message));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleSetting = useCallback(
+    (k: ipc.SettingKey) => {
+      const blocked = settings.unavailable[k];
+      if (blocked) {
+        toast.warning("Not available.", { description: blocked });
+        return;
+      }
+      ipc
+        .setSetting(k, !settings[k])
+        // What comes back is what the native side did, so that is what shows.
+        .then(setSettings)
+        .catch(async (e) => {
+          toast.error("Could not change the setting.", {
+            description: ipc.toIpcError(e).message,
+          });
+          // Whatever happened, show where things actually stand.
+          try {
+            setSettings(await ipc.getSettings());
+          } catch {
+            /* the toast above already says something went wrong */
+          }
+        });
+    },
+    [settings],
+  );
+
+  /* ---- voice feedback ----
+   *
+   * The status is whatever the native layer last said. Nothing here guesses
+   * that speech "should" be playing: the state changes when the worker that
+   * does the speaking says it has.
+   */
+  const [voice, setVoice] = useState<ipc.VoiceStatus>(() =>
+    ipc.voiceUnavailable("Loading…"),
+  );
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    ipc
+      .getVoiceStatus()
+      .then((s) => {
+        if (!cancelled) setVoice(s);
+      })
+      .catch((e) => {
+        if (!cancelled) setVoice(ipc.voiceUnavailable(ipc.toIpcError(e).message));
+      });
+    void ipc
+      .onVoiceStatus((s) => {
+        if (!cancelled) setVoice(s);
+      })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+
+  const setVoiceOption = useCallback((option: ipc.VoiceOption) => {
+    ipc
+      .setVoiceOption(option)
+      .then(setSettings)
+      .catch(async (e) => {
+        toast.error("Could not change the voice setting.", {
+          description: ipc.toIpcError(e).message,
+        });
+        try {
+          setSettings(await ipc.getSettings());
+        } catch {
+          /* the toast above already says something went wrong */
+        }
+      });
+  }, []);
+
+  const testVoice = useCallback(() => {
+    ipc.testVoice().catch((e) => {
+      toast.error("Could not test the voice.", { description: ipc.toIpcError(e).message });
+    });
+  }, []);
+
+  const stopSpeaking = useCallback(() => {
+    ipc.stopSpeaking().catch((e) => {
+      toast.error("Could not stop the speech.", { description: ipc.toIpcError(e).message });
+    });
+  }, []);
+
+  const recheckVoice = useCallback(() => {
+    ipc
+      .recheckVoiceModel()
+      .then(setVoice)
+      .catch((e) => {
+        toast.error("Could not check for the voice model.", {
+          description: ipc.toIpcError(e).message,
+        });
+      });
+  }, []);
+
+  /* ---- headphones coming and going ----
+   *
+   * The native layer watches for this, because the window stops refreshing
+   * once the headphones are gone and so could never notice them come back.
+   */
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void ipc
+      .onDeviceChanged(() => {
+        if (!busyRef.current) void refresh();
+      })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [refresh]);
+
   /* ---- command dispatch ----
    *
    * Every mutating action goes through here. The outcome from the backend
@@ -313,14 +468,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * success toast — the device not echoing its state back is exactly the
    * situation the user needs to know about.
    */
-  const run = useCallback(
+  const report = useCallback(
     async (
-      command: ipc.DeviceCommand,
+      kind: string,
+      dispatch: () => Promise<CommandOutcome>,
       describe: { label: string; eventType: string },
     ): Promise<CommandOutcome | null> => {
-      setBusy(command.kind);
+      setBusy(kind);
+      busyRef.current = true;
       try {
-        const outcome = await ipc.executeCommand(command);
+        const outcome = await dispatch();
 
         switch (outcome.kind) {
           case "applied":
@@ -375,13 +532,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
           description: `${describe.label} — ${err.message}`,
           status: "warning",
         });
+        // A failure says nothing about what state the device is in now, so
+        // ask it rather than leaving the screen as it was.
+        await refresh();
         return null;
       } finally {
+        busyRef.current = false;
         setBusy(null);
       }
     },
     [pushEvent, refresh],
   );
+
+  const run = useCallback(
+    (command: ipc.DeviceCommand, describe: { label: string; eventType: string }) =>
+      report(command.kind, () => ipc.executeCommand(command), describe),
+    [report],
+  );
+
+  /*
+   * Noise modes go through the typed operation, which cannot carry anything
+   * but a mode name — no index, no slot, no bytes.
+   */
+  const requestNoise = useCallback(
+    (n: NoiseMode, describe: { label: string; eventType: string }) =>
+      report("setNoiseControlMode", () => ipc.setNoiseControlMode(n), describe),
+    [report],
+  );
+
+  /* ---- live refresh ---- */
+  const live = snapshot?.source === "real" && snapshot.connection === "connected";
+  useEffect(() => {
+    if (!live) return;
+    const id = window.setInterval(() => {
+      // Not while a command is in flight (it re-reads when it finishes), and
+      // not while nobody is looking.
+      if (busyRef.current || document.hidden) return;
+      void refresh();
+    }, LIVE_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [live, refresh]);
 
   /* ---- derived ---- */
   const connection = connectionFrom(snapshot);
@@ -394,6 +584,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const deviceName = snapshot?.identity?.name ?? "No device";
 
   const noise = (snapshot?.noiseControl?.mode ?? null) as NoiseMode | null;
+  const noiseReadAt = snapshot?.noiseControl?.readAt ?? null;
+  const ancLevel = snapshot?.noiseControl?.level ?? null;
+  const noiseLabel = snapshot?.noiseControl?.label ?? null;
+  const deviceNotice = snapshot?.lastError ?? null;
   const hardwareEq: EqValues = snapshot?.equalizer
     ? {
         bass: snapshot.equalizer.bass,
@@ -409,12 +603,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /* ---- actions ---- */
   const setNoise = useCallback(
     (n: NoiseMode) => {
-      void run(
-        { kind: "setNoiseControl", mode: n },
-        { label: `Noise control (${n})`, eventType: "ANC_CHANGE" },
-      );
+      void requestNoise(n, { label: `Noise control (${n})`, eventType: "ANC_CHANGE" });
     },
-    [run],
+    [requestNoise],
   );
 
   const setHardwareEq = useCallback(
@@ -441,15 +632,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [run],
   );
 
+  // No local copy of the level is kept: the slider shows what the device
+  // reports, and moves when the device reports something new.
   const setAncLevel = useCallback(
     (n: number) => {
-      setAncLevelRaw(n);
-      void run(
-        { kind: "setNoiseControlLevel", level: Math.round(n) },
-        { label: "Noise control level", eventType: "ANC_LEVEL" },
-      );
+      const level = Math.round(n);
+      void report("setNoiseControlLevel", () => ipc.setNoiseCancellationLevel(level), {
+        label: `Noise cancellation level ${level}`,
+        eventType: "ANC_LEVEL",
+      });
     },
-    [run],
+    [report],
   );
 
   // No backend command exists for wind block. Rather than silently keeping a
@@ -539,10 +732,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // A profile only applies settings the device is actually able to accept.
       // Each sub-command reports its own outcome, so a partially-applied
       // profile is visible rather than silently claimed as a success.
-      await run(
-        { kind: "setNoiseControl", mode: p.noise },
-        { label: `${p.name}: noise control`, eventType: "PROFILE" },
-      );
+      await requestNoise(p.noise, {
+        label: `${p.name}: noise control`,
+        eventType: "PROFILE",
+      });
       await run(
         { kind: "setEqualizer", settings: p.eq },
         { label: `${p.name}: equalizer`, eventType: "PROFILE" },
@@ -552,7 +745,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         profiles.map((i) => (i.id === p.id ? { ...i, lastUsed: "Just now" } : i)),
       );
     },
-    [run, pushEvent, profiles, persistProfiles],
+    [run, requestNoise, pushEvent, profiles, persistProfiles],
   );
 
   const toggleCapture = useCallback(() => {
@@ -585,8 +778,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       snapshot,
       noise,
       setNoise,
+      noiseReadAt,
+      deviceNotice,
       ancLevel,
       setAncLevel,
+      noiseLabel,
       windBlock,
       setWindBlock,
       volume,
@@ -618,16 +814,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       theme,
       setTheme,
       settings,
-      toggleSetting: (k) => {
-        if (UNIMPLEMENTED_SETTINGS.has(k)) {
-          toast.warning("Not implemented yet.", {
-            description:
-              "Tray, startup, auto-connect and notification behaviour are not wired up in this build.",
-          });
-          return;
-        }
-        setSettings((s) => ({ ...s, [k]: !s[k] }));
-      },
+      toggleSetting,
+      voice,
+      setVoiceOption,
+      testVoice,
+      stopSpeaking,
+      recheckVoice,
       logLevel,
       setLogLevel,
       connect,
@@ -639,11 +831,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       connection, setConnection, simulated, setSimulated, nativeAvailable, connect,
       battery, charging, deviceName, batterySource, capabilities, snapshot,
-      noise, setNoise, ancLevel, setAncLevel, windBlock, setWindBlock,
+      noise, setNoise, noiseReadAt, deviceNotice,
+      ancLevel, setAncLevel, noiseLabel, windBlock, setWindBlock,
       volume, setVolume, muted, setMuted, audioEndpointName,
       hardwareEq, setHardwareEq, softwareEq, setSoftwareEq,
       profiles, persistProfiles, applyProfile, events, capturing, toggleCapture,
-      theme, setTheme, settings, logLevel, reconnect, disconnect, refresh, busy,
+      theme, setTheme, settings, toggleSetting, logLevel, reconnect, disconnect, refresh, busy,
+      voice, setVoiceOption, testVoice, stopSpeaking, recheckVoice,
     ],
   );
 

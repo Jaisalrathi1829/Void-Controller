@@ -16,7 +16,7 @@
     "typecheck": "npm run typecheck --workspace app/frontend",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "tauri build --config app/src-tauri/tauri.bundle.conf.json",
     "rust:test": "cargo test --manifest-path app/src-tauri/Cargo.toml",
     "rust:fmt": "cargo fmt --manifest-path app/src-tauri/Cargo.toml",
     "rust:clippy": "cargo clippy --manifest-path app/src-tauri/Cargo.toml -- -D warnings",

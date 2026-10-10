@@ -1,0 +1,28 @@
+[package]
+name = "bose-bmap"
+version = "0.5.0"
+edition = "2021"
+description = "Control Bluetooth audio devices over the BMAP protocol"
+license = "MIT"
+repository = "https://github.com/aaronsb/bosectl"
+readme = "README.md"
+rust-version = "1.70"
+keywords = ["bose", "bluetooth", "bmap", "headphones", "rfcomm"]
+categories = ["hardware-support", "command-line-utilities"]
+
+# Published as bose-bmap (the crates.io name "bmap" belongs to an unrelated
+# crate); the library keeps its import name, so code still says `use bmap::`.
+[lib]
+name = "bmap"
+# [QC Control Center patch] The crate-level doc example calls `connect()`,
+# which only exists on unix, so it cannot compile as a doctest on Windows.
+doctest = false
+
+# [QC Control Center patch] libc is only used by the Linux RFCOMM transport and
+# the errno-based channel probe, so it is a unix-only dependency here. Upstream
+# declares it unconditionally. See VENDORED.md.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# [QC Control Center patch] The upstream `bmapctl` binary (src/main.rs) is not
+# vendored; only the library is used.

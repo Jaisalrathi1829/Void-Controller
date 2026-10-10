@@ -36,6 +36,26 @@ time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 sha2 = "0.10"
 parking_lot = "0.12"
 
+# BMAP protocol implementation, vendored from aaronsb/bosectl (MIT). The
+# published crate is Linux-only; see vendor/bose-bmap/VENDORED.md for the
+# exact upstream commit and the build-configuration-only patch applied.
+bmap = { package = "bose-bmap", path = "../../vendor/bose-bmap" }
+
+# Kokoro text-to-speech for voice feedback, through sherpa-onnx's official Rust
+# API. Pinned exactly: the crate version is the version of the native library
+# it links, and the voice model in tools/install-voice-model.ps1 is the one
+# this version was checked against. `shared` links the prebuilt DLLs
+# (sherpa-onnx-c-api.dll, onnxruntime.dll) rather than static libraries built
+# for a different C runtime than the rest of the application.
+sherpa-onnx = { version = "=1.13.8", default-features = false, features = ["shared"] }
+# Already brought in by sherpa-onnx, and named here for one reason: Cargo runs
+# the build script of a `links` crate before the build script of a package
+# that depends on it directly. It is that script which unpacks the runtime
+# DLLs, and this package's build script and bundle configuration need them to
+# be there. No code uses this crate by name.
+sherpa-onnx-sys = { version = "=1.13.8", default-features = false, features = ["shared"] }
+tauri-plugin-single-instance = "2"
+
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.58"
 
@@ -66,6 +86,21 @@ features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_UI_Shell_PropertiesSystem",
+
+    # RFCOMM sockets for the BMAP control channel (AF_BTH / BTHPROTO_RFCOMM)
+    "Win32_Networking_WinSock",
+    "Win32_Devices_Bluetooth",
+    "Win32_System_IO",
+
+    # The current user's startup list ("Start with Windows")
+    "Win32_System_Registry",
+
+    # Voice feedback: playing synthesized speech through a chosen endpoint
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
 ]
 
 [features]
@@ -75,6 +110,12 @@ mock-only = []
 
 [dev-dependencies]
 tempfile = "3"
+
+# The voice model is checksummed before every first use, and unoptimized
+# SHA-256 over 128 MB takes seconds. Optimizing this one crate keeps a debug
+# build's first announcement from waiting on it.
+[profile.dev.package.sha2]
+opt-level = 3
 
 [profile.release]
 panic = "abort"

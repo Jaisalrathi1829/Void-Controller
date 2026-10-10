@@ -20,10 +20,14 @@
                   /             \
                  ▼               ▼
           MockBoseDevice    RealBoseDevice
-                                  │
-                                  ▼
-                       Windows PnP / CfgMgr32
-                       (read-only, today)
+                             /          \
+                            ▼            ▼
+              Windows PnP / CfgMgr32    BMAP control link
+              identity, connection,     noise-control mode
+              battery (read-only)       and custom level
+                                             │
+                                             ▼
+                                  RFCOMM socket (Winsock)
 ```
 
 The frontend never touches Bluetooth. It cannot: no command variant carries a
@@ -35,12 +39,16 @@ system rather than merely discouraged.
 ### Capability status is enforced, not documented
 
 `CapabilityStatus::Verified` is unreachable without a `HardwareProof`. That type
-has private fields and exactly two constructors:
+has private fields and three constructors:
 
 * `HardwareProof::observed(key, before, after, expected)` — returns `None` if
   `before == after`, or if `after != expected`. So "we set a local variable and
   read it back" and "the device changed to something we did not ask for" both
   fail to produce proof.
+* `HardwareProof::observed_at(…, observed_at)` — the same rules, for a change
+  the device confirmed at a known earlier time. Capability sets are rebuilt on
+  every snapshot; without this, old evidence would be re-stamped with the
+  current time and read as a fresh test.
 * `HardwareProof::observed_passively(key, detail)` — for read-only capabilities
   where the device volunteered a value.
 
@@ -54,12 +62,52 @@ confirm a state change is required by the signature to say
 `SentUnverified { reason }`, which the UI renders as *"Command sent. State could
 not be verified."* — deliberately not styled as success.
 
+### The control link is layered so each claim has one owner
+
+Noise control runs over Bose's BMAP protocol on an RFCOMM channel. The protocol
+itself — packet codec, operators, error codes, per-model addresses — is not
+implemented in this repository. It is the `bose-bmap` crate from
+[aaronsb/bosectl](https://github.com/aaronsb/bosectl), vendored under
+`vendor/bose-bmap` with a build-configuration-only patch so it compiles on
+Windows. What this project adds sits in `bose/bmap/`:
+
+| Module | Owns |
+| --- | --- |
+| `winsock` | An RFCOMM byte stream. The only platform-specific code. |
+| `stream` | Reassembling frames from that stream: a read may hold part of a frame or several. Implements upstream's `Transport`. |
+| `endpoint` | Which channel to use, and proof that it speaks BMAP before it is used. |
+| `noise` | A mode change as three separate facts: sent, acknowledged, confirmed by read-back. |
+| `custom` | The user-configurable modes: listing them, and changing the active one's level without touching anything else in it. |
+| `eq` | The three-band hardware equalizer: a strict read, and a write confirmed by read-back. |
+| `link` | One connection at a time; reconnect, backoff, and the last state the device confirmed. |
+
+Three rules hold across them:
+
+* **A successful write proves nothing.** Neither does an open socket, nor an
+  acknowledgement. A route is trusted only after the device answers a
+  read-only firmware request correctly; a mode change is reported as applied
+  only when the device then reports that mode.
+* **Nothing is sent blind.** The mode is read before any change, and a reply
+  that does not match the documented framing leaves the session read-only.
+* **A write is never repeated.** A read may be retried on a fresh connection.
+  A mode change that hits a dead channel is reported as failed-and-unknown,
+  not replayed.
+
+Only models on an explicit allowlist get a link at all. Upstream supports more
+models than this application has been run against, and "upstream supports it"
+is not the same claim as "tested here".
+
 ### The store always re-reads after a command
 
 `deviceStore.run()` calls `refresh()` after every command. The UI never assumes
 a command took effect and never optimistically updates device state; it re-reads
 and renders what came back. The EQ sliders keep a local draft purely so dragging
 feels responsive, and that draft is re-seeded from device state.
+
+The same holds when a command fails outright: a failure says nothing about the
+device's state, so it is asked. And while real headphones are connected the
+snapshot is re-read every few seconds, because the mode can be changed from the
+headphones' own button or from a phone.
 
 ### Why CfgMgr32 rather than WinRT for PnP
 
@@ -84,6 +132,65 @@ machines and a shared diagnostics report cannot be correlated back to hardware.
 The raw instance id is deliberately not included in the snapshot handed to the
 UI, so it cannot leak into a screenshot or an export.
 
+### Settings live natively, and one of them lives in Windows
+
+The Settings page switches are stored by the native layer in
+`settings.json` under the application's config folder, not in the webview.
+"Start minimized" and "minimize to tray" are acted on before any page has
+loaded, and the background watcher reads the notification switches while the
+window may be hidden.
+
+"Start with Windows" is the exception: it is not stored at all. It is on
+exactly when the current user's startup list has this application's entry
+pointing at the running executable, and is read from there every time.
+
+### Attached is not the same as connected
+
+Windows decides whether the headphones are connected. Separately, the
+application is either *attached* to them or not. Detached, it reports itself
+disconnected and opens no control link even with the headphones right there.
+That is all "auto-connect" and "auto reconnect" are: whether the application
+starts attached, and whether it lets go when the headphones leave. The
+application never forces a Bluetooth connection.
+
+### A native watcher notices the headphones come and go
+
+The window stops refreshing once the headphones are gone, so it could never
+notice them return, and it may be hidden when a notification is due. A small
+native task looks at Windows' device properties every few seconds — it sends
+nothing to the headphones — and tells the window to refresh, lets go of the
+headphones if "auto reconnect" is off, and raises notifications. Simulated
+devices are not watched: a simulation raising Windows notifications would be
+passing itself off as real.
+
+The one thing it does ask the headphones is their mode, and only while spoken
+mode announcements are switched on: the window stops reading the mode when it
+is hidden, and a change made on the headphones with the application in the
+tray would otherwise never be noticed. It is the same read the window makes.
+
+### Speech is told what happened; it is never asked to decide
+
+Voice feedback sits beside the device layer, not inside it. Nothing in the
+device layer calls it. It is handed two things after the fact — snapshots of
+the device, and what the watcher saw — and decides from those alone whether
+there is anything to say. There is no entry point for "the user asked for
+Quiet", so an announcement cannot run ahead of the headphones.
+
+Everything slow happens on one worker thread of its own: loading the model,
+synthesis, playback. The calls that feed it take a short lock and return, so
+speech cannot hold up a command, a refresh or the Bluetooth link, and a
+failure in speech is a status on the Settings page and nothing more.
+
+The model and the audio output sit behind one trait. The tests of scheduling
+and policy substitute it; the tests that claim real speech do not. See
+[voice-feedback.md](voice-feedback.md).
+
+### One instance
+
+Two copies of the application would fight over the headphones' single control
+connection, and "minimize to tray" makes a second launch likely. Starting the
+application again brings the running one forward instead.
+
 ## Stack
 
 | Layer | Choice | Note |
@@ -101,10 +208,12 @@ Named honestly rather than stubbed with fake controls:
 
 - Windows Core Audio (volume, mute, endpoints)
 - Windows media session transport controls
-- System tray, startup, auto-connect, notifications
-- SQLite persistence for settings and profiles
+- SQLite persistence (settings are a small JSON file; profiles live in the
+  webview's local storage)
 - The standalone discovery tool in `tools/bose-discovery/`
-- Any Bose vendor protocol
+- Any vendor-protocol feature other than noise control and the hardware
+  equalizer — wind block, creating or renaming custom modes, multipoint,
+  sidetone, voice prompts, rename
 
 The Settings and Profiles pages state plainly which controls are unavailable
 rather than showing switches that do nothing.

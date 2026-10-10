@@ -267,6 +267,23 @@ impl HardwareProof {
         after: &str,
         expected: &str,
     ) -> Option<Self> {
+        Self::observed_at(key, before, after, expected, crate::device::now_rfc3339())
+    }
+
+    /// As [`observed`](Self::observed), for a change the device confirmed at a
+    /// known earlier time.
+    ///
+    /// Evidence gathered once is reported many times — every snapshot rebuilds
+    /// the capability set — and stamping it with the time of the report would
+    /// quietly claim a fresh test that never happened. `observed_at` is when
+    /// the device was actually read.
+    pub fn observed_at(
+        key: CapabilityKey,
+        before: &str,
+        after: &str,
+        expected: &str,
+        observed_at: impl Into<String>,
+    ) -> Option<Self> {
         if before == after {
             return None;
         }
@@ -278,7 +295,7 @@ impl HardwareProof {
             observation: format!(
                 "device-reported state changed {before:?} -> {after:?}, matching requested {expected:?}"
             ),
-            verified_at: crate::device::now_rfc3339(),
+            verified_at: observed_at.into(),
         })
     }
 
@@ -394,6 +411,38 @@ mod tests {
         assert_eq!(cap.status, CapabilityStatus::Verified);
         assert!(cap.hardware_verified);
         assert!(cap.evidence.contains("Hardware-verified"));
+    }
+
+    /// The evidence must carry the time the device was read, not the time the
+    /// capability set happened to be rebuilt.
+    #[test]
+    fn proof_keeps_the_time_the_device_was_actually_read() {
+        let mut cap = Capability::unknown(CapabilityKey::NoiseControl, "init");
+        let proof = HardwareProof::observed_at(
+            CapabilityKey::NoiseControl,
+            "Quiet",
+            "Aware",
+            "Aware",
+            "2026-10-10T09:15:00Z",
+        )
+        .unwrap();
+        cap.verify_with_hardware(&proof, Mechanism::RfcommVendor)
+            .unwrap();
+        assert!(cap.evidence.contains("2026-10-10T09:15:00Z"));
+    }
+
+    /// A timestamp does not buy an exemption from the before/after rules.
+    #[test]
+    fn a_timestamped_proof_still_needs_a_real_change() {
+        let at = "2026-10-10T09:15:00Z";
+        assert!(
+            HardwareProof::observed_at(CapabilityKey::NoiseControl, "Quiet", "Quiet", "Quiet", at)
+                .is_none()
+        );
+        assert!(
+            HardwareProof::observed_at(CapabilityKey::NoiseControl, "Quiet", "Aware", "Quiet", at)
+                .is_none()
+        );
     }
 
     #[test]

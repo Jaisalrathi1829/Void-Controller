@@ -11,13 +11,7 @@ import {
   SectionLabel,
   SegmentedControl,
 } from "../primitives";
-import { useApp, type NoiseMode } from "../../store";
-
-const noiseOptions: { value: NoiseMode; label: string }[] = [
-  { value: "quiet", label: "Quiet" },
-  { value: "aware", label: "Aware" },
-  { value: "custom", label: "Custom" },
-];
+import { useApp, isUnavailable, type NoiseMode } from "../../store";
 
 export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) {
   const {
@@ -34,9 +28,22 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
     setHardwareEq,
     profiles,
     applyProfile,
+    busy,
   } = useApp();
 
-  const noiseDisabled = capabilities.noiseControl === "unknown" || capabilities.noiseControl === "unsupported";
+  const noiseDisabled = isUnavailable(capabilities.noiseControl);
+  const noiseSwitching = busy === "setNoiseControlMode" || busy === "setNoiseControl";
+  const noiseOptions: { value: NoiseMode; label: string; disabled?: boolean; hint?: string }[] = [
+    { value: "quiet", label: "Quiet" },
+    { value: "aware", label: "Aware" },
+    {
+      value: "custom",
+      label: "Custom",
+      // Shown when the headphones report it; not something this build can set.
+      disabled: isUnavailable(capabilities.customAnc),
+      hint: "Custom modes cannot be set from here yet.",
+    },
+  ];
 
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
@@ -68,7 +75,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
               options={noiseOptions}
               value={noise}
               onChange={setNoise}
-              disabled={noiseDisabled}
+              disabled={noiseDisabled || noiseSwitching}
               className="w-full [&>button]:flex-1"
             />
             {noiseDisabled && (

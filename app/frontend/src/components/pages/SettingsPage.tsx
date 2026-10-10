@@ -7,7 +7,9 @@ import {
   Toggle,
 } from "../primitives";
 import { Modal } from "../Modal";
+import { VoiceFeedbackPanel } from "./VoiceFeedbackPanel";
 import { useApp, type ThemePref } from "../../store";
+import type { SettingKey } from "@/services/ipc";
 import { cn } from "../ui/utils";
 
 function SettingRow({
@@ -36,14 +38,6 @@ function SettingRow({
   );
 }
 
-/**
- * Settings whose backing implementation does not exist in this build.
- *
- * The switches are rendered disabled with a reason rather than hidden, so the
- * roadmap stays visible without any of them pretending to work.
- */
-const NOT_IMPLEMENTED = "Not implemented in this build.";
-
 const themes: { value: ThemePref; label: string; icon: React.ElementType }[] = [
   { value: "system", label: "System", icon: Monitor },
   { value: "light", label: "Light", icon: Sun },
@@ -56,15 +50,40 @@ export function SettingsPage() {
   const { settings, toggleSetting, theme, setTheme, logLevel, setLogLevel, deviceName } = useApp();
   const [clearOpen, setClearOpen] = useState(false);
 
+  /**
+   * One switch. A switch that cannot be used in this build is shown disabled
+   * with the native layer's reason, rather than hidden or left to do nothing.
+   */
+  const row = (key: SettingKey, title: string, desc?: string) => (
+    <SettingRow title={title} desc={desc} unavailable={settings.unavailable[key]}>
+      <Toggle
+        label={title}
+        disabled={!!settings.unavailable[key]}
+        checked={settings[key]}
+        onChange={() => toggleSetting(key)}
+      />
+    </SettingRow>
+  );
+
   return (
     <div className="mx-auto max-w-2xl space-y-5">
       <Panel className="p-6">
         <SectionLabel>General</SectionLabel>
         <div className="mt-2">
-          <SettingRow title="Start with Windows" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.startWithWindows ?? false} onChange={() => toggleSetting("startWithWindows")} /></SettingRow>
-          <SettingRow title="Start minimized" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.startMinimized ?? false} onChange={() => toggleSetting("startMinimized")} /></SettingRow>
-          <SettingRow title="Minimize to tray" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.minimizeToTray ?? false} onChange={() => toggleSetting("minimizeToTray")} /></SettingRow>
-          <SettingRow title="Auto-connect" desc="Connect to preferred device on launch" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.autoConnect ?? false} onChange={() => toggleSetting("autoConnect")} /></SettingRow>
+          {row("startWithWindows", "Start with Windows", "Open the app when you sign in to Windows")}
+          {row(
+            "startMinimized",
+            "Start minimized",
+            settings.minimizeToTray
+              ? "Open in the tray instead of on screen"
+              : "Open minimized to the taskbar. With Minimize to tray on, it opens in the tray instead",
+          )}
+          {row(
+            "minimizeToTray",
+            "Minimize to tray",
+            "Closing or minimizing the window keeps the app running in the system tray",
+          )}
+          {row("autoConnect", "Auto-connect", "Connect to preferred device on launch")}
         </div>
       </Panel>
 
@@ -95,20 +114,24 @@ export function SettingsPage() {
         <SectionLabel>Device</SectionLabel>
         <div className="mt-2">
           <SettingRow title="Preferred Device" desc="Reconnect to this device automatically">
-            <span className="text-sm text-muted-foreground">{deviceName}</span>
+            <span className="text-sm text-muted-foreground" data-testid="preferred-device">
+              {settings.preferredDeviceName ?? deviceName}
+            </span>
           </SettingRow>
-          <SettingRow title="Auto reconnect" desc="Reconnect automatically when in range" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.autoReconnect ?? false} onChange={() => toggleSetting("autoReconnect")} /></SettingRow>
+          {row("autoReconnect", "Auto reconnect", "Reconnect automatically when in range")}
         </div>
       </Panel>
 
       <Panel className="p-6">
         <SectionLabel>Notifications</SectionLabel>
         <div className="mt-2">
-          <SettingRow title="Device connected" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.notifyConnected ?? false} onChange={() => toggleSetting("notifyConnected")} /></SettingRow>
-          <SettingRow title="Device disconnected" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.notifyDisconnected ?? false} onChange={() => toggleSetting("notifyDisconnected")} /></SettingRow>
-          <SettingRow title="Low battery" unavailable={NOT_IMPLEMENTED}><Toggle disabled checked={settings.notifyLowBattery ?? false} onChange={() => toggleSetting("notifyLowBattery")} /></SettingRow>
+          {row("notifyConnected", "Device connected")}
+          {row("notifyDisconnected", "Device disconnected")}
+          {row("notifyLowBattery", "Low battery", "At 20% or below")}
         </div>
       </Panel>
+
+      <VoiceFeedbackPanel />
 
       <Panel className="p-6">
         <SectionLabel>Diagnostics</SectionLabel>
