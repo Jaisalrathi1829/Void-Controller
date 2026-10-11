@@ -418,6 +418,13 @@ impl VoiceFeedback {
         } else {
             None
         };
+        self.observe_mode(confirmed);
+    }
+
+    /// Takes one reading of the mode from real, connected headphones — or
+    /// `None` for "they are not reporting one". Returns whether it differed
+    /// from the reading before, which is the only thing ever announced.
+    pub fn observe_mode(&self, confirmed: Option<policy::SpokenMode>) -> bool {
         let settings = self.inner.settings.get();
         let mut shared = self.inner.shared.lock();
         let announcement = shared.mode.observe(confirmed);
@@ -426,11 +433,13 @@ impl VoiceFeedback {
         let Shared { queue, mode, .. } = &mut *shared;
         queue.retain(|a| mode.still_true(a));
 
+        let changed = announcement.is_some();
         if let Some(announcement) = announcement {
             self.push_automatic(&mut shared, announcement, &settings);
         }
         drop(shared);
         self.inner.wake.notify_all();
+        changed
     }
 
     /// Takes what the background watcher saw: the headphones connecting,

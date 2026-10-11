@@ -751,3 +751,21 @@ standard Windows API, a standard Bluetooth profile, a publicly documented
 interface, or safely verified observation of the user's own device, it will be
 marked `UNSUPPORTED` with the reasoning recorded — and the work will stop there
 rather than escalating to riskier techniques.
+
+## Experiment 8 — the 200 ms settle pause is not needed (2026-10-11)
+
+Upstream's transports sleep 200 ms after every send before reading. This
+transport waits for the reply against a deadline instead of reading once, so
+the pause was removed (`Timing::standard`, `settle: 0`) and everything re-run
+on the headphones (firmware 1.0.6-80+f5f219b):
+
+- 40 `GET [31.3]` reads, 150 ms apart: 10–50 ms each, median 22 ms (200–202 ms
+  with the pause).
+- `hw_a1`–`hw_a3`, `hw_b0`–`hw_b7`: all pass. Quiet/Aware in both directions,
+  the custom mode and its level, and the equalizer each still confirm by
+  read-back.
+- A mode change is confirmed about 0.19 s after the request (1.2 s before).
+
+This is what makes it reasonable to ask for the mode every 150 ms while spoken
+mode announcements are on, which is how a press of the button on the
+headphones is noticed: the channel pushes nothing (Experiment 2).

@@ -98,11 +98,15 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// Values taken from upstream's transports (200 ms settle, 3 s reply,
-    /// 500 ms drain gap).
+    /// Upstream's reply and drain values (3 s reply, 500 ms drain gap), and
+    /// no settle pause. Upstream sleeps 200 ms after every send, which its
+    /// transports need because they then read once; this one waits for the
+    /// reply against a deadline, so the pause only delayed it. Measured on
+    /// the headphones, a mode read takes about 20 ms without it, and every
+    /// verified write still verifies (see docs/protocol-notes.md).
     pub const fn standard() -> Self {
         Self {
-            settle: Duration::from_millis(200),
+            settle: Duration::ZERO,
             reply_timeout: Duration::from_secs(3),
             drain_gap: Duration::from_millis(500),
             drain_limit: Duration::from_secs(6),

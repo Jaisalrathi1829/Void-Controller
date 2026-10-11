@@ -31,6 +31,17 @@ running, press **Check again**. Until the model is there the section says
 
 To remove the model, delete that folder.
 
+### An installer that carries the model
+
+`npm run tauri:build:voice` builds an installer with the model inside (about
+100 MB instead of 7 MB), so the installed application can speak with no
+separate step. It takes the model from the copy installed above — nothing is
+downloaded — and installs it beside the application, in `voice\`. A model in
+the per-user folder above is used in preference to the bundled one.
+
+That installer contains eSpeak NG's data files as well as its code; see
+`THIRD-PARTY-NOTICES.md` before giving it to anyone else.
+
 ## Settings
 
 | Control | Does |
@@ -72,10 +83,17 @@ mode, taken from real, connected headphones, that differ.
   that announcement is dropped. Only the mode the headphones are in is spoken.
 - A simulated device is never announced.
 
-The window reads the mode every few seconds while it is on screen. So that a
-change made on the headphones themselves — or with the window in the tray — is
-still spoken, the background watcher makes the same read while mode
-announcements are on. With them off, it does not.
+The headphones do not announce a mode change themselves: the control channel
+is strictly question and answer. So a change made with the button on the
+headphones is found only by asking, and while mode announcements are on the
+application asks every 150 ms — one four-byte question on the link that is
+already open, answered in about 20 ms. A press of the button is therefore
+spoken within roughly a fifth of a second. With mode announcements off, it
+does not ask.
+
+The price is a little more Bluetooth traffic while the setting is on, and so
+possibly a little more battery use on the headphones. That has not been
+measured.
 
 ### Connection
 
@@ -271,7 +289,8 @@ handful of runs, not benchmarks.
 | Test Voice, request to first sound, model not loaded | 2.5 s |
 | Same sentence again, request to first sound | 1 ms (cached) |
 | Stop Speaking, request to silence | 32–34 ms |
-| Mode change: request until the headphones confirm it | 1.2 s |
+| One mode read on the open link | 22 ms median (10–50 ms over 40 reads) |
+| Mode change: request until the headphones confirm it | 0.19 s (1.2 s before the transport's fixed 200 ms pause per request was removed) |
 | Headphones' confirmation to first sound, sentence made ready ahead (how the application runs) | 1–3 ms |
 | The same with the model loaded but the sentence new | 1.6–1.7 s |
 | The same with the model not loaded and nothing made ready | 3.7–5.8 s over three runs (in the one broken down: 1.6 s load, 2.1 s synthesis) |
@@ -339,7 +358,7 @@ speech is not something a test can establish.
 - The first announcement after a change of voice or speed takes a second or
   two unless the sentence was made ready ahead.
 - "Disconnected" is only ever heard through another output.
-- A mode change is announced when the application next reads the mode, which
-  is within a few seconds, not at the instant it happens.
+- A mode change made on the headphones is announced when the application
+  next asks, up to 150 ms later, not at the instant it happens.
 - Battery levels are as coarse as Windows reports them.
 - Windows only.

@@ -1106,6 +1106,45 @@ impl BoseDevice for RealBoseDevice {
             .map(|c| noise_state(&config, c, link.slots.as_ref())))
     }
 
+    /// One `GET` of the current mode over the link that is already open.
+    ///
+    /// Unlike [`noise_control`](Self::noise_control) this does not look the
+    /// device up in Windows first: it goes by what the last full refresh
+    /// found, so it costs one small request and can be made several times a
+    /// second. It honours the link's backoff, and reads a custom mode's name
+    /// only if that has never been read.
+    async fn peek_noise_control(&self) -> DeviceResult<Option<NoiseControlState>> {
+        if !self.is_attached() {
+            return Ok(None);
+        }
+        let obs = self.observed.read().clone();
+        if !obs.connected {
+            return Ok(None);
+        }
+        let Ok(target) = control_target(&obs) else {
+            return Ok(None);
+        };
+
+        let config = target.config.clone();
+        self.with_link(target, |link| {
+            let index = link.read_mode(false)?;
+            let status = link.status();
+            let unnamed = status.slots.is_none() && status.slots_problem.is_none();
+            if unnamed && preset_for_index(link.config(), index).is_none() {
+                let _ = link.read_slots(false);
+            }
+            Ok::<u8, LinkError>(index)
+        })
+        .await?
+        .map_err(device_error)?;
+
+        let link = self.link_status.read();
+        Ok(link
+            .confirmed
+            .as_ref()
+            .map(|c| noise_state(&config, c, link.slots.as_ref())))
+    }
+
     async fn set_noise_control(&self, mode: NoiseControlMode) -> DeviceResult<CommandOutcome> {
         let wanted = match mode {
             NoiseControlMode::Quiet => Wanted::Preset(Preset::Quiet),

@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "target/release/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "target/release/onnxruntime.dll": "onnxruntime.dll",
+      "target/voice-model/kokoro-int8-en-v0_19/": "voice/kokoro-int8-en-v0_19/"
+    }
+  }
+}

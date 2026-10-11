@@ -733,7 +733,11 @@ pub fn run() {
             let status_target = handle.clone();
             let voice = VoiceFeedback::start(
                 Arc::clone(&store),
-                Box::new(voice::backend::KokoroBackend::new(voice_root, Arc::clone(&store))),
+                Box::new(
+                    voice::backend::KokoroBackend::new(voice_root, Arc::clone(&store))
+                        // An installer that carries the model puts it here.
+                        .with_bundled(app.path().resource_dir().ok().map(|dir| dir.join("voice"))),
+                ),
                 voice::Timing::standard(),
                 move |status| {
                     let _ = status_target.emit(voice::VOICE_STATUS_EVENT, status);

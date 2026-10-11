@@ -203,7 +203,48 @@ fn notify(app: &AppHandle, notice: &Notice) {
 }
 
 /// Starts the background task. It runs for the life of the application.
+/// How often the headphones are asked for their mode while a change would
+/// be spoken. They do not announce a change themselves — the control channel
+/// is strictly question and answer — so a press of the button on the
+/// headphones is only ever found by asking, and this is the longest it can
+/// go unnoticed. One four-byte question each time, on the link already open.
+pub const MODE_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Asks the headphones for their mode several times a second, so that a
+/// change made on the headphones themselves is spoken as promptly as one made
+/// from the window. Runs only while mode announcements are on; otherwise it
+/// asks nothing.
+fn spawn_mode_listener(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(MODE_INTERVAL).await;
+            let Some(state) = app.try_state::<AppState>() else {
+                continue;
+            };
+            if !state.voice().wants_mode_readings() {
+                continue;
+            }
+            let device = state.current();
+            if device.source() != DeviceSource::Real {
+                continue;
+            }
+            // No reading — not connected, or the question went unanswered —
+            // is left alone here. Whether the headphones have gone is the
+            // slower watcher's call, and it takes more than one missed
+            // answer to make it.
+            if let Ok(Some(mode)) = device.peek_noise_control().await {
+                let spoken = crate::voice::policy::SpokenMode::from_state(&mode);
+                if state.voice().observe_mode(spoken) {
+                    // The window shows the mode too.
+                    let _ = app.emit(DEVICE_CHANGED_EVENT, ());
+                }
+            }
+        }
+    });
+}
+
 pub fn spawn(app: AppHandle) {
+    spawn_mode_listener(app.clone());
     tauri::async_runtime::spawn(async move {
         let mut watch = WatchState::default();
         loop {

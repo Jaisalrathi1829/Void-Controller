@@ -679,3 +679,29 @@ fn voice_hw_measurements() {
         mb(released)
     );
 }
+
+/// What asking often costs: the time one question takes on the open link.
+#[tokio::test]
+#[ignore = "needs the connected headphones and the application closed; read-only"]
+async fn voice_hw_peek_is_quick_enough_to_ask_often() {
+    let dev = RealBoseDevice::default();
+    let full = read(&dev).await;
+    let mut took = Vec::new();
+    for _ in 0..40 {
+        let started = Instant::now();
+        let mode = dev.peek_noise_control().await.expect("answered").expect("a mode");
+        took.push(started.elapsed());
+        assert_eq!(mode.mode, mode_in(&full));
+        tokio::time::sleep(crate::watcher::MODE_INTERVAL).await;
+    }
+    took.sort();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    println!(
+        "\n  40 questions, {} ms apart: fastest {:.0} ms, median {:.0} ms, slowest {:.0} ms",
+        crate::watcher::MODE_INTERVAL.as_millis(),
+        ms(took[0]),
+        ms(took[20]),
+        ms(took[39])
+    );
+    assert!(took[20] < crate::watcher::MODE_INTERVAL, "a question outlasts the gap between them");
+}

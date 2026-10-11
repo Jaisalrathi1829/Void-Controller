@@ -41,6 +41,16 @@ pub trait BoseDevice: Send + Sync {
 
     async fn noise_control(&self) -> DeviceResult<Option<NoiseControlState>>;
 
+    /// The mode, asked for as cheaply as the backend can: one question to the
+    /// device and nothing else. For asking often.
+    ///
+    /// `Ok(None)` means there is nothing to ask right now. An error means the
+    /// question was asked and not answered; it says nothing about the mode.
+    /// The default has nothing to ask.
+    async fn peek_noise_control(&self) -> DeviceResult<Option<NoiseControlState>> {
+        Ok(None)
+    }
+
     /// Implementations must re-read the device's own state and return
     /// `Applied` only when it matches `mode`.
     async fn set_noise_control(&self, mode: NoiseControlMode)
