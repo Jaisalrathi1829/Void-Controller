@@ -8,8 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Last pushed commit: `659446f` — near-instant voice feedback, installer with the voice model
-- **Not yet committed:** the whole Android port, the battery-over-protocol fallback, and this file (see [§12](#12-git-state))
+- Everything described here is committed and pushed. The commit that holds the code is `55e3684` (see [§12](#12-git-state))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -495,29 +494,23 @@ phone, not for distribution.
 | Phone APK crashes on the emulator | Expected; build with `-Target x86_64` |
 | Anything on the phone | `adb logcat -s Aurora` |
 
-To get back to a known-good Windows state: check out `659446f`.
+To get back to a known-good state, check out `55e3684` (Windows and Android), or `659446f` for the last commit before the Android port (Windows only, confirmed by ear).
 
 ---
 
 ## 12. Git state
 
-Pushed to `origin/main`:
+All on `origin/main`, nothing left uncommitted:
 
-- `365b820` — verified noise control, custom mode, hardware EQ, settings,
-  local voice feedback
-- `659446f` — 150 ms button detection, settle pause removed, installer with
-  the voice model, verbatim-path fix
+| Commit | Holds |
+| --- | --- |
+| `365b820` | Verified noise control, custom mode, hardware EQ, settings, local voice feedback |
+| `659446f` | 150 ms button detection, settle pause removed, Windows installer with the voice model, verbatim-path fix |
+| `55e3684` | The Android port (`src/android/`, `gen/android/`, `tools/build-android.ps1`, phone layout), battery over the control protocol, `DeviceError::NotPermitted`, `docs/android.md`, and this file |
 
-**Uncommitted in the working tree (as of this file):**
+Later commits that touch only this document are bookkeeping; `55e3684` is the
+one to return to for the code.
 
-- The Android port: `src/android/`, `gen/android/` (Kotlin, manifest,
-  Gradle), `capabilities/mobile.json`, `tauri.android.conf.json`,
-  `tools/build-android.ps1`, phone layout and Android wording in the
-  frontend, `mobile.test.tsx`
-- Battery over the control protocol as a fallback (`read_battery`,
-  `reported_battery`), and the product-id and battery diagnostics
-- `DeviceError::NotPermitted`, `request_bluetooth_permission`
-- `.gitignore` change so `gen/android` is tracked
-- `docs/android.md` and this file
-
-Say "wrap it up" to commit and push them.
+Not in the repository, by design: build output (`target/`, `gen/android/app/build/`),
+the compiled libraries, the installers and APKs, and the voice model. They are
+rebuilt or reinstalled with the commands in [§8](#8-build-run-test--exact-commands).
