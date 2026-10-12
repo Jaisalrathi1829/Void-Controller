@@ -9,8 +9,30 @@ use sherpa_onnx::{
     GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsKokoroModelConfig,
     OfflineTtsModelConfig,
 };
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// The folder the speech runtime took its pronunciation data from, the first
+/// time a model was loaded in this process.
+///
+/// The runtime turns text into sounds with eSpeak NG, and eSpeak NG is set up
+/// once per process: the first model's data folder is the one it reads from
+/// then on, whatever folder a later model is loaded from. Found on
+/// 2026-10-12, when a test that loaded the model from a temporary folder ran
+/// first and deleted the folder: every model loaded afterwards in that
+/// process — from the proper place, with every checksum passing — spoke a
+/// third of a second of noise, because the dictionary it was still looking
+/// for had gone.
+///
+/// Nothing can repoint it, so this is remembered instead, and a load that
+/// would run on a folder that is no longer intact is refused with the reason.
+static PRONUNCIATION_DATA: OnceLock<PathBuf> = OnceLock::new();
+
+/// See [`PRONUNCIATION_DATA`]. `None` until a model has been loaded.
+pub fn pronunciation_data_dir() -> Option<PathBuf> {
+    PRONUNCIATION_DATA.get().cloned()
+}
 
 /// The slowest and fastest speech offered. Outside this range Kokoro's output
 /// stops sounding like speech worth listening to.
@@ -83,6 +105,22 @@ impl Kokoro {
     }
 
     fn load(files: &ModelFiles) -> Result<Self, String> {
+        // The runtime will go on reading pronunciation data from wherever it
+        // first found it. If that is somewhere else, and no longer what it
+        // was, this model would load and then mispronounce everything.
+        if let Some(first) = PRONUNCIATION_DATA.get() {
+            if first != &files.espeak_data && !super::assets::pronunciation_data_intact(first) {
+                return Err(format!(
+                    "The speech runtime read its pronunciation data from {} when it first \
+                     loaded a model, and reads it from there for as long as the application \
+                     runs. That folder is no longer intact. Restart the application to use the \
+                     model in {}.",
+                    first.display(),
+                    files.dir.display()
+                ));
+            }
+        }
+
         let path = |p: &std::path::Path| Some(p.to_string_lossy().into_owned());
         let config = OfflineTtsConfig {
             model: OfflineTtsModelConfig {
@@ -122,6 +160,8 @@ impl Kokoro {
                 "The installed model produces {rate} Hz audio where {SAMPLE_RATE} Hz is expected."
             ));
         }
+        // Kept only if nothing is there yet: the first is the one that counts.
+        let _ = PRONUNCIATION_DATA.set(files.espeak_data.clone());
         Ok(Self { tts })
     }
 }

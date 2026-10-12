@@ -337,9 +337,24 @@ mod tests {
 
     /// The installed application's folder has spaces in its name and arrives
     /// with the verbatim prefix. The real runtime has to load from there.
+    ///
+    /// **Run this one by itself**, and it is named so that the filters the
+    /// other real-model tests are run with do not pick it up:
+    ///
+    /// ```text
+    /// cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture bundled_real_model
+    /// ```
+    ///
+    /// It loads the model from a temporary folder and then removes the
+    /// folder. The speech runtime keeps reading its pronunciation data from
+    /// the first folder a model was loaded from in the process (see
+    /// `kokoro.rs`), so any real-model test that ran after this one in the
+    /// same process would be speaking from a folder that is gone. Its last
+    /// step checks exactly that: with the folder removed, a model in another
+    /// place is refused with the reason rather than loaded to speak noise.
     #[test]
-    #[ignore = "needs the voice model installed; copies it (150 MB) to a temporary folder"]
-    fn kokoro_real_loads_a_bundled_model_from_the_installed_kind_of_path() {
+    #[ignore = "needs the voice model installed; copies it (150 MB) to a temporary folder; run alone"]
+    fn bundled_real_model_loads_from_the_installed_kind_of_path() {
         fn copy(from: &std::path::Path, to: &std::path::Path) {
             std::fs::create_dir_all(to).unwrap();
             for entry in std::fs::read_dir(from).unwrap() {
@@ -370,6 +385,27 @@ mod tests {
         let speech = b.synthesize("Voice feedback is ready.", voice, 1.0, &cancel).unwrap();
         assert!(speech.samples.len() > 12_000);
         b.unload();
+
+        // What the runtime will read its pronunciation data from, from now on.
+        let copy = assets::locate(&plain_path(verbatim.clone())).expect("the copy is still there");
+        let first = crate::voice::kokoro::pronunciation_data_dir().expect("a model was loaded");
+        if first != copy.espeak_data {
+            // Another real-model test loaded a model before this one, in the
+            // same process. Then that folder is the one that counts, it is
+            // still there, and there is nothing to show here.
+            println!("  not run alone: the runtime's pronunciation data is in {}", first.display());
+            return;
+        }
+
+        // The folder goes, as an uninstalled or moved model's would.
+        drop(temp);
+        assert!(!assets::pronunciation_data_intact(&first));
+        let refused = crate::voice::kokoro::Kokoro::load_verified(&installed)
+            .err()
+            .expect("a model elsewhere is not loaded onto pronunciation data that has gone");
+        println!("  refused with: {refused}");
+        assert!(refused.contains("Restart the application"), "{refused}");
+        assert!(refused.contains(&first.display().to_string()), "{refused}");
     }
 
     /// On Android the bundled model is unpacked on demand, and that can fail

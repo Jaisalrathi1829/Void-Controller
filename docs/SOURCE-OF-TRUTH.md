@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Everything described here is committed and pushed. The commit that holds the code is `b5c0446` (see [§12](#12-git-state))
+- Committed and pushed: everything up to `b5c0446` (see [§12](#12-git-state)). The hardware run of 2026-10-12 and the fixes it led to — [§15](#15-hardware-run-2026-10-12) — are in the working tree and **not yet committed**
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -174,9 +174,6 @@ while reporting its problems.
 - Battery level on Android
 - The volume slider moving the headphones' volume from a phone
 - The spoken and shown "connected to …" on a phone
-- How long a mode listing takes on the headphones now that it ends at the
-  device's own end marker (Experiment 9) — expected tens of milliseconds,
-  not measured
 - Connect / disconnect announcements and the low-battery warning on real
   hardware (either platform) — logic is unit-tested only
 - Whether the headphones accept a control connection from the phone while a
@@ -458,7 +455,8 @@ cargo test --manifest-path vendor/bose-bmap/Cargo.toml
 ```
 
 Hardware tests need the headphones connected to the PC **and the app
-closed**, one at a time (`--test-threads=1`):
+closed**, one at a time (`--test-threads=1`). The third command is run by
+itself, never in the same process as the second (why: [§15](#15-hardware-run-2026-10-12)):
 
 ```powershell
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_a hw_b
@@ -466,6 +464,10 @@ cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocaptu
 
 ```powershell
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 kokoro_real voice_real voice_hw
+```
+
+```powershell
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture bundled_real_model
 ```
 
 Lint (two old lints in first-commit lines are allowed):
@@ -478,11 +480,11 @@ cargo clippy --manifest-path app/src-tauri/Cargo.toml --lib --tests -- -D warnin
 
 | Suite | Result | When |
 | --- | --- | --- |
-| Rust app | 477 passed, 0 failed, 38 ignored | 2026-10-12 |
-| Frontend | 196 passed; `tsc` clean; `vite build` OK | 2026-10-12 |
+| Rust app | 487 passed, 0 failed, 39 ignored | 2026-10-12 |
+| Frontend | 215 passed; `tsc` clean; `vite build` OK | 2026-10-12 |
 | Vendored crate / tools | 103 / 16 / 27 / 32 passed | 2026-10-11 |
 | Clippy | clean but for the two old lints allowed above | 2026-10-12 |
-| Hardware (Windows) | `hw_a1–3`, `hw_b0–b7`, `voice_hw_*`, `hw_diag_battery`, `hw_diag_product_id` all pass | 2026-10-11 — **not re-run** after the changes of 2026-10-12, which touch how a mode listing is read |
+| Hardware (Windows) | `hw_a1–3`, `hw_b0–b8`, `hw_diag_mode_slots`, all `kokoro_real_*`, `voice_real_*` and `voice_hw_*`, and `bundled_real_model` by itself: all pass | 2026-10-12, after every change described in this document — see [§15](#15-hardware-run-2026-10-12) |
 | Android compile | `aarch64` and `x86_64` | 2026-10-12 |
 
 `npm run lint` has never worked: the repo has no ESLint config.
@@ -622,11 +624,8 @@ there is a new `hostName`.
 - **Anything on the phone.** The build with these changes has not been run
   on the S24 Ultra. Smoothness in particular cannot be judged on the
   emulator, which draws in software.
-- **The headphones, at all, after these changes.** The Windows hardware tests
-  were not re-run: the desktop application was open and holds the one control
-  connection. The change that most wants it is the mode-list read
-  (Experiment 9): run `hw_diag_mode_slots`, `hw_b4`, `hw_b5` and the
-  `voice_hw_*` tests with the application closed.
+- ~~The headphones, at all, after these changes.~~ Done later the same day,
+  on Windows: [§15](#15-hardware-run-2026-10-12). It found two more waits.
 - Memory on a phone; the volume slider with the headphones as the phone's
   output; the spoken "connected to …".
 - The Windows installer has not been rebuilt. The desktop application the
@@ -708,5 +707,73 @@ brings the first forward.
   did not go through them one by one.
 - A second monitor, or one unplugged while the widget was on it. The
   placement rule for that is unit-tested only.
-- The Windows hardware tests have still not been re-run since the changes of
-  §13.
+- The widget against the headphones by test. (The control path under it was:
+  [§15](#15-hardware-run-2026-10-12).)
+
+---
+
+## 15. Hardware run (2026-10-12)
+
+The owner closed the desktop application and asked for the hardware tests.
+This is what was run on the headphones, what it found, and what was changed
+because of it.
+
+### What it found
+
+| # | Found | By | Done |
+| --- | --- | --- | --- |
+| 1 | The mode list does end with `RESULT` from the address asked, as the fix of §13 assumed. The live reply also carries three status frames the fixture did not have | `hw_diag_mode_slots`, wire log | Nothing to change. Recorded in Experiment 9 |
+| 2 | A switch **into the custom mode** still took about 600 ms, against 100 ms for a preset. The request was sent through a call that waits 500 ms for silence after the reply; the headphones send one `PROCESSING` and nothing more | New test `hw_b8`, then the wire log of `hw_b5` | Sent as a single-reply request (`request_slot` in `noise.rs`). Experiment 10 |
+| 3 | A change of the **custom mode's level** had the same wait | Timestamps in `hw_b5` | Same fix (`set_level` in `custom.rs`) |
+| 4 | Three voice tests failed when the suite was run as one command. A test that loads the model from a temporary folder ran first and deleted the folder; the speech runtime (eSpeak NG) reads pronunciation data from the first folder of the process for the rest of it, so every later model spoke 0.3 s of noise with all checksums passing | The failures, and "Can't read dictionary file" naming the deleted folder | That test renamed to `bundled_real_model_…` and run by itself. And in the application: a model is refused, with a message saying to restart, if the folder the runtime is reading from is no longer intact (`PRONUNCIATION_DATA` in `kokoro.rs`) |
+| 5 | Reading the mode back every 50 ms instead of every 250 ms after a switch made no measurable difference: the new mode is there at the first read-back | `hw_b8` before and after | Kept at 50 ms; the comment says what was actually found |
+
+Finding 2 is the part of "the voice prompt lags on Focus" that was still
+there. It affected a switch made from the application or the widget, on both
+Windows and the phone, and not a press of the headphones' own button.
+
+### Measured on the headphones (Windows, debug build)
+
+| | Before this run | After |
+| --- | --- | --- |
+| Listing the modes | reply + 500 ms (before §13) | 22–46 ms, median 35 ms, nine reads |
+| Switch into the custom mode, asked to confirmed | 596–628 ms | 80–119 ms |
+| Switch between presets, or out of the custom mode | 65–112 ms | 59–112 ms |
+| Change of the custom mode's level | about 730 ms each | about 200–280 ms each |
+| One mode read, 40 in a row 150 ms apart | 22 ms median (2026-10-11) | 10 ms median, 8–64 ms |
+| Mode change asked to confirmed, in the voice tests | 190 ms (2026-10-11) | 114–130 ms |
+| Confirmed to first sound, sentence made ready | 1–3 ms | 1–2 ms |
+| Refresh straight after a switch (mode, list if due, EQ) | not measured | 38–86 ms |
+
+### What passed, after the changes
+
+| Command | Result |
+| --- | --- |
+| `hw_a hw_b` | 12 of 12: `hw_a1`–`a3`, `hw_b0`–`b8`. Quiet and Aware both ways, the custom mode and its level with the saved configuration byte for byte restored, the equalizer, three reconnections |
+| `kokoro_real voice_real voice_hw` | 16 of 16, in one process. Real speech in all 11 voices; rendered to "Headphones (Aurora)" with its meter moving; a confirmed mode change spoken and an unchanged one not |
+| `bundled_real_model` | 1 of 1, by itself, including the refusal once its folder is gone |
+| `hw_diag_mode_slots` | Slots as before: Quiet, Aware, "Focus" at raw 6, one empty |
+| Unit tests | 487 Rust, 215 frontend |
+
+### State the hardware was left in
+
+Mode **Aware** · "Focus" at level **4** · EQ bass **+4**, mid **+1**, treble
+**+4** — as it was found.
+
+### Not checked
+
+- The new builds below have not been run by anyone. The installed desktop
+  application and the phone are still on the builds from before findings 2
+  and 3.
+- The switch into the custom mode has been timed on Windows only.
+- `[31.2]`, `[31.5]` and `[31.8]`, which turn up in the mode list's reply,
+  have not been looked into.
+
+### Builds made after it
+
+| | |
+| --- | --- |
+| Windows installer | `app\src-tauri\target\release\bundle\nsis\Bose QC Control Center_0.1.0_x64-setup.exe`, 2026-10-12 18:09, 105,273,630 bytes, SHA-256 `92912ceb0918dadfba1bd598214eb30f78a8c01dc28653a2a00ef8d0243f81eb` |
+| Phone | `app\src-tauri\target\android\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-12 18:11, 139,191,458 bytes, SHA-256 `e086bae7949d4c937132eae88165062b6807dda02788f362ad6d3cde3e7c582b` |
+
+These replace the ones listed in §13.

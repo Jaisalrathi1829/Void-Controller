@@ -153,6 +153,13 @@ Switches the noise-control mode and switches it back:
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b1
 ```
 
+Times a switch into the custom mode against a switch between the presets
+(switches the mode six times and restores it):
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b8
+```
+
 Changes one equalizer band by one step and restores it:
 
 ```bash

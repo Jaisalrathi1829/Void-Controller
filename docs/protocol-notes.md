@@ -826,8 +826,88 @@ custom mode only if it was not read within the last ten seconds.
 transport returns at the last frame without a further read, by unit test
 against that capture, including the reply arriving split across reads.
 
-**Not established:** the time a listing now takes on the headphones. The
-expectation is tens of milliseconds, like any other request; it has not been
-measured, because the desktop application was running and holds the one
-control connection. `hw_diag_mode_slots` prints the wire log and will show
-it.
+**Measured later the same day** (`hw_diag_mode_slots`, application closed):
+nine listings on one connection took 22–46 ms each, median 35 ms, where each
+used to take the reply plus 500 ms. Every one of the nine ended with
+`[31.1] RESULT` as its last frame.
+
+The live reply is fuller than the fixture taken from Experiment 6 suggests.
+The headphones put the state of three neighbouring functions in with it:
+
+```
+1F 01 07 00                 [31.1] PROCESSING
+1F 02 03 06 02 02 00 00 00 09   [31.2] STATUS
+1F 03 03 01 01              [31.3] STATUS   the current mode
+1F 05 03 01 01              [31.5] STATUS
+1F 06 07 00                 [31.6] PROCESSING
+1F 06 03 2F …  × 4          [31.6] STATUS, 47 bytes per slot
+1F 06 06 00                 [31.6] RESULT
+1F 08 03 02 04 07           [31.8] STATUS
+1F 01 06 00                 [31.1] RESULT   last
+```
+
+`[31.2]`, `[31.5]` and `[31.8]` are not read by anything here; what they mean
+has not been looked into. They do not change the rule: the reply is over when
+the address that was asked says `RESULT`.
+
+## Experiment 10 — two requests that were waited out for nothing (2026-10-12)
+
+**Found by measuring, with the application closed.** The same day's fix to
+the mode list (Experiment 9) was supposed to make a switch into the custom
+mode as quick as a switch between the presets. Timed on the headphones
+(`hw_b8`), it was not:
+
+| | Confirmed after |
+| --- | --- |
+| Aware → custom | 628 ms |
+| Custom → Quiet | 86 ms |
+| Quiet → custom | 599 ms |
+| Custom → Aware | 107 ms |
+| Aware → Quiet | 108 ms |
+
+The wire log of the slow one shows where the half second went:
+
+```
+TX  1F 03 05 02 02 00     START [31.3], slot 2
+RX  1F 03 07 00           PROCESSING
+        … 500 ms in which nothing arrives …
+TX  1F 03 01 00           read back
+RX  1F 03 03 01 02        the mode is 2
+```
+
+The headphones answer a switch with one `PROCESSING` and nothing after it,
+and the mode has already changed by the first read-back. But the request for
+a custom slot was sent through the one call upstream's connection offers for
+an arbitrary frame, and that call gathers replies until the device has been
+silent for 500 ms. A preset goes through upstream's own `set_mode`, which
+takes the first reply and returns — which is why only the custom mode was
+slow, and why it was slow by so nearly the same amount each time.
+
+The custom mode's **level** had the same wait for the same reason: its write
+(`SETGET [31.6]`) is answered by one frame, the slot's new configuration, and
+was sent the same way.
+
+Both are now sent as what they are — one request, the first reply from the
+address asked — through the transport the connection runs over
+(`request_slot` in `noise.rs`, `set_level` in `custom.rs`). The frames on the
+wire are byte for byte what they were; only how long the reply is listened
+for has changed.
+
+Measured afterwards, same headphones, same session:
+
+| | Before | After |
+| --- | --- | --- |
+| Switch into the custom mode, request to confirmed | 596–628 ms | 80–119 ms |
+| Switch between presets, or out of the custom mode | 65–112 ms | 59–112 ms |
+| Change of the custom mode's level, each | about 730 ms | about 200–280 ms |
+| Listing the modes (Experiment 9) | reply + 500 ms | 22–46 ms |
+
+`hw_a1`–`hw_a3` and `hw_b0`–`hw_b8` all pass after the change, including the
+check in `hw_b5` that the custom mode's saved configuration is byte for byte
+what it was before its level was changed and put back.
+
+One other thing was tried and made no difference, and is recorded for that
+reason: reading the mode back every 50 ms after a switch instead of every
+250 ms. The new mode is there at the first read-back either way. The shorter
+interval was kept, since it costs nothing and would matter if a first look
+ever came too early.

@@ -299,12 +299,23 @@ the mode in fact changed on the headphones.
 up. Create one in the Bose app, then reopen this page. This application adjusts an existing custom mode; it does
 not create one.
 
-### The level slider takes a few seconds
+### The level slider takes a moment
 
-Expected. A level change is written to the headphones and then read back
-before the slider moves, and the slider stays where the headphones say it is.
-If it springs back to its old position with a warning, the change was not
-confirmed.
+A level change is written to the headphones and then read back before the
+slider moves, and the slider stays where the headphones say it is. That takes
+about a quarter of a second. (It used to take most of a second, and before
+that about three: see Experiment 10 in [protocol-notes.md](protocol-notes.md).)
+If the slider springs back to its old position with a warning, the change was
+not confirmed.
+
+### Voice Feedback says to restart the application
+
+The speech runtime reads its pronunciation data from the folder of the first
+voice model it loaded, for as long as the application runs. If that folder
+has since been removed or changed — the model uninstalled, or installed
+somewhere else while the application was open — it will not load a model from
+another place on top of it, because the speech would come out wrong. Restart
+the application.
 
 ### The level changed my custom mode in the Bose app
 

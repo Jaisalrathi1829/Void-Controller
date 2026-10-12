@@ -624,7 +624,8 @@ impl<C: Connector> BmapLink<C> {
         self.refuse_writes_on_bad_framing()?;
 
         let session = self.session.as_ref().expect("read_mode left a session open");
-        let result = noise::change_to(&session.conn, &target, self.timing.verify);
+        let result =
+            noise::change_to(&session.conn, &session.transport, &target, self.timing.verify);
         self.collect_wire_log();
 
         let change = match result {
@@ -677,7 +678,13 @@ impl<C: Connector> BmapLink<C> {
         }
 
         let session = self.session.as_ref().expect("read_mode left a session open");
-        let result = custom::set_level(&session.conn, index, raw, self.timing.level_verify);
+        let result = custom::set_level(
+            &session.conn,
+            &session.transport,
+            index,
+            raw,
+            self.timing.level_verify,
+        );
         self.collect_wire_log();
 
         let change = match result {

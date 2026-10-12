@@ -219,6 +219,22 @@ pub fn verify(files: &ModelFiles) -> Result<(), AssetProblem> {
     check(&files.dir, &PINNED_FILES)
 }
 
+/// Whether the pronunciation data in `espeak_data` is still, byte for byte,
+/// the pinned release's.
+///
+/// Asked about a folder a model was loaded from earlier, which the speech
+/// runtime may still be reading: see `kokoro.rs`.
+pub fn pronunciation_data_intact(espeak_data: &Path) -> bool {
+    let Some(dir) = espeak_data.parent() else {
+        return false;
+    };
+    let prefix = format!("{ESPEAK_DATA_DIR}/");
+    PINNED_FILES
+        .iter()
+        .filter(|file| file.path.starts_with(&prefix))
+        .all(|file| check(dir, std::slice::from_ref(file)).is_ok())
+}
+
 /// Where the pinned model belongs under the application's local data folder.
 pub fn model_dir(voice_root: &Path) -> PathBuf {
     voice_root.join(MODEL_NAME)

@@ -16,7 +16,7 @@
 
 use bmap::device::DeviceConfig;
 use bmap::error::{BmapError, BmapResult};
-use bmap::protocol::Operator;
+use bmap::protocol::{bmap_packet, parse_all_responses, Operator};
 use bmap::{BmapConnection, Transport};
 use std::time::Duration;
 
@@ -162,22 +162,28 @@ pub struct VerifyPolicy {
 }
 
 impl VerifyPolicy {
-    /// Up to five read-backs, 250 ms apart, on top of the transport's own
-    /// settle time per read: roughly two seconds at most.
+    /// Up to thirty read-backs, 50 ms apart: roughly two seconds at most.
+    ///
+    /// It was five, 250 ms apart. On the test headphones the new mode is
+    /// there by the first read-back, for a preset and for a custom mode
+    /// alike, so the interval rarely comes into it; when the first look is
+    /// too early, the next is now a twentieth of a second later rather than
+    /// a quarter. A read-back is one small question, the same one asked
+    /// every 150 ms all the while mode announcements are on.
     pub const fn standard() -> Self {
         Self {
-            attempts: 5,
-            interval: Duration::from_millis(250),
+            attempts: 30,
+            interval: Duration::from_millis(50),
         }
     }
 
     /// For a custom mode's level. Each read-back lists every mode, which is
-    /// slower than a single mode read, and the device applies a level change
-    /// to the active mode at once — so fewer attempts.
+    /// a longer answer than a single mode read, so they are a little further
+    /// apart and there are fewer of them: about a second and a half at most.
     pub const fn level() -> Self {
         Self {
-            attempts: 3,
-            interval: Duration::from_millis(250),
+            attempts: 16,
+            interval: Duration::from_millis(60),
         }
     }
 
@@ -209,11 +215,23 @@ pub fn read_mode<T: Transport>(conn: &BmapConnection<T>) -> BmapResult<u8> {
 /// when two slots share one. This sends the same request — `START` on the
 /// current-mode function, built by upstream's codec — by index instead, and
 /// applies the same acceptance rule to the reply.
-fn request_slot<T: Transport>(conn: &BmapConnection<T>, index: u8) -> BmapResult<()> {
+///
+/// It is sent the way upstream sends it for a preset: one request, and the
+/// first reply from the address that was asked. `raw` is the transport the
+/// connection runs over, because the connection itself only offers that for
+/// its own named modes. What it does offer for an arbitrary request collects
+/// frames until the device has been silent for half a second — and the
+/// headphones answer a switch with a single `PROCESSING` and nothing after
+/// it, so that was half a second spent waiting for nothing, every time, and
+/// only for the custom mode. Measured on the headphones: a switch into the
+/// custom mode confirmed after about 600 ms, against 100 ms for a preset,
+/// with the mode already changed by the first read-back.
+fn request_slot<T: Transport>(conn: &BmapConnection<T>, raw: &T, index: u8) -> BmapResult<()> {
     let addr = conn.config().current_mode.ok_or_else(|| {
         BmapError::Unsupported(format!("{} has no mode switching", conn.config().info.name))
     })?;
-    let replies = conn.start_drain(addr, &[index, 0])?;
+    let packet = bmap_packet(addr.0, addr.1, Operator::Start, &[index, 0]);
+    let replies = parse_all_responses(&raw.send_recv(&packet)?);
     for reply in replies
         .iter()
         .filter(|r| (r.fblock, r.func) == (addr.0, addr.1))
@@ -240,10 +258,11 @@ fn request_slot<T: Transport>(conn: &BmapConnection<T>, index: u8) -> BmapResult
 /// Requests a preset and confirms the outcome by reading the mode back.
 pub fn change_mode<T: Transport>(
     conn: &BmapConnection<T>,
+    raw: &T,
     preset: Preset,
     policy: VerifyPolicy,
 ) -> BmapResult<ModeChange> {
-    change_to(conn, &Target::Preset(preset), policy)
+    change_to(conn, raw, &Target::Preset(preset), policy)
 }
 
 /// Requests a mode — a preset or a custom slot — and confirms the outcome by
@@ -254,6 +273,7 @@ pub fn change_mode<T: Transport>(
 /// Every case in which a request went out produces a [`ModeChange`].
 pub fn change_to<T: Transport>(
     conn: &BmapConnection<T>,
+    raw: &T,
     target: &Target,
     policy: VerifyPolicy,
 ) -> BmapResult<ModeChange> {
@@ -277,7 +297,7 @@ pub fn change_to<T: Transport>(
 
     let request = match target {
         Target::Preset(preset) => conn.set_mode(preset.key(), false),
-        Target::Slot { index, .. } => request_slot(conn, *index),
+        Target::Slot { index, .. } => request_slot(conn, raw, *index),
     };
     let ack = match request {
         Ok(()) => Ack::Acknowledged,
@@ -386,6 +406,9 @@ mod tests {
     struct Script {
         replies: RefCell<VecDeque<BmapResult<Vec<u8>>>>,
         sent: RefCell<Vec<Vec<u8>>>,
+        /// How many requests were sent as ones whose reply is collected until
+        /// the device falls silent.
+        drains: std::cell::Cell<usize>,
     }
 
     impl Script {
@@ -393,6 +416,7 @@ mod tests {
             Self {
                 replies: RefCell::new(replies.into()),
                 sent: RefCell::new(Vec::new()),
+                drains: std::cell::Cell::new(0),
             }
         }
     }
@@ -430,8 +454,50 @@ mod tests {
         Err(BmapError::Timeout("No reply".into()))
     }
 
-    fn prince(replies: Vec<BmapResult<Vec<u8>>>) -> BmapConnection<Script> {
-        BmapConnection::new(Script::new(replies), devices::qc_prince())
+    /// A script shared with the connection through an Rc, so a test can see
+    /// what was sent after the connection has taken ownership of it — and so
+    /// that the connection and the transport handed in beside it are one.
+    struct Shared(Rc<Script>);
+    impl Transport for Shared {
+        fn send_recv(&self, p: &[u8]) -> BmapResult<Vec<u8>> {
+            self.0.send_recv(p)
+        }
+        fn send_recv_drain(&self, p: &[u8]) -> BmapResult<Vec<u8>> {
+            self.0.drains.set(self.0.drains.get() + 1);
+            self.0.send_recv(p)
+        }
+    }
+
+    /// A connection and the transport underneath it, as the link holds them.
+    struct Rig {
+        conn: BmapConnection<Shared>,
+        raw: Shared,
+    }
+
+    fn rig_for(config: DeviceConfig, replies: Vec<BmapResult<Vec<u8>>>) -> (Rig, Rc<Script>) {
+        let script = Rc::new(Script::new(replies));
+        let rig = Rig {
+            conn: BmapConnection::new(Shared(Rc::clone(&script)), config),
+            raw: Shared(Rc::clone(&script)),
+        };
+        (rig, script)
+    }
+
+    fn prince(replies: Vec<BmapResult<Vec<u8>>>) -> Rig {
+        rig_for(devices::qc_prince(), replies).0
+    }
+
+    fn shared(replies: Vec<BmapResult<Vec<u8>>>) -> (Rig, Rc<Script>) {
+        rig_for(devices::qc_prince(), replies)
+    }
+
+    // The functions under test, taking the pair. Every test below calls
+    // these, so each goes through exactly what the link calls.
+    fn change_mode(rig: &Rig, preset: Preset, policy: VerifyPolicy) -> BmapResult<ModeChange> {
+        super::change_mode(&rig.conn, &rig.raw, preset, policy)
+    }
+    fn change_to(rig: &Rig, target: &Target, policy: VerifyPolicy) -> BmapResult<ModeChange> {
+        super::change_to(&rig.conn, &rig.raw, target, policy)
     }
 
     // --- model data --------------------------------------------------------
@@ -450,7 +516,7 @@ mod tests {
     /// A model without these presets must be refused, not driven by guesswork.
     #[test]
     fn a_model_without_the_preset_is_unsupported() {
-        let conn = BmapConnection::new(Script::new(vec![]), devices::qc35());
+        let (conn, _) = rig_for(devices::qc35(), vec![]);
         let err = change_mode(&conn, Preset::Aware, VerifyPolicy::instant(1)).unwrap_err();
         assert!(matches!(err, BmapError::Unsupported(_)), "got {err:?}");
     }
@@ -491,8 +557,7 @@ mod tests {
 
     #[test]
     fn already_in_the_requested_mode_sends_nothing() {
-        let script = Script::new(vec![status(0)]);
-        let conn = BmapConnection::new(script, devices::qc_prince());
+        let conn = prince(vec![status(0)]);
         let change = change_mode(&conn, Preset::Quiet, VerifyPolicy::instant(3)).unwrap();
         assert_eq!(change.verdict, Verdict::AlreadyActive);
         assert!(!change.sent);
@@ -627,37 +692,18 @@ mod tests {
     /// a closed socket.
     #[test]
     fn channel_failure_during_readback_stops_polling() {
-        let script = Script::new(vec![
+        let conn = prince(vec![
             status(1),
             processing(),
             Err(BmapError::Connection("closed".into())),
             status(0), // must never be consumed
         ]);
-        let conn = BmapConnection::new(script, devices::qc_prince());
         let change = change_mode(&conn, Preset::Quiet, VerifyPolicy::instant(5)).unwrap();
         assert!(matches!(change.verdict, Verdict::Unverified { .. }));
         assert_eq!(change.after, None);
     }
 
     // --- exact bytes --------------------------------------------------------
-
-    /// A script shared with the connection through an Rc, so a test can see
-    /// what was sent after the connection has taken ownership of it.
-    struct Shared(Rc<Script>);
-    impl Transport for Shared {
-        fn send_recv(&self, p: &[u8]) -> BmapResult<Vec<u8>> {
-            self.0.send_recv(p)
-        }
-        fn send_recv_drain(&self, p: &[u8]) -> BmapResult<Vec<u8>> {
-            self.0.send_recv_drain(p)
-        }
-    }
-
-    fn shared(replies: Vec<BmapResult<Vec<u8>>>) -> (BmapConnection<Shared>, Rc<Script>) {
-        let script = Rc::new(Script::new(replies));
-        let conn = BmapConnection::new(Shared(Rc::clone(&script)), devices::qc_prince());
-        (conn, script)
-    }
 
     /// The frames on the wire must be the documented ones, byte for byte.
     #[test]
@@ -702,6 +748,21 @@ mod tests {
             *script.sent.borrow(),
             vec![GET_MODE.to_vec(), START_SLOT_2.to_vec(), GET_MODE.to_vec()]
         );
+    }
+
+    /// A switch is answered with one frame and nothing after it, so it is
+    /// sent as a request with one reply — never as one whose reply is
+    /// gathered until the device has been silent for a while. That wait was
+    /// half a second, on every switch into the custom mode and on no other.
+    #[test]
+    fn a_switch_is_never_sent_as_a_request_to_wait_out() {
+        let (conn, script) = shared(vec![status(0), processing(), status(2)]);
+        change_to(&conn, &focus(2), VerifyPolicy::instant(3)).unwrap();
+        assert_eq!(script.drains.get(), 0, "into the custom mode");
+
+        let (conn, script) = shared(vec![status(2), processing(), status(0)]);
+        change_mode(&conn, Preset::Quiet, VerifyPolicy::instant(3)).unwrap();
+        assert_eq!(script.drains.get(), 0, "out of it, to a preset");
     }
 
     /// The indices that can ever be requested are the presets and the model's

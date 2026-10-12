@@ -2841,6 +2841,77 @@ mod hardware_tests {
         }
     }
 
+    /// How long a switch into the custom mode takes beside a switch between
+    /// the presets, what the backend has in hand the moment each returns —
+    /// which is what an announcement is made from — and how long the refresh
+    /// the window then asks for takes.
+    ///
+    /// The custom mode used to be the slow one: the mode list was read before
+    /// the switch and again after it, and each read waited half a second for
+    /// the headphones to fall silent. This is the measurement that says it no
+    /// longer is. The starting mode is restored.
+    #[tokio::test]
+    #[ignore = "requires the physical headphones; CHANGES the mode"]
+    async fn hw_b8_custom_mode_switch_is_timed() {
+        use std::time::Instant;
+
+        let dev = RealBoseDevice::default();
+        let start = mode_of(&connected_snapshot(&dev).await);
+        println!("\n  starting mode: {start:?}");
+        if start != NoiseControlMode::Aware {
+            let outcome = dev.set_noise_control(NoiseControlMode::Aware).await;
+            assert!(outcome.expect("request").is_confirmed());
+        }
+        let names = dev.known_custom_modes();
+        println!("  custom modes the headphones listed: {names:?}");
+        assert!(!names.is_empty(), "these headphones have a custom mode set up");
+
+        let steps = [
+            ("Aware  -> Custom", NoiseControlMode::Custom),
+            ("Custom -> Quiet ", NoiseControlMode::Quiet),
+            ("Quiet  -> Custom", NoiseControlMode::Custom),
+            ("Custom -> Aware ", NoiseControlMode::Aware),
+            ("Aware  -> Quiet ", NoiseControlMode::Quiet),
+            ("Quiet  -> Aware ", NoiseControlMode::Aware),
+        ];
+        let mut slowest_custom = std::time::Duration::ZERO;
+        for (label, mode) in steps {
+            let asked = Instant::now();
+            let outcome = dev.set_noise_control(mode).await;
+            let switched = asked.elapsed();
+            // What there is to announce from, with nothing more asked.
+            let in_hand = dev.reported_noise_control();
+
+            let asked = Instant::now();
+            let snap = connected_snapshot(&dev).await;
+            let refreshed = asked.elapsed();
+
+            println!(
+                "  {label}: confirmed in {switched:>10.1?}, refresh after it {refreshed:>10.1?}, \
+                 in hand at once: {:?}",
+                in_hand.as_ref().map(|s| (s.mode, s.label.clone()))
+            );
+            let outcome = outcome.expect("the request failed outright");
+            assert!(outcome.is_confirmed(), "{label}: {outcome:?}");
+            assert_eq!(in_hand.map(|s| s.mode), Some(mode), "{label}");
+            assert_eq!(mode_of(&snap), mode, "{label}");
+            if mode == NoiseControlMode::Custom {
+                slowest_custom = slowest_custom.max(switched);
+            }
+        }
+        // Generous: the point is that it is nowhere near the second or more
+        // that two half-second waits made it.
+        assert!(
+            slowest_custom < std::time::Duration::from_millis(300),
+            "a switch into the custom mode took {slowest_custom:?}"
+        );
+
+        if start != NoiseControlMode::Aware {
+            let outcome = dev.set_noise_control(start).await;
+            println!("  restored {start:?}: {outcome:?}");
+        }
+    }
+
     /// Read-only. The snapshot carries the equalizer the headphones report.
     #[tokio::test]
     #[ignore = "requires the physical headphones"]

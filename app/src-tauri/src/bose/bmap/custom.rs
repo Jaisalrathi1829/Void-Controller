@@ -22,7 +22,7 @@
 use super::noise::{describe_index, is_link_failure, Ack, Verdict, VerifyPolicy};
 use bmap::device::DeviceConfig;
 use bmap::error::{BmapError, BmapResult};
-use bmap::protocol::{bmap_packet, BmapResponse, Operator};
+use bmap::protocol::{bmap_packet, parse_all_responses, BmapResponse, Operator};
 use bmap::{BmapConnection, Transport};
 use std::ops::Range;
 
@@ -304,8 +304,15 @@ fn collateral_changes(before: &Slot, after: &Slot) -> Vec<&'static str> {
 /// meaningful report can be made — the baseline could not be read, or a guard
 /// refused, so nothing was sent — or when the channel failed outright. Every
 /// case in which a write went out produces a [`LevelChange`].
+///
+/// `raw` is the transport the connection runs over. The write is one request
+/// answered by one frame — the mode's new configuration — and is sent as
+/// that: the only way the connection itself offers to send an arbitrary
+/// frame gathers replies until the device has been silent for half a second,
+/// which made every change of level take that much longer than it needed to.
 pub fn set_level<T: Transport>(
     conn: &BmapConnection<T>,
+    raw: &T,
     index: u8,
     requested_raw: u8,
     policy: VerifyPolicy,
@@ -398,7 +405,7 @@ pub fn set_level<T: Transport>(
     };
 
     let packet = bmap_packet(mode_config.0, mode_config.1, Operator::SetGet, &payload);
-    let ack = match conn.send_raw(&packet) {
+    let ack = match raw.send_recv(&packet).map(|reply| parse_all_responses(&reply)) {
         Ok(replies) => {
             let mut from_config = replies
                 .iter()
@@ -570,19 +577,49 @@ mod tests {
     struct Script {
         replies: RefCell<VecDeque<BmapResult<Vec<u8>>>>,
         sent: Rc<RefCell<Vec<Vec<u8>>>>,
+        /// The requests that were sent as ones whose reply is gathered until
+        /// the device falls silent.
+        waited_out: RefCell<Vec<Vec<u8>>>,
     }
 
-    impl Transport for Script {
-        fn send_recv(&self, packet: &[u8]) -> BmapResult<Vec<u8>> {
+    impl Script {
+        fn answer(&self, packet: &[u8]) -> BmapResult<Vec<u8>> {
             self.sent.borrow_mut().push(packet.to_vec());
             self.replies
                 .borrow_mut()
                 .pop_front()
                 .unwrap_or_else(|| Err(BmapError::Timeout("script exhausted".into())))
         }
-        fn send_recv_drain(&self, packet: &[u8]) -> BmapResult<Vec<u8>> {
-            self.send_recv(packet)
+    }
+
+    /// A handle on the script. The connection has one and the transport
+    /// handed in beside it is another, as in the link.
+    struct Shared(Rc<Script>);
+
+    impl Transport for Shared {
+        fn send_recv(&self, packet: &[u8]) -> BmapResult<Vec<u8>> {
+            self.0.answer(packet)
         }
+        fn send_recv_drain(&self, packet: &[u8]) -> BmapResult<Vec<u8>> {
+            self.0.waited_out.borrow_mut().push(packet.to_vec());
+            self.0.answer(packet)
+        }
+    }
+
+    /// A connection and the transport underneath it.
+    struct Rig {
+        conn: BmapConnection<Shared>,
+        raw: Shared,
+        script: Rc<Script>,
+    }
+
+    // The functions under test, taking the pair, so that every test below
+    // goes through exactly what the link calls.
+    fn read_slots(rig: &Rig) -> BmapResult<Vec<Slot>> {
+        super::read_slots(&rig.conn)
+    }
+    fn set_level(rig: &Rig, index: u8, raw: u8, policy: VerifyPolicy) -> BmapResult<LevelChange> {
+        super::set_level(&rig.conn, &rig.raw, index, raw, policy)
     }
 
     const LIST_MODES: [u8; 4] = [0x1F, 0x01, 0x05, 0x00];
@@ -592,23 +629,25 @@ mod tests {
     fn run_on<R>(
         config: DeviceConfig,
         replies: Vec<BmapResult<Vec<u8>>>,
-        f: impl FnOnce(&BmapConnection<Script>) -> R,
+        f: impl FnOnce(&Rig) -> R,
     ) -> (R, Vec<Vec<u8>>) {
         let sent = Rc::new(RefCell::new(Vec::new()));
-        let transport = Script {
+        let script = Rc::new(Script {
             replies: RefCell::new(replies.into()),
             sent: sent.clone(),
+            waited_out: RefCell::new(Vec::new()),
+        });
+        let rig = Rig {
+            conn: BmapConnection::new(Shared(Rc::clone(&script)), config),
+            raw: Shared(Rc::clone(&script)),
+            script,
         };
-        let conn = BmapConnection::new(transport, config);
-        let result = f(&conn);
+        let result = f(&rig);
         let frames = sent.borrow().clone();
         (result, frames)
     }
 
-    fn run<R>(
-        replies: Vec<BmapResult<Vec<u8>>>,
-        f: impl FnOnce(&BmapConnection<Script>) -> R,
-    ) -> (R, Vec<Vec<u8>>) {
+    fn run<R>(replies: Vec<BmapResult<Vec<u8>>>, f: impl FnOnce(&Rig) -> R) -> (R, Vec<Vec<u8>>) {
         run_on(devices::qc_prince(), replies, f)
     }
 
@@ -719,6 +758,23 @@ mod tests {
     }
 
     // --- changing the level -------------------------------------------------
+
+    /// The write is answered with one frame, so it is sent as a request with
+    /// one reply. Listing the modes before and after it is another matter:
+    /// that reply is several frames, and is gathered.
+    #[test]
+    fn the_level_write_is_not_a_request_to_wait_out() {
+        let (waited_out, frames) = run(
+            vec![mode(2), list("Focus", 6), write_ack(), list("Focus", 3)],
+            |c| {
+                set_level(c, 2, 3, policy()).unwrap();
+                c.script.waited_out.borrow().clone()
+            },
+        );
+        assert_eq!(frames.iter().filter(|f| is_write(f)).count(), 1, "one write went out");
+        assert!(!waited_out.iter().any(|f| is_write(f)), "and it was not waited out");
+        assert_eq!(waited_out, vec![LIST_MODES.to_vec(), LIST_MODES.to_vec()]);
+    }
 
     /// The whole happy path: mode check, baseline, one write, read-back.
     #[test]

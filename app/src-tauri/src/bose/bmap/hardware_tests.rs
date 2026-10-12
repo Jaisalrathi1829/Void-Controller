@@ -332,7 +332,34 @@ fn hw_diag_mode_slots() {
     let all = config.get_all_modes.expect("model lists modes");
     let mode_config = config.mode_config.expect("model has mode configs");
     let parser = config.parse_mode_config.expect("model has a parser");
+    let asked = std::time::Instant::now();
     let replies = conn.start_drain(all, &[]).expect("mode list");
+    println!("  mode list read in {:?}", asked.elapsed());
+
+    // And a few more times, for how long it usually takes. Listing is a read:
+    // asking again changes nothing.
+    let mut times = Vec::new();
+    for _ in 0..8 {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let asked = std::time::Instant::now();
+        let again = conn.start_drain(all, &[]).expect("mode list");
+        times.push(asked.elapsed());
+        assert_eq!(again.len(), replies.len(), "the same frames every time");
+        let last = again.last().expect("a reply");
+        assert_eq!(
+            (last.fblock, last.func, last.op),
+            (all.0, all.1, Operator::Result),
+            "the reply ends with RESULT from the address that was asked"
+        );
+    }
+    times.sort();
+    println!(
+        "  eight more: fastest {:?}, median {:?}, slowest {:?}",
+        times[0],
+        times[times.len() / 2],
+        times[times.len() - 1]
+    );
+    transport.take_wire_log();
 
     for r in &replies {
         if (r.fblock, r.func) != (mode_config.0, mode_config.1) || r.op != Operator::Status {

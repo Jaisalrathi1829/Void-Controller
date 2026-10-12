@@ -104,9 +104,8 @@ not kept waiting for synthesis.
 
 #### What used to make the custom mode late
 
-Three things, all of them about the list of modes rather than about speech
-(found 2026-10-12, from a report of the announcement lagging on Focus and
-sometimes on the mode after it):
+Four things, none of them about speech (found 2026-10-12, from a report of
+the announcement lagging on Focus and sometimes on the mode after it):
 
 1. Listing the modes is the one request answered with several frames, and the
    transport took the answer to be over only after half a second of silence.
@@ -123,10 +122,17 @@ sometimes on the mode after it):
    mode.
 3. "Focus mode activated." was not among the sentences made ready ahead, so
    the first time in each run it was synthesized on the spot.
+4. The switch itself. A request for a custom mode was sent in a way that
+   waited half a second after the headphones' acknowledgement in case more
+   followed. Nothing does. This one only showed when the first three were
+   out of the way and the switch was timed on the headphones: about 600 ms
+   into the custom mode against 100 ms for the others (Experiment 10 in
+   [protocol-notes.md](protocol-notes.md)).
 
-The first is a change to how a reply is read and has been run against the
-unit tests only, on the reply as it was captured from the headphones in
-Experiment 6; it has not yet been timed on the headphones themselves.
+Timed on the headphones on Windows after all four: a switch into the custom
+mode is confirmed 80–119 ms after it is asked for, the same as a switch to
+Quiet or Aware; listing the modes takes 22–46 ms. The phone has not been
+timed.
 
 ### Connection
 
@@ -392,6 +398,23 @@ headphones accept one control connection:
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 voice_hw_mode_change
 ```
 
+One real-model test is run **by itself**, and is named so that the filters
+above do not pick it up. It loads the model from a temporary folder shaped
+like an installed application's, and then removes the folder:
+
+```powershell
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture bundled_real_model
+```
+
+The reason is a property of the speech runtime worth knowing about. It turns
+text into sounds with eSpeak NG, which is set up once per process: the first
+model's pronunciation folder is the one it reads from for the rest of the
+run, whatever folder a later model is loaded from. Run in the same process as
+the others, and before them, this test left every later model speaking a
+third of a second of noise — with all its checksums passing — because the
+dictionary it was still looking for had been deleted. That is how the
+property was found.
+
 What the hardware tests can show is that speech was synthesized by Kokoro and
 rendered to the headphones' Windows output, whose own level meter moved. They
 cannot show that a person heard it.
@@ -415,10 +438,15 @@ speech is not something a test can establish.
 ## Limitations
 
 - English only: the installed model's voices are American and British English.
-- Only "Quiet mode activated.", "Aware mode activated." and the two connection
-  sentences are made ready ahead. A custom mode's name and the low-battery
-  warning are synthesized when first needed, so the first of each arrives a
-  second or two late — longer if the model has to be loaded again.
+- The low-battery warning has a number in it and is synthesized the first
+  time each number is needed, so it arrives a second or two after the
+  reading — longer if the model has to be loaded. Every other sentence is
+  made ready ahead and kept.
+- The pronunciation data is read from the folder of the first model loaded in
+  a run, for the whole run. If that folder is removed while the application
+  is running — the model uninstalled or moved — a model loaded from anywhere
+  else afterwards is refused, with a message saying to restart, rather than
+  loaded to speak nonsense.
 - The first announcement after a change of voice or speed takes a second or
   two unless the sentence was made ready ahead.
 - "Disconnected" is only ever heard through another output.
