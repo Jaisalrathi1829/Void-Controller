@@ -170,8 +170,8 @@ while reporting its problems.
 ### Not verified anywhere yet
 
 - The **build of 2026-10-12** on a phone — every fix in §13
-- The Android home-screen widget switching a mode on the headphones, and
-  anything about it on a Samsung home screen (§16)
+- The Android home-screen widget, state by state, on a phone — the owner
+  reports it working (§16); nothing was instrumented
 - Custom-mode level and EQ from Android
 - Which output Android used for speech
 - Battery level on Android
@@ -855,7 +855,18 @@ headphones' name for it. No equalizer, no battery, no settings.
 | Tap on the top line | Emulator | Opens the application |
 | The whole suite | | 499 Rust, 215 frontend; clippy clean |
 
+### Reported by the owner
+
+After installing the phone package below on the Galaxy S24 Ultra, with the
+headphones: **"it works, I have tested and it's perfectly fine"**. That is
+the only evidence for the widget against the headphones and on a Samsung
+home screen. It was not instrumented, and the report did not go through the
+states one by one.
+
 ### Not checked
+
+Everything below was written before the owner's report, and is unverified
+*by measurement or test*; the report above covers it only in general.
 
 - **Anything against the headphones.** The emulator has none, so no tap there
   ended in a mode change, and the widget has never been seen with a mode
@@ -878,7 +889,7 @@ headphones' name for it. No equalizer, no battery, no settings.
 
 | | |
 | --- | --- |
-| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-12 22:30, 139,249,130 bytes, SHA-256 `b1284e162d905a8cc2820b41cd0edd1a5414f3da998543995b96dd261dc67dac`. Checked to hold the widget's receiver and the `arm64-v8a` libraries; not run by anyone |
+| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-12 22:30, 139,249,130 bytes, SHA-256 `b1284e162d905a8cc2820b41cd0edd1a5414f3da998543995b96dd261dc67dac`. Checked to hold the widget's receiver and the `arm64-v8a` libraries. Reported working by the owner on the phone |
 | Windows installer | Unchanged — the one of 18:09 listed in §15. Nothing in this section alters the Windows build |
 
 The phone package replaces the one listed in §15. It installs over the

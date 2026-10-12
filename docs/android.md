@@ -281,8 +281,7 @@ Before first use:
 | Widget with the application off screen and not kept running | Verified on the emulator: "Tap to open the app", and a tap on a mode opened the application, which took the request up |
 | Widget tap with the application's process gone | Verified on the emulator: the process was ended, the tap started a new one, which opened the application; the request was taken up 0.8 s after the tap |
 | Widget on the simulated device | Verified on the emulator: "Simulated device in use", no mode |
-| The widget **switching a mode on the headphones**, and showing it highlighted | **Not verified** — the emulator has no headphones. The switch it calls is the one the application's buttons use |
-| The widget on a Samsung home screen (size, look, whether a tap may open the application from the background) | **Not verified** |
+| The widget on the phone, with the headphones | Reported working by the owner (S24 Ultra, build of 2026-10-12 22:30): "it works … perfectly fine". Not instrumented, and not gone through state by state — which of the states in the table above were tried is not known |
 | The phone build (`aarch64`) starting on a phone | Reported working by the owner (S24 Ultra, build of 2026-10-11). Not instrumented |
 | Bluetooth socket to the headphones; identifying the model; reading and changing modes | Reported working by the owner: modes, including the custom one, were switched and announced. Not instrumented |
 | Announcements in the background on a phone | Reported working by the owner |
