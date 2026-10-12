@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Committed and pushed: everything up to `b5c0446` (see [§12](#12-git-state)). The hardware run of 2026-10-12 and the fixes it led to — [§15](#15-hardware-run-2026-10-12) — are in the working tree and **not yet committed**
+- Everything described here is committed and pushed. The commit that holds the code is `b1f2a3f` (see [§12](#12-git-state))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -537,7 +537,7 @@ phone, not for distribution.
 | An announcement is late every time | Is it the first run in that voice? Otherwise see Experiment 9 in protocol-notes.md |
 | Anything on the phone | `adb logcat -s Aurora` |
 
-To get back to a known-good state, check out `b5c0446` (everything, including the widget). If the trouble is in that commit itself, `55e3684` is Windows and Android as first built, and `659446f` is the last commit before the Android port (Windows only, confirmed by ear).
+To get back to a known-good state, check out `b1f2a3f` (everything, hardware-tested on Windows). If the trouble is in that commit itself, `b5c0446` is the widget and phone fixes without the last two timing fixes, `55e3684` is Windows and Android as first built, and `659446f` is the last commit before the Android port (Windows only, confirmed by ear).
 
 ---
 
@@ -552,13 +552,15 @@ On `origin/main`:
 | `55e3684` | The Android port (`src/android/`, `gen/android/`, `tools/build-android.ps1`, phone layout), battery over the control protocol, `DeviceError::NotPermitted`, `docs/android.md`, and this file |
 | `b5c0446` | The fixes from the first run on a phone ([§13](#13-second-round-on-android-2026-10-12)): sentences kept on disk, the mode list read to its end marker, CSS-only animation, phone media volume, "connected to". And the desktop widget ([§14](#14-desktop-widget-2026-10-12)) |
 
-Commits that touch only this document are bookkeeping; `b5c0446` is the one
+| `b1f2a3f` | What the hardware run of 2026-10-12 led to ([§15](#15-hardware-run-2026-10-12)): the custom-mode switch and level write sent as single-reply requests, the guard on the speech runtime's pronunciation folder, `hw_b8` |
+
+Commits that touch only this document are bookkeeping; `b1f2a3f` is the one
 to return to for the code.
 
 Earlier points to go back to, if something in the latest turns out wrong:
-`55e3684` is the Android port as first built — before the phone fixes and
-the widget — and `659446f` is the last commit before Android, Windows only,
-confirmed by ear.
+`b5c0446` has the widget and the phone fixes but not the two timing fixes of
+§15; `55e3684` is the Android port as first built, before any of that; and
+`659446f` is the last commit before Android, Windows only, confirmed by ear.
 
 Not in the repository, by design: build output (`target/`, `gen/android/app/build/`),
 the compiled libraries, the installers and APKs, and the voice model. They are
