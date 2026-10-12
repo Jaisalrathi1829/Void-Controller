@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Toaster } from "./components/ui/sonner";
 import { AppProvider, useApp } from "./store";
 import { type PageId } from "./pages";
-import { Sidebar } from "./components/Sidebar";
+import { BottomNav, Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { SimulatedBanner } from "./components/SimulatedBanner";
 import { ConnectionScreen } from "./components/ConnectionScreens";
@@ -39,12 +39,29 @@ function Content({ page, onNavigate }: { page: PageId; onNavigate: (p: PageId) =
   }
 }
 
+/** Whether the window is phone-width: one column, navigation at the bottom. */
+function useNarrow(): boolean {
+  const query = "(max-width: 767px)";
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia(query);
+    const update = () => setNarrow(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return narrow;
+}
+
 function Shell() {
   const [page, setPage] = useState<PageId>("dashboard");
   const { connection, simulated } = useApp();
 
   return (
-    <div className="relative flex h-screen w-full overflow-hidden bg-background text-foreground">
+    <div className="relative flex h-dvh w-full overflow-hidden bg-background text-foreground">
       {/* ambient drifting gradient blobs */}
       <motion.div
         aria-hidden
@@ -75,22 +92,25 @@ function Shell() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.18 }}
-              className="min-h-full p-8"
+              className="min-h-full p-4 md:p-8"
             >
               <Content page={page} onNavigate={setPage} />
             </motion.div>
           </AnimatePresence>
         </main>
+        <BottomNav page={page} onNavigate={setPage} />
       </div>
     </div>
   );
 }
 
 export default function App() {
+  // On a phone the bottom edge belongs to the navigation bar.
+  const narrow = useNarrow();
   return (
     <AppProvider>
       <Shell />
-      <Toaster position="bottom-right" richColors closeButton />
+      <Toaster position={narrow ? "top-center" : "bottom-right"} richColors closeButton />
     </AppProvider>
   );
 }

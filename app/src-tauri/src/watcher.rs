@@ -270,8 +270,19 @@ pub fn spawn(app: AppHandle) {
             .ok()
             .flatten();
 
+            let mut sighting = sighting;
             if let Some(seen) = &sighting {
                 state.remember_device(seen);
+            }
+            // Where the host has no battery level to give, use the one the
+            // headphones last gave over the control link, if there is one.
+            let host_battery_missing = sighting
+                .as_ref()
+                .is_some_and(|seen| seen.connected && seen.battery.is_none());
+            if host_battery_missing {
+                if let Some(seen) = &mut sighting {
+                    seen.battery = state.current().reported_battery();
+                }
             }
 
             let step = watch.observe(sighting.as_ref());
@@ -292,8 +303,14 @@ pub fn spawn(app: AppHandle) {
             // change is spoken with the application in the tray — and only
             // when the answer would be spoken at all. It is the same read the
             // window makes, with the same backoff after a failed one.
+            // The same read is what refreshes the headphones' own battery
+            // level, so it is also made when that is the only level there is
+            // and something is waiting to hear about it.
+            let battery_wanted = host_battery_missing
+                && (settings.notify_low_battery
+                    || (settings.voice_enabled && settings.announce_battery));
             let connected = sighting.as_ref().is_some_and(|seen| seen.connected);
-            if connected && state.voice().wants_mode_readings() {
+            if connected && (state.voice().wants_mode_readings() || battery_wanted) {
                 if let Ok(snapshot) = state.current().snapshot().await {
                     state.voice().observe_snapshot(&snapshot);
                 }

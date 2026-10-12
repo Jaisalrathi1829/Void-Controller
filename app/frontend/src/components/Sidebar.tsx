@@ -14,15 +14,61 @@ import { useApp } from "../store";
 import type { PageId } from "../pages";
 import wolfLogo from "@/assets/wolf-logo.png";
 
-const nav: { id: PageId; label: string; icon: React.ElementType }[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "device", label: "Device", icon: Speaker },
-  { id: "noise", label: "Noise Control", icon: Waves },
-  { id: "equalizer", label: "Equalizer", icon: SlidersHorizontal },
-  { id: "profiles", label: "Profiles", icon: Volume2 },
-  { id: "diagnostics", label: "Diagnostics", icon: Activity },
-  { id: "settings", label: "Settings", icon: Settings },
+const nav: { id: PageId; label: string; short: string; icon: React.ElementType }[] = [
+  { id: "dashboard", label: "Dashboard", short: "Home", icon: LayoutDashboard },
+  { id: "device", label: "Device", short: "Device", icon: Speaker },
+  { id: "noise", label: "Noise Control", short: "Noise", icon: Waves },
+  { id: "equalizer", label: "Equalizer", short: "EQ", icon: SlidersHorizontal },
+  { id: "profiles", label: "Profiles", short: "Profiles", icon: Volume2 },
+  { id: "diagnostics", label: "Diagnostics", short: "Diag", icon: Activity },
+  { id: "settings", label: "Settings", short: "Settings", icon: Settings },
 ];
+
+/**
+ * The same seven destinations as the sidebar, along the bottom edge. Shown
+ * only where the window is too narrow for a sidebar — a phone.
+ */
+export function BottomNav({
+  page,
+  onNavigate,
+}: {
+  page: PageId;
+  onNavigate: (p: PageId) => void;
+}) {
+  return (
+    <nav
+      aria-label="Sections"
+      className="flex shrink-0 border-t border-sidebar-border bg-sidebar md:hidden"
+    >
+      {nav.map((item) => {
+        const active = page === item.id;
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.id}
+            onClick={() => onNavigate(item.id)}
+            aria-label={item.label}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "relative flex min-w-0 flex-1 flex-col items-center gap-0.5 px-0.5 pb-2 pt-2.5 text-[10px] leading-none outline-none transition-colors",
+              "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+              active ? "text-primary" : "text-muted-foreground",
+            )}
+          >
+            {active && (
+              <motion.span
+                layoutId="bottom-nav-active"
+                className="absolute top-0 h-0.5 w-8 rounded-full bg-primary"
+              />
+            )}
+            <Icon className="size-5" />
+            <span className="max-w-full truncate">{item.short}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
 
 export function Sidebar({
   page,
@@ -34,7 +80,7 @@ export function Sidebar({
   const { connection, battery, charging } = useApp();
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+    <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
       {/* brand */}
       <div className="flex items-center gap-3 px-5 py-5">
         <motion.div

@@ -9,7 +9,7 @@ import {
 import { Modal } from "../Modal";
 import { VoiceFeedbackPanel } from "./VoiceFeedbackPanel";
 import { useApp, type ThemePref } from "../../store";
-import type { SettingKey } from "@/services/ipc";
+import { hostPlatform, type SettingKey } from "@/services/ipc";
 import { cn } from "../ui/utils";
 
 function SettingRow({
@@ -49,6 +49,10 @@ const logLevels = ["Off", "Error", "Warn", "Info", "Debug", "Trace"];
 export function SettingsPage() {
   const { settings, toggleSetting, theme, setTheme, logLevel, setLogLevel, deviceName } = useApp();
   const [clearOpen, setClearOpen] = useState(false);
+  // Starting with the system and starting minimized are desktop notions; on
+  // a phone they are left out rather than listed as unavailable. "Minimize
+  // to tray" is the same switch there, under the name of what it does.
+  const onPhone = hostPlatform() === "android";
 
   /**
    * One switch. A switch that cannot be used in this build is shown disabled
@@ -70,19 +74,27 @@ export function SettingsPage() {
       <Panel className="p-6">
         <SectionLabel>General</SectionLabel>
         <div className="mt-2">
-          {row("startWithWindows", "Start with Windows", "Open the app when you sign in to Windows")}
-          {row(
-            "startMinimized",
-            "Start minimized",
-            settings.minimizeToTray
-              ? "Open in the tray instead of on screen"
-              : "Open minimized to the taskbar. With Minimize to tray on, it opens in the tray instead",
-          )}
-          {row(
-            "minimizeToTray",
-            "Minimize to tray",
-            "Closing or minimizing the window keeps the app running in the system tray",
-          )}
+          {!onPhone &&
+            row("startWithWindows", "Start with Windows", "Open the app when you sign in to Windows")}
+          {!onPhone &&
+            row(
+              "startMinimized",
+              "Start minimized",
+              settings.minimizeToTray
+                ? "Open in the tray instead of on screen"
+                : "Open minimized to the taskbar. With Minimize to tray on, it opens in the tray instead",
+            )}
+          {onPhone
+            ? row(
+                "minimizeToTray",
+                "Keep running in the background",
+                "Announcements and notifications carry on while the app is not on screen. Android shows a notification for as long as this is on",
+              )
+            : row(
+                "minimizeToTray",
+                "Minimize to tray",
+                "Closing or minimizing the window keeps the app running in the system tray",
+              )}
           {row("autoConnect", "Auto-connect", "Connect to preferred device on launch")}
         </div>
       </Panel>
@@ -151,7 +163,7 @@ export function SettingsPage() {
               </button>
             ))}
           </div>
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
             <Button variant="outline" size="sm" icon={<Download className="size-4" />}>Export Logs</Button>
             <Button variant="ghost" size="sm" icon={<Trash2 className="size-4" />} onClick={() => setClearOpen(true)}>Clear Logs</Button>
           </div>

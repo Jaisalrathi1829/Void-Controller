@@ -57,7 +57,7 @@ export function TopBar({ page }: { page: PageId }) {
   }, [trayOpen, simOpen]);
 
   return (
-    <header className="relative z-50 flex items-center justify-between border-b border-border bg-background/80 px-8 py-4 backdrop-blur">
+    <header className="relative z-50 flex items-center justify-between gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur md:px-8 md:py-4">
       <AnimatePresence mode="wait">
         <motion.div
           key={page}
@@ -67,7 +67,7 @@ export function TopBar({ page }: { page: PageId }) {
           transition={{ duration: 0.22 }}
         >
           <h1>{meta.title}</h1>
-          <p className="text-sm text-muted-foreground">{meta.subtitle}</p>
+          <p className="hidden text-sm text-muted-foreground sm:block">{meta.subtitle}</p>
         </motion.div>
       </AnimatePresence>
 
@@ -119,11 +119,11 @@ export function TopBar({ page }: { page: PageId }) {
         </div>
 
         <Button variant="outline" size="sm" onClick={() => setTheme(themeCycle[theme])} icon={<ThemeIcon className="size-4" />}>
-          <span className="capitalize">{theme}</span>
+          <span className="hidden capitalize sm:inline">{theme}</span>
         </Button>
 
-        {/* tray */}
-        <div className="relative" ref={trayRef}>
+        {/* tray — a desktop notion; a phone has none */}
+        <div className="relative hidden md:block" ref={trayRef}>
           <Button variant="outline" size="sm" onClick={() => setTrayOpen((o) => !o)} icon={<PanelTop className="size-4" />}>
             Tray
           </Button>

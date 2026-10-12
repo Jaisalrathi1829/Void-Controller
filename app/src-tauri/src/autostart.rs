@@ -32,13 +32,13 @@ pub fn command_for(exe: &Path) -> String {
 /// Windows at sign-in, with no dev server running, it would open an empty
 /// window — so registering it would be offering something that does not work.
 pub fn unavailable_reason() -> Option<&'static str> {
-    if cfg!(debug_assertions) {
+    if cfg!(not(windows)) {
+        Some("Only available on Windows.")
+    } else if cfg!(debug_assertions) {
         Some(
             "Only available in an installed build. A development build cannot start on its \
              own, because it needs its dev server running.",
         )
-    } else if cfg!(not(windows)) {
-        Some("Only available on Windows.")
     } else {
         None
     }

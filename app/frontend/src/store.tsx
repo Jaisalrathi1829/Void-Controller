@@ -113,6 +113,13 @@ interface AppState {
    */
   deviceNotice: string | null;
   /**
+   * Why the device could not be read at all, when it could not. Distinct
+   * from `deviceNotice`, which rides on a snapshot that did arrive.
+   */
+  deviceError: ipc.IpcError | null;
+  /** Asks for the Bluetooth permission again (Android). */
+  allowBluetooth: () => void;
+  /**
    * Noise-cancellation strength the device reports for its active mode, 0-10
    * where 10 is the most. Null when it has not reported one — which includes
    * every time the headphones are in Quiet or Aware.
@@ -306,18 +313,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /* ---- snapshot ---- */
+  const [deviceError, setDeviceError] = useState<ipc.IpcError | null>(null);
+  const deviceErrorRef = useRef<string | null>(null);
+
   const refresh = useCallback(async () => {
     try {
       const s = await ipc.getSnapshot();
       setSnapshot(s);
+      deviceErrorRef.current = null;
+      setDeviceError(null);
     } catch (e) {
       const err = ipc.toIpcError(e);
-      pushEvent({ type: "ERROR", description: err.message, status: "warning" });
+      // Said once, not on every retry of the same failure.
+      if (deviceErrorRef.current !== err.message) {
+        pushEvent({ type: "ERROR", description: err.message, status: "warning" });
+      }
+      deviceErrorRef.current = err.message;
+      setDeviceError(err);
     }
   }, [pushEvent]);
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // While the only thing in the way is a permission the user can grant in a
+  // system dialog, keep looking: nothing else tells the window it was given.
+  const awaitingPermission = deviceError?.kind === "not-permitted";
+  useEffect(() => {
+    if (!awaitingPermission) return;
+    const id = window.setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [awaitingPermission, refresh]);
+
+  const allowBluetooth = useCallback(() => {
+    ipc
+      .requestBluetoothPermission()
+      .then(() => refresh())
+      .catch((e) => {
+        toast.error("Could not ask for Bluetooth access.", {
+          description: ipc.toIpcError(e).message,
+        });
+      });
   }, [refresh]);
 
   /* ---- settings ---- */
@@ -780,6 +819,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setNoise,
       noiseReadAt,
       deviceNotice,
+      deviceError,
+      allowBluetooth,
       ancLevel,
       setAncLevel,
       noiseLabel,
@@ -831,7 +872,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       connection, setConnection, simulated, setSimulated, nativeAvailable, connect,
       battery, charging, deviceName, batterySource, capabilities, snapshot,
-      noise, setNoise, noiseReadAt, deviceNotice,
+      noise, setNoise, noiseReadAt, deviceNotice, deviceError, allowBluetooth,
       ancLevel, setAncLevel, noiseLabel, windBlock, setWindBlock,
       volume, setVolume, muted, setMuted, audioEndpointName,
       hardwareEq, setHardwareEq, softwareEq, setSoftwareEq,

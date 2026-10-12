@@ -40,6 +40,37 @@ use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// Where the host's own battery reading comes from on this platform.
+#[cfg(not(target_os = "android"))]
+const HOST_BATTERY: BatterySource = BatterySource::WindowsPnp;
+#[cfg(target_os = "android")]
+const HOST_BATTERY: BatterySource = BatterySource::AndroidBluetooth;
+
+/// The battery level to show: the host system's if it has one, and
+/// otherwise the one the headphones gave over the control link — each
+/// labelled as what it is.
+fn battery_reading(
+    host: Option<u8>,
+    reported: Option<&control::link::BatteryReport>,
+    now: &str,
+) -> Option<BatteryReading> {
+    match (host, reported) {
+        (Some(percent), _) => Some(BatteryReading {
+            percent,
+            source: HOST_BATTERY,
+            charging: None,
+            read_at: now.to_string(),
+        }),
+        (None, Some(report)) => Some(BatteryReading {
+            percent: report.percent,
+            source: BatterySource::VendorProtocol,
+            charging: None,
+            read_at: report.at.clone(),
+        }),
+        (None, None) => None,
+    }
+}
+
 /// Why "Custom" is unavailable on headphones with no custom mode.
 const NO_CUSTOM_MODE: &str = "No custom mode is set up on these headphones. Create one in the \
      Bose app first: this application adjusts an existing custom mode and does not create one.";
@@ -86,6 +117,16 @@ struct ControlTarget {
 /// enough.
 fn control_target(obs: &Observed) -> Result<ControlTarget, String> {
     let Some(product_id) = obs.product_id else {
+        // Android has no product id to give; the headphones are asked, and
+        // this is what it looks like when they have not answered.
+        #[cfg(target_os = "android")]
+        return Err(
+            "The headphones have not said which model they are, so no control connection is \
+             opened. Another app may be holding their control channel — close the Bose app if \
+             it is running."
+                .to_string(),
+        );
+        #[cfg(not(target_os = "android"))]
         return Err(
             "Windows did not report a product id for this device, so its model cannot be \
              identified."
@@ -100,7 +141,7 @@ fn control_target(obs: &Observed) -> Result<ControlTarget, String> {
     };
     if !obs.advertises_bmap {
         return Err(
-            "Windows does not list Bose's control service (BMAP) among this device's services."
+            "Bose's control service (BMAP) is not listed among this device's services."
                 .to_string(),
         );
     }
@@ -171,7 +212,18 @@ pub fn sight_device(preferred: Option<&str>) -> Option<Sighting> {
             instance_id: dev.instance_id,
         })
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    {
+        use crate::android::directory;
+        let dev = directory::find(directory::report().ok()?.devices, preferred)?;
+        Some(Sighting {
+            instance_id: dev.instance_id,
+            name: dev.name,
+            connected: dev.connected,
+            battery: dev.battery,
+        })
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
     {
         let _ = preferred;
         None
@@ -269,10 +321,61 @@ impl RealBoseDevice {
         Ok(true)
     }
 
-    #[cfg(not(windows))]
+    /// The Android counterpart: the same observation, built from what
+    /// Android knows about its paired devices.
+    #[cfg(target_os = "android")]
+    fn refresh(&self) -> DeviceResult<bool> {
+        use crate::android::directory;
+
+        let report = directory::report().map_err(DeviceError::Platform)?;
+        if !report.radio_present {
+            return Err(DeviceError::BluetoothUnavailable);
+        }
+        if !report.permission {
+            return Err(DeviceError::NotPermitted(
+                "This application has not been allowed to use Bluetooth. Allow \"Nearby \
+                 devices\" for it, and it will find the headphones."
+                    .to_string(),
+            ));
+        }
+
+        // The remembered headphones if they are still paired; otherwise
+        // whichever paired device is a Bose one.
+        let matched = directory::find(report.devices.clone(), self.preferred_instance_id.as_deref())
+            .or_else(|| directory::find(report.devices, None));
+        let Some(dev) = matched else {
+            *self.observed.write() = Observed::default();
+            return Ok(false);
+        };
+
+        // Android gives no product id, so the headphones are asked for it —
+        // once, and only while they are connected.
+        let product_id = match dev.address {
+            Some(address) if dev.connected => directory::product_id(address),
+            _ => None,
+        };
+
+        let mut obs = self.observed.write();
+        let same_device = obs.instance_id.as_deref() == Some(dev.instance_id.as_str());
+        obs.product_id = product_id.or(if same_device { obs.product_id } else { None });
+        obs.instance_id = Some(dev.instance_id.clone());
+        obs.name = Some(dev.name.clone());
+        obs.connected = dev.connected;
+        obs.battery = dev.battery;
+        if dev.battery.is_some() {
+            obs.battery_ever_read = true;
+        }
+        obs.address = dev.address;
+        // Answering a product-id request over the control protocol shows the
+        // service is there at least as well as a listing of it does.
+        obs.advertises_bmap = dev.advertises_bmap || obs.product_id.is_some();
+        Ok(true)
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     fn refresh(&self) -> DeviceResult<bool> {
         Err(DeviceError::Platform(
-            "the real device backend is only implemented for Windows".to_string(),
+            "the real device backend is only implemented for Windows and Android".to_string(),
         ))
     }
 
@@ -941,10 +1044,11 @@ impl BoseDevice for RealBoseDevice {
         // refresh, so it honours the link's backoff after a failed open.
         let target = control_target(&obs).ok();
         let mut last_error = None;
+        let host_battery_missing = obs.battery.is_none();
         match &target {
             Some(target) if obs.connected => {
                 let read = self
-                    .with_link(target.clone(), |link| {
+                    .with_link(target.clone(), move |link| {
                         let index = link.read_mode(false)?;
 
                         // The mode list says whether a custom mode exists and,
@@ -966,6 +1070,13 @@ impl BoseDevice for RealBoseDevice {
                         // already shown they will not answer it as documented.
                         if link.status().eq_problem.is_none() {
                             let _ = link.read_eq(false);
+                        }
+
+                        // The battery level normally comes from the host
+                        // system. Where it has none to give — Android does
+                        // not always pass one on — the headphones are asked.
+                        if host_battery_missing {
+                            let _ = link.read_battery(false);
                         }
                         Ok::<u8, LinkError>(index)
                     })
@@ -1001,12 +1112,11 @@ impl BoseDevice for RealBoseDevice {
             },
             identity: Self::identity_from(&obs, &link),
             capabilities: self.build_capabilities(&obs, &link),
-            battery: obs.battery.map(|percent| BatteryReading {
-                percent,
-                source: BatterySource::WindowsPnp,
-                charging: None,
-                read_at: now.clone(),
-            }),
+            battery: battery_reading(
+                obs.battery,
+                if obs.connected { link.battery.as_ref() } else { None },
+                &now,
+            ),
             noise_control,
             // Only ever what the headphones reported, with when.
             equalizer: match (&target, &link.eq) {
@@ -1061,7 +1171,7 @@ impl BoseDevice for RealBoseDevice {
         let obs = self.observed.read().clone();
         Ok(obs.battery.map(|percent| BatteryReading {
             percent,
-            source: BatterySource::WindowsPnp,
+            source: HOST_BATTERY,
             charging: None,
             read_at: now_rfc3339(),
         }))
@@ -1104,6 +1214,13 @@ impl BoseDevice for RealBoseDevice {
             .confirmed
             .as_ref()
             .map(|c| noise_state(&config, c, link.slots.as_ref())))
+    }
+
+    fn reported_battery(&self) -> Option<u8> {
+        if !self.is_attached() || !self.observed.read().connected {
+            return None;
+        }
+        self.link_status.read().battery.as_ref().map(|b| b.percent)
     }
 
     /// One `GET` of the current mode over the link that is already open.
@@ -2640,5 +2757,42 @@ mod hardware_tests {
 
         assert!(dev.control.lock().is_none(), "no control connection was attempted");
         assert!(dev.take_wire_log().is_empty(), "nothing was transmitted");
+    }
+}
+
+#[cfg(test)]
+mod battery_tests {
+    use super::*;
+    use control::link::BatteryReport;
+
+    fn reported(percent: u8) -> BatteryReport {
+        BatteryReport {
+            percent,
+            at: "2026-10-11T16:40:00Z".to_string(),
+        }
+    }
+
+    /// Where the host system has a level, that is the one shown.
+    #[test]
+    fn the_host_level_comes_first_and_is_labelled_as_the_hosts() {
+        let reading = battery_reading(Some(70), Some(&reported(65)), "now").unwrap();
+        assert_eq!(reading.percent, 70);
+        assert_eq!(reading.source, HOST_BATTERY);
+        assert_eq!(reading.read_at, "now");
+    }
+
+    /// Where it has none, the headphones' own answer is shown — as theirs,
+    /// and with the time they gave it, not the time it is being shown.
+    #[test]
+    fn the_headphones_level_stands_in_and_says_where_it_came_from() {
+        let reading = battery_reading(None, Some(&reported(10)), "now").unwrap();
+        assert_eq!(reading.percent, 10);
+        assert_eq!(reading.source, BatterySource::VendorProtocol);
+        assert_eq!(reading.read_at, "2026-10-11T16:40:00Z");
+    }
+
+    #[test]
+    fn with_neither_there_is_no_level_rather_than_a_zero() {
+        assert_eq!(battery_reading(None, None, "now"), None);
     }
 }

@@ -18,6 +18,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --config app/src-tauri/tauri.bundle.conf.json",
     "tauri:build:voice": "powershell -ExecutionPolicy Bypass -File tools/stage-voice-model.ps1 && tauri build --config app/src-tauri/tauri.bundle.voice.conf.json",
+    "android:build": "powershell -ExecutionPolicy Bypass -File tools/build-android.ps1",
     "rust:test": "cargo test --manifest-path app/src-tauri/Cargo.toml",
     "rust:fmt": "cargo fmt --manifest-path app/src-tauri/Cargo.toml",
     "rust:clippy": "cargo clippy --manifest-path app/src-tauri/Cargo.toml -- -D warnings",

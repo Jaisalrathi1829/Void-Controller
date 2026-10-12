@@ -354,9 +354,20 @@ export function Range({
 
   const shown = dragging ? draft : value;
 
+  // Letting go can arrive more than once — as a pointer event and again as
+  // a touch event on a phone. These sliders drive hardware commands, and a
+  // command must go out once, so the same value is not committed twice in
+  // quick succession.
+  const lastCommit = useRef<{ value: number; at: number } | null>(null);
+
   const commit = (v: number) => {
     setDragging(false);
-    if (v !== value) onChange(v);
+    if (v === value) return;
+    const last = lastCommit.current;
+    const now = Date.now();
+    if (last && last.value === v && now - last.at < 800) return;
+    lastCommit.current = { value: v, at: now };
+    onChange(v);
   };
 
   const pct = ((shown - min) / (max - min)) * 100;
@@ -402,9 +413,12 @@ export function Range({
               setDraft(v);
             }}
             onPointerUp={(e) => !continuous && commit(Number((e.target as HTMLInputElement).value))}
+            // A finger: some browsers end a drag on a slider with a touch
+            // event and no pointer-up at all.
+            onTouchEnd={(e) => !continuous && commit(Number((e.target as HTMLInputElement).value))}
             onKeyUp={(e) => !continuous && commit(Number((e.target as HTMLInputElement).value))}
             onBlur={(e) => !continuous && dragging && commit(Number(e.target.value))}
-            className="absolute inset-0 top-1/2 h-4 w-full -translate-y-1/2 cursor-pointer appearance-none bg-transparent outline-none disabled:cursor-not-allowed
+            className="absolute inset-0 top-1/2 h-4 w-full -translate-y-1/2 cursor-pointer touch-none appearance-none bg-transparent outline-none disabled:cursor-not-allowed
               [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-primary [&::-webkit-slider-thumb]:bg-card [&::-webkit-slider-thumb]:shadow-[var(--shadow-sm)] [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-110
               [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-primary [&::-moz-range-thumb]:bg-card"
           />

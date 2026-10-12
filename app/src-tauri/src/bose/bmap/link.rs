@@ -69,6 +69,13 @@ pub struct EqReading {
     pub at: String,
 }
 
+/// The battery level as the headphones themselves last reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatteryReport {
+    pub percent: u8,
+    pub at: String,
+}
+
 /// An equalizer change the device confirmed by reporting the new gains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EqProof {
@@ -160,6 +167,9 @@ pub struct LinkStatus {
     pub eq_problem: Option<String>,
     /// A confirmed equalizer change.
     pub eq_change: Option<EqProof>,
+    /// The battery level as last reported by the device over this link.
+    /// Asked for only when the host system has no level of its own to give.
+    pub battery: Option<BatteryReport>,
 }
 
 struct Session<S: super::stream::ByteStream> {
@@ -275,6 +285,7 @@ impl<C: Connector> BmapLink<C> {
         self.status.slots_problem = None;
         self.status.eq = None;
         self.status.eq_problem = None;
+        self.status.battery = None;
         self.status.last_failure = None;
         self.last_open_failure = None;
     }
@@ -474,6 +485,46 @@ impl<C: Connector> BmapLink<C> {
                     BmapError::Device { .. } => LinkError::new(
                         LinkErrorKind::UnexpectedFraming,
                         format!("The headphones' equalizer could not be read as documented. {e}"),
+                    ),
+                    e => self.fail(e),
+                })
+            }
+        }
+    }
+
+    /// Reads the battery level from the device and remembers it. Read-only.
+    ///
+    /// Measured on the test headphones on 2026-10-11: `GET [2.2]` answered
+    /// `0A FF FF 00`, 10 percent, with Windows reporting 10 for the same unit
+    /// at the same moment.
+    pub fn read_battery(&mut self, force: bool) -> Result<u8, LinkError> {
+        self.ensure_open(force)?;
+        let session = self.session.as_ref().expect("session ensured above");
+        let result = session.conn.battery();
+        self.collect_wire_log();
+
+        match result {
+            Ok(percent) if percent <= 100 => {
+                self.status.battery = Some(BatteryReport {
+                    percent,
+                    at: (self.now_text)(),
+                });
+                Ok(percent)
+            }
+            // A number that is not a percentage is not a level to show.
+            Ok(percent) => {
+                self.status.battery = None;
+                Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!("The headphones reported a battery level of {percent}, which is not a percentage."),
+                ))
+            }
+            Err(e) => {
+                self.status.battery = None;
+                Err(match e {
+                    BmapError::Device { .. } => LinkError::new(
+                        LinkErrorKind::UnexpectedFraming,
+                        format!("The headphones' battery level could not be read as documented. {e}"),
                     ),
                     e => self.fail(e),
                 })
@@ -1221,6 +1272,40 @@ mod tests {
     }
     fn is_eq_write(frame: &[u8]) -> bool {
         frame[0] == 0x01 && frame[1] == 0x07 && frame[2] & 0x0F == 0x02
+    }
+
+    /// The battery reply recorded from the test headphones.
+    fn battery_status(percent: u8) -> Chunk {
+        data(&[0x02, 0x02, 0x03, 0x04, percent, 0xFF, 0xFF, 0x00])
+    }
+
+    #[test]
+    fn the_battery_level_is_read_and_remembered() {
+        let stream = session(vec![vec![status(0)], vec![battery_status(10)]]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        assert_eq!(l.read_battery(false).unwrap(), 10);
+        assert_eq!(l.status().battery.unwrap().percent, 10);
+        // One question, and nothing that writes.
+        let sent = stream.sent();
+        assert_eq!(sent.last().unwrap(), &vec![0x02, 0x02, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn a_level_that_is_not_a_percentage_is_not_remembered() {
+        let stream = session(vec![vec![status(0)], vec![battery_status(255)]]);
+        let mut l = link(vec![Ok(stream)]);
+        let err = l.read_battery(false).unwrap_err();
+        assert_eq!(err.kind, LinkErrorKind::UnexpectedFraming);
+        assert_eq!(l.status().battery, None);
+    }
+
+    #[test]
+    fn the_battery_level_is_forgotten_when_the_headphones_go() {
+        let stream = session(vec![vec![status(0)], vec![battery_status(55)]]);
+        let mut l = link(vec![Ok(stream)]);
+        l.read_battery(false).unwrap();
+        l.device_gone();
+        assert_eq!(l.status().battery, None);
     }
 
     #[test]

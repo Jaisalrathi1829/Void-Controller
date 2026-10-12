@@ -14,13 +14,14 @@ export function SimulatedBanner() {
   const { setSimulated, nativeAvailable, busy } = useApp();
 
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning-subtle px-8 py-2 text-sm">
+    <div className="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning-subtle px-4 py-2 text-sm md:px-8">
       <div className="flex items-center gap-2 text-warning">
         <FlaskConical className="size-4 shrink-0" />
         <span className="font-medium">Simulated Device</span>
-        <span className="text-muted-foreground">
+        <span className="hidden text-muted-foreground sm:inline">
           Every value shown is fabricated. Nothing here reflects real hardware.
         </span>
+        <span className="text-muted-foreground sm:hidden">Fabricated values.</span>
       </div>
 
       {nativeAvailable ? (

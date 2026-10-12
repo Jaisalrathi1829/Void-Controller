@@ -88,6 +88,32 @@ is held to the same constraints as everything else.
 - **No system volume is touched.** Speech volume is a gain applied to the
   speech samples.
 
+## Android
+
+The Android build keeps the same boundary in a different place.
+
+- **The bridge is not reachable from the interface.** Bluetooth, audio and the
+  background service are reached through one Kotlin class, registered as a
+  Tauri plugin so that native code can call it. The web view's capability
+  file grants no permission for that plugin, so the interface cannot invoke
+  it: its only route to hardware is still this crate's typed commands. The
+  bridge has a "send these bytes" method — it has to, to carry the protocol —
+  and that is exactly why it is native-only.
+- **The model is identified by asking, never assumed.** Android supplies no
+  product id, so the headphones are asked for theirs, and only a model on the
+  tested list gets a control connection.
+- **Permissions are the minimum that works**: nearby devices, notifications,
+  the foreground-service pair, and `INTERNET` — which the web view needs in
+  order to load the interface from inside the package, and which nothing in
+  this application's own code uses. The interface's content security policy
+  forbids it any connection but the local IPC.
+- **A caveat.** Tauri's Android runtime links an HTTP client for reaching a
+  development server in development builds. So "no HTTP client among the
+  dependencies", true of the desktop build, is not true of the Android one.
+- **Signing.** The build script signs with the Android debug key so the
+  result can be installed on the builder's own phone. That key is not a
+  secret and identifies nobody; a build for anyone else needs its own.
+
 ## Logging
 
 Structured logging with explicit levels. Ordinary logs record command *names*

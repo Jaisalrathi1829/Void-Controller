@@ -54,6 +54,10 @@ sherpa-onnx = { version = "=1.13.8", default-features = false, features = ["shar
 # DLLs, and this package's build script and bundle configuration need them to
 # be there. No code uses this crate by name.
 sherpa-onnx-sys = { version = "=1.13.8", default-features = false, features = ["shared"] }
+
+# One instance only is a desktop concern (and a desktop-only plugin): Android
+# never runs two copies of an application.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]

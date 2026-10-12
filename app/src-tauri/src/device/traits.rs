@@ -41,6 +41,12 @@ pub trait BoseDevice: Send + Sync {
 
     async fn noise_control(&self) -> DeviceResult<Option<NoiseControlState>>;
 
+    /// The battery level the device itself last reported, if the backend
+    /// has one in hand. Costs nothing: nothing is asked of the device.
+    fn reported_battery(&self) -> Option<u8> {
+        None
+    }
+
     /// The mode, asked for as cheaply as the backend can: one question to the
     /// device and nothing else. For asking often.
     ///

@@ -1,0 +1,11 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Bose QC Control Center",
+        "visible": true,
+        "dragDropEnabled": false
+      }
+    ]
+  }
+}

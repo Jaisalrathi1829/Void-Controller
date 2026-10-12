@@ -11,7 +11,9 @@ target/
 
 # Tauri
 app/src-tauri/target/
-app/src-tauri/gen/
+# Generated schemas only. gen/android is the Android project - source, with
+# ignore files of its own for what its build produces.
+app/src-tauri/gen/schemas/
 
 # Environment / secrets
 .env

@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Minimal permission set. The frontend gets no shell access, no arbitrary filesystem access, and no raw Bluetooth surface — all hardware interaction goes through this crate's own typed, validated commands, which are not granted here because they are plain #[tauri::command] handlers explicitly registered in lib.rs.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -11,5 +13,10 @@
     "core:window:allow-show",
     "core:window:allow-close",
     "notification:default"
+  ],
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
   ]
 }

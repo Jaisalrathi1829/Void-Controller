@@ -60,6 +60,19 @@ export function runtimeMode(): RuntimeMode {
   return hasNativeLayer() ? 'native' : 'browser-preview';
 }
 
+/**
+ * The kind of system the application is running on, as far as the interface
+ * needs to know: it changes some wording and which settings make sense, and
+ * nothing about what any control does.
+ */
+export type HostPlatform = 'android' | 'desktop';
+
+export function hostPlatform(): HostPlatform {
+  return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
+    ? 'android'
+    : 'desktop';
+}
+
 const browserFallback = new BrowserSimulatedDevice();
 
 async function invokeNative<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -429,6 +442,22 @@ export async function openBluetoothSettings(): Promise<void> {
     } satisfies IpcError;
   }
   return invokeNative<void>('open_bluetooth_settings');
+}
+
+/**
+ * Asks Android, again, to let the application see Bluetooth devices.
+ *
+ * Takes nothing. Whether it worked shows in the next snapshot. Anywhere but
+ * Android there is no such permission, and the native layer says so.
+ */
+export async function requestBluetoothPermission(): Promise<void> {
+  if (!hasNativeLayer()) {
+    throw {
+      kind: 'unsupported',
+      message: 'There is no Bluetooth permission to ask for in the browser preview.',
+    } satisfies IpcError;
+  }
+  return invokeNative<void>('request_bluetooth_permission');
 }
 
 /** Normalises anything thrown by the IPC layer into a displayable error. */

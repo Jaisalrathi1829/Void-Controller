@@ -65,12 +65,15 @@ pub fn config_for_product(product_id: u16) -> Option<bmap::DeviceConfig> {
 #[cfg(windows)]
 pub type PlatformConnector = winsock::WinsockConnector;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
+pub type PlatformConnector = crate::android::rfcomm::AndroidConnector;
+
+#[cfg(not(any(windows, target_os = "android")))]
 pub type PlatformConnector = unsupported::UnsupportedConnector;
 
 /// Stand-in for platforms without an RFCOMM implementation, so the rest of
 /// the crate compiles unchanged. Every connect fails with an explanation.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 pub mod unsupported {
     use super::endpoint::{ConnectFailure, Connector, Opened, Route};
     use super::stream::{ByteStream, Recv};
@@ -100,7 +103,7 @@ pub mod unsupported {
         type Stream = NoStream;
         fn connect(&mut self, _route: Route) -> Result<Opened<NoStream>, ConnectFailure> {
             Err(ConnectFailure {
-                message: "the BMAP control link is only implemented for Windows".into(),
+                message: "the BMAP control link is only implemented for Windows and Android".into(),
                 unreachable: true,
             })
         }

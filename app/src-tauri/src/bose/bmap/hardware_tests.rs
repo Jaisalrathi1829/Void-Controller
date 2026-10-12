@@ -353,3 +353,66 @@ fn hw_diag_mode_slots() {
         println!("    {}", e.render());
     }
 }
+
+/// Asks the headphones which product they are: one `GET [0.3]`, the address
+/// Bose's product-information block uses for the product id. Read-only.
+///
+/// Windows reports the product id itself, so the desktop application never
+/// asks. A platform that does not (Android) has to, and this is the check
+/// that the answer is what Windows says it is.
+#[test]
+#[ignore = "requires the physical headphones; diagnostic output only"]
+fn hw_diag_product_id() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::transport::Transport;
+
+    let hp = find_headphones();
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+    let reply = transport.send_recv(&[0x00, 0x03, 0x01, 0x00]);
+    println!("\n  Windows says product id: 0x{:04X}", hp.product_id);
+    match &reply {
+        Ok(bytes) => println!("  GET [0.3] -> {}", hex(bytes)),
+        Err(e) => println!("  GET [0.3] failed: {e}"),
+    }
+    for e in transport.take_wire_log() {
+        println!("    {}", e.render());
+    }
+}
+
+/// Asks the headphones for their battery level over the control protocol and
+/// sets it beside the level Windows reports. Read-only.
+///
+/// Android does not always pass a Bluetooth device's battery level on to
+/// applications, so there the protocol's own answer is the fallback. This is
+/// the check that it is the same number.
+#[test]
+#[ignore = "requires the physical headphones; diagnostic output only"]
+fn hw_diag_battery() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{StreamTransport, Timing};
+    use bmap::BmapConnection;
+
+    let hp = find_headphones();
+    let config = super::config_for_product(hp.product_id).expect("supported model");
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+    let conn = BmapConnection::new(transport.clone(), config);
+
+    let windows = crate::bose::real::sight_device(None).and_then(|s| s.battery);
+    let status = conn.battery_status();
+    println!("\n  Windows reports      : {windows:?}");
+    println!("  the headphones report: {status:?}");
+    for e in transport.take_wire_log() {
+        println!("    {}", e.render());
+    }
+    let level = status.expect("the headphones answered").aggregate;
+    assert!(level <= 100);
+}

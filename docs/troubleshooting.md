@@ -134,6 +134,33 @@ to be synthesized once first.
 The installer was built without the speech runtime. Build installers with
 `npm run tauri:build`, not a bare `tauri build`.
 
+### Android: "Bluetooth access is needed"
+
+The application has not been allowed to see Bluetooth devices. Press **Allow
+Bluetooth access**. If Android no longer shows the question (it stops after
+two refusals), the application's page in Settings opens instead: allow
+**Nearby devices** there.
+
+### Android: the headphones are connected to the phone but nothing can be controlled
+
+Another application is probably holding the headphones' control channel —
+they accept one such connection from a phone. Close the Bose app (swipe it
+away from recent apps) and reopen this one. The message "the headphones have
+not said which model they are" is the same thing seen a moment earlier.
+
+### Android: announcements stop when the application is not on screen
+
+Switch on **Keep running in the background** in Settings → General. Android
+freezes applications that are not on screen unless they hold a foreground
+service, and that switch is the service.
+
+### Android build: "Creation symbolic link is not allowed for this system"
+
+That is the Tauri CLI, which needs Windows' Developer Mode to place the
+compiled library. `tools\build-android.ps1` does not: it sees the refusal,
+copies the library instead, and finishes with Gradle. Build with that script
+rather than `tauri android build` directly.
+
 ### Real hardware is greyed out
 
 You are running the browser preview (`npm run dev`), which has no native layer.

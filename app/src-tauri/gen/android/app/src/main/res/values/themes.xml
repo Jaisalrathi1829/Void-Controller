@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.bose_qc_control_center" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Shown behind the status bar and around the web view: the
+             interface's own background colour. -->
+        <item name="android:windowBackground">@color/app_background</item>
+    </style>
+</resources>

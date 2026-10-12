@@ -59,6 +59,12 @@ The model package carries its own `LICENSE` file (Apache-2.0), which the
 install script unpacks alongside the model. The sherpa-onnx crates carry
 theirs in the Cargo registry.
 
+The Android package contains the same components built for Android:
+`libsherpa-onnx-c-api.so` and `libonnxruntime.so` from the sherpa-onnx 1.13.8
+Android archive, and — unless built with `-NoVoice` — the Kokoro model and the
+eSpeak NG data files, packed as `voice-model.zip`. What is said below about
+eSpeak NG applies to an APK as it does to an installer.
+
 ### A consequence to know about before distributing a build
 
 `sherpa-onnx-c-api.dll` includes eSpeak NG, which is licensed under the GNU

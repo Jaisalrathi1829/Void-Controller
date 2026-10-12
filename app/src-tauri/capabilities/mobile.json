@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "The same minimal set for Android. The interface is granted nothing of the Android bridge plugin: that is called only from native code, so the rule that the interface cannot reach Bluetooth except through this crate's typed commands holds on the phone as on the desktop.",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "permissions": [
+    "core:default",
+    "notification:default"
+  ]
+}

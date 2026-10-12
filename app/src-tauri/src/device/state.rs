@@ -65,6 +65,9 @@ pub enum BatterySource {
     /// Windows PnP device property. Verified to work as a mechanism on this
     /// machine; whether a given device populates it is per-device.
     WindowsPnp,
+    /// The level Android's Bluetooth stack holds for the device, as the
+    /// headphones reported it over the hands-free profile.
+    AndroidBluetooth,
     /// Standard BLE Battery Service (0x180F) characteristic 0x2A19.
     BleBatteryService,
     /// Parsed from a vendor protocol frame.

@@ -14,17 +14,27 @@ pub struct KokoroBackend {
     voice_root: PathBuf,
     /// A second place to look: a model that came with the application.
     bundled_root: Option<PathBuf>,
+    /// How to find that second place when it is not known up front — on
+    /// Android the model has to be unpacked from the package first, which is
+    /// too slow to do before it is needed. Asked until it answers, then
+    /// not again.
+    bundled_lookup: Option<BundledLookup>,
     settings: Arc<SettingsStore>,
     /// The installed files, once they have been confirmed to be the model.
     files: Option<ModelFiles>,
     kokoro: Option<Kokoro>,
 }
 
+/// Finds the model that came with the application, or says why it could
+/// not be made ready.
+pub type BundledLookup = Box<dyn Fn() -> Result<Option<PathBuf>, String> + Send>;
+
 impl KokoroBackend {
     pub fn new(voice_root: PathBuf, settings: Arc<SettingsStore>) -> Self {
         Self {
             voice_root,
             bundled_root: None,
+            bundled_lookup: None,
             settings,
             files: None,
             kokoro: None,
@@ -38,11 +48,39 @@ impl KokoroBackend {
         self
     }
 
+    /// As [`with_bundled`](Self::with_bundled), for a place that takes work
+    /// to find. `lookup` runs on the voice thread, the first time a model
+    /// the user installed is not there.
+    pub fn with_bundled_lookup(
+        mut self,
+        lookup: impl Fn() -> Result<Option<PathBuf>, String> + Send + 'static,
+    ) -> Self {
+        self.bundled_lookup = Some(Box::new(lookup));
+        self
+    }
+
     /// The first place that holds the model intact; failing that, the most
     /// telling reason none does — a damaged model over an absent one.
-    fn find_model(&self) -> Result<ModelFiles, String> {
+    fn find_model(&mut self) -> Result<ModelFiles, String> {
         let mut absent = None;
         let mut broken = None;
+        let mut lookup_failure = None;
+
+        let user_has_one = assets::locate(&self.voice_root).is_ok();
+        if !user_has_one && self.bundled_root.is_none() {
+            // An answer settles it, whether or not there is a model. A
+            // failure does not: the next check asks again.
+            let answer = self.bundled_lookup.as_ref().map(|lookup| lookup());
+            match answer {
+                Some(Ok(root)) => {
+                    self.bundled_root = root.map(plain_path);
+                    self.bundled_lookup = None;
+                }
+                Some(Err(why)) => lookup_failure = Some(why),
+                None => {}
+            }
+        }
+
         for root in std::iter::once(&self.voice_root).chain(self.bundled_root.iter()) {
             match assets::locate(root).and_then(|files| assets::verify(&files).map(|()| files)) {
                 Ok(files) => return Ok(files),
@@ -55,8 +93,9 @@ impl KokoroBackend {
             }
         }
         Err(broken
-            .or(absent)
             .map(|problem| problem.describe())
+            .or(lookup_failure)
+            .or(absent.map(|problem| problem.describe()))
             .unwrap_or_else(|| "The voice model is not installed.".to_string()))
     }
 }
@@ -169,10 +208,33 @@ impl Backend for KokoroBackend {
         super::choose_route(via, headphones, default, allow_default)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    fn route(&mut self, via: Via, allow_default: bool) -> Route {
+        use crate::android::{directory, sound};
+
+        // Which headphones: the remembered ones, by their address.
+        let stored = self.settings.get().preferred_device_id;
+        let address = stored.as_deref().and_then(directory::address_of);
+
+        let headphones = match (via, address) {
+            (Via::HeadphonesFirst, Some(address)) => sound::output_for(address).ok().flatten(),
+            _ => None,
+        };
+        let default = if !allow_default {
+            None
+        } else if via == Via::NotTheHeadphones {
+            // The headphones have gone; the phone's own speaker has not.
+            sound::speaker().ok().flatten()
+        } else {
+            Some(sound::current_output())
+        };
+        super::choose_route(via, headphones, default, allow_default)
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     fn route(&mut self, _via: Via, _allow_default: bool) -> Route {
         let _ = &self.settings;
-        Route::Nowhere("Speech output is only implemented for Windows.".into())
+        Route::Nowhere("Speech output is only implemented for Windows and Android.".into())
     }
 
     #[cfg(windows)]
@@ -186,7 +248,18 @@ impl Backend for KokoroBackend {
         crate::audio::playback::play(&output.id, &speech.samples, speech.sample_rate, gain, stop)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    fn play(
+        &mut self,
+        output: &Output,
+        speech: &Speech,
+        gain: f32,
+        stop: &AtomicBool,
+    ) -> Result<Played, String> {
+        crate::android::sound::play(&output.id, &speech.samples, speech.sample_rate, gain, stop)
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     fn play(
         &mut self,
         _output: &Output,
@@ -194,7 +267,7 @@ impl Backend for KokoroBackend {
         _gain: f32,
         _stop: &AtomicBool,
     ) -> Result<Played, String> {
-        Err("Speech output is only implemented for Windows.".into())
+        Err("Speech output is only implemented for Windows and Android.".into())
     }
 }
 
@@ -266,6 +339,37 @@ mod tests {
         let speech = b.synthesize("Voice feedback is ready.", voice, 1.0, &cancel).unwrap();
         assert!(speech.samples.len() > 12_000);
         b.unload();
+    }
+
+    /// On Android the bundled model is unpacked on demand, and that can fail
+    /// — or simply not be possible yet. It is tried again at the next check
+    /// rather than given up on.
+    #[test]
+    fn a_bundled_model_that_could_not_be_looked_up_is_looked_up_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let user = tempfile::tempdir().unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        let store = Arc::new(SettingsStore::in_memory(StoredSettings::default()));
+        let mut b = KokoroBackend::new(user.path().to_path_buf(), store).with_bundled_lookup(move || {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("The voice model in the package could not be unpacked: disk full".to_string())
+            } else {
+                Ok(None)
+            }
+        });
+
+        let first = b.check_assets().unwrap_err();
+        assert!(first.contains("could not be unpacked"), "{first}");
+
+        // Asked again; this time there is an answer — no bundled model.
+        let second = b.check_assets().unwrap_err();
+        assert!(second.contains("not installed"), "{second}");
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+
+        // And an answer is not asked for a third time.
+        let _ = b.check_assets();
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
     }
 
     /// A model that is there but wrong is the thing to report, wherever it is.

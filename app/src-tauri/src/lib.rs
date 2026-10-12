@@ -5,23 +5,26 @@
 //! that are validated before any backend sees them. There is deliberately no
 //! command that accepts a UUID, a characteristic handle, or a byte array.
 
+pub mod android;
 pub mod audio;
 pub mod autostart;
 pub mod bluetooth;
 pub mod bose;
 pub mod device;
 pub mod settings;
+#[cfg(desktop)]
 pub mod tray;
 pub mod util;
 pub mod voice;
 pub mod watcher;
 
 use bose::{MockBoseDevice, RealBoseDevice};
+#[cfg(windows)]
 use device::capability::{CapabilityKey, HardwareProof, Mechanism};
 use device::command::{CommandOutcome, DeviceCommand};
-use device::state::{
-    DeviceSnapshot, DeviceSource, NoiseControlMode, NoiseControlState, WindowsAudioState,
-};
+#[cfg(windows)]
+use device::state::WindowsAudioState;
+use device::state::{DeviceSnapshot, DeviceSource, NoiseControlMode, NoiseControlState};
 use device::traits::BoseDevice;
 use parking_lot::RwLock;
 use settings::{SettingKey, SettingsStore, StoredSettings};
@@ -90,9 +93,18 @@ impl AppState {
     }
 
     /// The remembered headphones' instance id, if they are still paired.
+    #[cfg(not(target_os = "android"))]
     fn preferred_device(&self) -> Option<String> {
         let stored = self.settings.get().preferred_device_id?;
         bose::real::sight_device(Some(&stored)).map(|s| s.instance_id)
+    }
+
+    /// The remembered headphones' instance id. Whether they are still paired
+    /// is settled when the backend first looks — this runs while the
+    /// application is still starting, before Android can be asked anything.
+    #[cfg(target_os = "android")]
+    fn preferred_device(&self) -> Option<String> {
+        self.settings.get().preferred_device_id
     }
 
     /// The backend to start on.
@@ -103,6 +115,12 @@ impl AppState {
     /// explore, labelled as simulated. Deciding this only enumerates what
     /// Windows has; nothing is sent to any device.
     pub fn initial_source() -> DeviceSource {
+        // A phone application about the headphones starts on the headphones.
+        // With none paired it says so; the simulation is a choice, not what
+        // someone holding real headphones should be met with.
+        #[cfg(target_os = "android")]
+        return DeviceSource::Real;
+
         #[cfg(windows)]
         {
             let paired = bluetooth::pnp::enumerate_bluetooth_devices()
@@ -118,6 +136,7 @@ impl AppState {
                 return DeviceSource::Real;
             }
         }
+        #[cfg(not(target_os = "android"))]
         DeviceSource::Mock
     }
 
@@ -177,6 +196,12 @@ impl SettingsView {
         }
         let start_with_windows = autostart_blocked.is_none()
             && autostart::Autostart::for_this_app().is_ok_and(|entry| entry.is_enabled());
+        // A phone has no minimized state to start in.
+        #[cfg(mobile)]
+        unavailable.insert(
+            SettingKey::StartMinimized,
+            "Not available on Android.".to_string(),
+        );
 
         Self {
             start_with_windows,
@@ -220,6 +245,7 @@ impl From<device::DeviceError> for UiError {
             device::DeviceError::Rejected(_) => "rejected",
             device::DeviceError::ControlLink(_) => "control-link",
             device::DeviceError::Platform(_) => "platform",
+            device::DeviceError::NotPermitted(_) => "not-permitted",
             device::DeviceError::InvalidInput(_) => "invalid-input",
         };
         Self {
@@ -242,6 +268,7 @@ type UiResult<T> = Result<T, UiError>;
 ///
 /// Reading an endpoint successfully is genuine hardware evidence that the
 /// volume path works, so the capability is promoted accordingly.
+#[cfg_attr(not(windows), allow(unused_mut))]
 fn attach_windows_audio(mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
     #[cfg(windows)]
     {
@@ -291,6 +318,7 @@ fn attach_windows_audio(mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
 ///
 /// The UI only ever sees salted hashes, so it cannot name a raw endpoint id —
 /// which is deliberate. Volume commands therefore act on the default endpoint.
+#[cfg(windows)]
 fn target_endpoint() -> Option<&'static str> {
     None
 }
@@ -357,7 +385,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsView {
 /// else to pass. Switches with an immediate effect take it here — the startup
 /// list is edited, the tray icon appears or goes — and a switch whose effect
 /// could not be carried out is not recorded as on.
-#[tauri::command]
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
 fn set_setting(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -383,7 +412,14 @@ fn set_setting(
         SettingKey::MinimizeToTray => {
             // The icon first: a window that hides with nothing to bring it
             // back would be worse than the switch failing.
+            #[cfg(desktop)]
             tray::sync(&app, value).map_err(platform_error)?;
+            // On Android the same switch means "keep running in the
+            // background": the service that keeps the process alive while the
+            // application is not on screen. That first, for the same reason.
+            #[cfg(target_os = "android")]
+            android::bridge::keep_alive(value).map_err(platform_error)?;
+            let _ = &app;
             state
                 .settings()
                 .update(|s| s.set(key, value))
@@ -540,6 +576,7 @@ async fn execute_command(
             }
             #[cfg(not(windows))]
             {
+                let _ = percent;
                 CommandOutcome::unsupported("Core Audio is only available on Windows.")
             }
         }
@@ -558,6 +595,7 @@ async fn execute_command(
             }
             #[cfg(not(windows))]
             {
+                let _ = muted;
                 CommandOutcome::unsupported("Core Audio is only available on Windows.")
             }
         }
@@ -628,7 +666,8 @@ async fn set_noise_control_mode(
 /// frontend cannot use this to open an arbitrary URL or launch a program.
 /// That is why this exists as a dedicated command rather than granting the
 /// opener plugin's general `open-url` permission to the UI.
-#[tauri::command]
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
 fn open_bluetooth_settings(app: tauri::AppHandle) -> UiResult<()> {
     #[cfg(windows)]
     {
@@ -641,30 +680,75 @@ fn open_bluetooth_settings(app: tauri::AppHandle) -> UiResult<()> {
             })?;
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        android::bridge::open_bluetooth_settings().map_err(platform_error)
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
     {
         let _ = app;
         Err(UiError {
-            message: "Bluetooth settings are only available on Windows.".to_string(),
+            message: "Bluetooth settings are only available on Windows and Android.".to_string(),
             kind: "unsupported".to_string(),
         })
     }
 }
 
-#[tauri::command]
+/// Asks Android for permission to see Bluetooth devices, again.
+///
+/// The application asks once when it starts. This is for someone who said no
+/// and has thought better of it. Takes nothing and returns nothing: whether
+/// it worked shows in the next snapshot.
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
+fn request_bluetooth_permission() -> UiResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        android::bridge::ask_permissions().map_err(platform_error)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(UiError {
+            message: "There is no Bluetooth permission to ask for on this system.".to_string(),
+            kind: "unsupported".to_string(),
+        })
+    }
+}
+
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
 fn get_bluetooth_availability() -> bluetooth::BluetoothAvailability {
     #[cfg(windows)]
     {
         bluetooth::radio::availability()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
     {
-        bluetooth::BluetoothAvailability::unavailable("Not running on Windows.")
+        match android::directory::report() {
+            Ok(report) => bluetooth::BluetoothAvailability {
+                radio_present: report.radio_present,
+                radio_enabled: report.radio_enabled,
+                detail: if !report.permission {
+                    "This application has not been allowed to use Bluetooth.".to_string()
+                } else if report.radio_enabled {
+                    "Bluetooth is on.".to_string()
+                } else {
+                    "Bluetooth is switched off.".to_string()
+                },
+            },
+            Err(why) => bluetooth::BluetoothAvailability::unavailable(why),
+        }
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
+    {
+        bluetooth::BluetoothAvailability::unavailable("Not running on Windows or Android.")
     }
 }
 
 /// Read-only enumeration of Bluetooth devices Windows knows about.
-#[tauri::command]
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
 fn list_bluetooth_devices() -> Vec<bluetooth::DiscoveredDevice> {
     #[cfg(windows)]
     {
@@ -692,7 +776,28 @@ fn list_bluetooth_devices() -> Vec<bluetooth::DiscoveredDevice> {
             })
             .collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    {
+        use bluetooth::{DiscoveredDevice, DiscoveredTransport};
+        android::directory::report()
+            .map(|report| report.devices)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| DiscoveredDevice {
+                id: util::stable_id(&d.instance_id),
+                looks_like_bose: d.advertises_bmap || bose::looks_like_bose(&d.name),
+                name: d.name,
+                transport: if d.low_energy_only {
+                    DiscoveredTransport::LowEnergy
+                } else {
+                    DiscoveredTransport::Classic
+                },
+                connected: Some(d.connected),
+                battery_percent: d.battery,
+            })
+            .collect()
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
     {
         Vec::new()
     }
@@ -702,14 +807,23 @@ fn list_bluetooth_devices() -> Vec<bluetooth::DiscoveredDevice> {
 pub fn run() {
     util::set_salt(util::generate_salt());
 
-    tauri::Builder::default()
-        // One instance only: two would fight over the headphones' single
-        // control connection. Starting the application again brings the
-        // running one forward — including out of the tray. Registered first,
-        // as the plugin requires.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            tray::show_main(app);
-        }))
+    let builder = tauri::Builder::default();
+
+    // One instance only: two would fight over the headphones' single
+    // control connection. Starting the application again brings the
+    // running one forward — including out of the tray. Registered first,
+    // as the plugin requires.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        tray::show_main(app);
+    }));
+
+    // Android's Bluetooth, audio and background service, for this crate's
+    // own use. The web view is given no permission to call it.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android::bridge::init());
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
@@ -731,13 +845,21 @@ pub fn run() {
                 .map(|dir| dir.join("voice"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("voice"));
             let status_target = handle.clone();
+            let backend = voice::backend::KokoroBackend::new(voice_root, Arc::clone(&store));
+            // An installer that carries the model puts it here.
+            #[cfg(not(target_os = "android"))]
+            let backend =
+                backend.with_bundled(app.path().resource_dir().ok().map(|dir| dir.join("voice")));
+            // An Android package carries it packed, and it is unpacked the
+            // first time it is wanted.
+            #[cfg(target_os = "android")]
+            let backend = backend.with_bundled_lookup(|| {
+                android::bridge::bundled_model_root()
+                    .map(|root| root.map(std::path::PathBuf::from))
+            });
             let voice = VoiceFeedback::start(
                 Arc::clone(&store),
-                Box::new(
-                    voice::backend::KokoroBackend::new(voice_root, Arc::clone(&store))
-                        // An installer that carries the model puts it here.
-                        .with_bundled(app.path().resource_dir().ok().map(|dir| dir.join("voice"))),
-                ),
+                Box::new(backend),
                 voice::Timing::standard(),
                 move |status| {
                     let _ = status_target.emit(voice::VOICE_STATUS_EVENT, status);
@@ -748,29 +870,48 @@ pub fn run() {
             // with this PC, and on the labelled simulation otherwise.
             app.manage(AppState::new(AppState::initial_source(), store, voice));
 
-            if settings.minimize_to_tray {
-                if let Err(e) = tray::sync(&handle, true) {
-                    eprintln!("tray icon unavailable: {e}");
+            #[cfg(desktop)]
+            {
+                if settings.minimize_to_tray {
+                    if let Err(e) = tray::sync(&handle, true) {
+                        eprintln!("tray icon unavailable: {e}");
+                    }
                 }
-            }
 
-            // The window is created hidden so that "start minimized" never
-            // flashes it on screen. It stays hidden only if there is a tray
-            // icon to bring it back; otherwise it is shown, minimized or not.
-            let stay_hidden = settings.start_minimized && tray::is_present(&handle);
-            if !stay_hidden {
-                if let Some(window) = app.get_webview_window(tray::MAIN_WINDOW) {
-                    let _ = window.show();
-                    if settings.start_minimized {
-                        let _ = window.minimize();
+                // The window is created hidden so that "start minimized" never
+                // flashes it on screen. It stays hidden only if there is a tray
+                // icon to bring it back; otherwise it is shown, minimized or not.
+                let stay_hidden = settings.start_minimized && tray::is_present(&handle);
+                if !stay_hidden {
+                    if let Some(window) = app.get_webview_window(tray::MAIN_WINDOW) {
+                        let _ = window.show();
+                        if settings.start_minimized {
+                            let _ = window.minimize();
+                        }
                     }
                 }
             }
+
+            // "Keep running in the background", if it was left on. Off the
+            // start-up path: nothing here should wait on Android.
+            #[cfg(target_os = "android")]
+            if settings.minimize_to_tray {
+                std::thread::spawn(|| {
+                    let _ = android::bridge::keep_alive(true);
+                });
+            }
+            #[cfg(mobile)]
+            let _ = &settings;
 
             watcher::spawn(handle);
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Hiding to the tray is a desktop notion.
+            #[cfg(mobile)]
+            let _ = (window, event);
+            #[cfg(desktop)]
+            {
             if window.label() != tray::MAIN_WINDOW {
                 return;
             }
@@ -794,6 +935,7 @@ pub fn run() {
                 }
                 _ => {}
             }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -813,6 +955,7 @@ pub fn run() {
             list_bluetooth_devices,
             list_audio_endpoints,
             open_bluetooth_settings,
+            request_bluetooth_permission,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Bose QC Control Center")

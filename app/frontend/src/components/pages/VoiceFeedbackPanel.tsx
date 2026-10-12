@@ -1,7 +1,7 @@
 import { Play, RefreshCw, Square } from "lucide-react";
 import { Button, Panel, Range, SectionLabel, Toggle } from "../primitives";
 import { useApp } from "../../store";
-import { VOICE_SPEED, type SettingKey, type VoiceState } from "@/services/ipc";
+import { hostPlatform, VOICE_SPEED, type SettingKey, type VoiceState } from "@/services/ipc";
 import { cn } from "../ui/utils";
 
 const stateMeta: Record<VoiceState, { label: string; tone: string }> = {
@@ -60,6 +60,7 @@ export function VoiceFeedbackPanel() {
   } = useApp();
 
   const meta = stateMeta[voice.state];
+  const onPhone = hostPlatform() === "android";
   // The headphones are announced by their own name. Until one is known,
   // the sentence is described rather than made up.
   const name = settings.preferredDeviceName;
@@ -96,7 +97,11 @@ export function VoiceFeedbackPanel() {
       <div className="mt-2">
         <Row
           title="Voice feedback"
-          desc="Speak confirmed changes aloud. Synthesized on this computer; nothing is sent anywhere."
+          desc={
+            onPhone
+              ? "Speak confirmed changes aloud. Synthesized on this phone; nothing is sent anywhere."
+              : "Speak confirmed changes aloud. Synthesized on this computer; nothing is sent anywhere."
+          }
           unavailable={blocked}
         >
           {toggle("voiceEnabled", "Voice feedback")}
@@ -115,17 +120,27 @@ export function VoiceFeedbackPanel() {
         )}
         {voice.state === "not-installed" && (
           <div className="mt-3 space-y-2 text-xs text-muted-foreground" data-testid="voice-install">
-            <p>
-              The voice model is a one-time download of about 98 MB and is not fetched
-              automatically. From the project folder, run:
-            </p>
-            <code className="block select-all rounded-md bg-muted px-2 py-1.5 font-mono text-foreground">
-              {INSTALL_COMMAND}
-            </code>
-            {voice.assetsDir && (
+            {onPhone ? (
               <p>
-                It is installed to <span className="break-all text-foreground">{voice.assetsDir}</span>
+                On Android the voice model travels inside the app, and this copy of the app was
+                built without it. Nothing is downloaded: install a build that includes the model.
               </p>
+            ) : (
+              <>
+                <p>
+                  The voice model is a one-time download of about 98 MB and is not fetched
+                  automatically. From the project folder, run:
+                </p>
+                <code className="block select-all rounded-md bg-muted px-2 py-1.5 font-mono text-foreground">
+                  {INSTALL_COMMAND}
+                </code>
+                {voice.assetsDir && (
+                  <p>
+                    It is installed to{" "}
+                    <span className="break-all text-foreground">{voice.assetsDir}</span>
+                  </p>
+                )}
+              </>
             )}
             <Button
               variant="outline"
@@ -190,7 +205,9 @@ export function VoiceFeedbackPanel() {
             onChange={(percent) => setVoiceOption({ kind: "volume", percent })}
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            Applies to speech only. The Windows and headphone volume are left alone.
+            {onPhone
+              ? "Applies to speech only. The phone and headphone volume are left alone."
+              : "Applies to speech only. The Windows and headphone volume are left alone."}
           </p>
         </div>
 
@@ -252,14 +269,22 @@ export function VoiceFeedbackPanel() {
           </Row>
           <Row
             title="Low battery"
-            desc="Once, when the level Windows reports falls to 20% or below"
+            desc={
+              onPhone
+                ? "Once, when the headphones’ battery falls to 20% or below"
+                : "Once, when the level Windows reports falls to 20% or below"
+            }
             unavailable={settings.unavailable.announceBattery}
           >
             {toggle("announceBattery", "Low battery warning", kindsOff)}
           </Row>
           <Row
             title="Use another output when the headphones are unavailable"
-            desc="Off: stay silent rather than speak through the computer’s speakers. On: use the Windows default output"
+            desc={
+              onPhone
+                ? "Off: stay silent rather than speak through the phone’s speaker. On: use whatever the phone is playing through"
+                : "Off: stay silent rather than speak through the computer’s speakers. On: use the Windows default output"
+            }
             unavailable={settings.unavailable.voiceUseDefaultOutput}
           >
             {toggle("voiceUseDefaultOutput", "Use another output when the headphones are unavailable")}

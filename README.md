@@ -80,6 +80,20 @@ Then open Settings → Voice Feedback. See
 [docs/voice-feedback.md](docs/voice-feedback.md) for what is announced and
 when, where speech is played, and what has been measured.
 
+### Android
+
+The same application builds for an Android phone, with the voice model inside
+the package:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-android.ps1
+```
+
+The interface and all of the control logic are shared; a small Kotlin bridge
+stands in for the Windows APIs. What is different on a phone, how to install
+the result, and what has and has not been verified there are in
+[docs/android.md](docs/android.md).
+
 Run the frontend alone in a browser (simulated device, no native layer):
 
 ```bash
@@ -154,6 +168,8 @@ app/
     tray.rs       System-tray icon
     watcher.rs    Background presence watcher and notifications
     voice/        Voice feedback: announcement rules, queue, Kokoro, worker
+    android/      Android's Bluetooth, device list and audio, via the Kotlin bridge
+    gen/android/  The Android project (Kotlin bridge, background service, manifest)
     audio/        Windows audio: endpoints, and playback of synthesized speech
     bluetooth/    Windows PnP + radio access (read-only)
     bose/         Mock and real device backends
@@ -166,6 +182,7 @@ tools/
   bose-rfcomm-listen/ Listen-only RFCOMM capture — never transmits
   bose-btsnoop-parse/ Offline parser for Android Bluetooth HCI snoop logs
   install-voice-model.ps1  One-time download of the Kokoro voice model
+  build-android.ps1        Builds the Android APK, voice model included
 docs/                 Architecture, capability matrix, protocol notes
 ```
 
@@ -213,4 +230,5 @@ See [docs/security.md](docs/security.md).
 | [protocol-notes.md](docs/protocol-notes.md) | Vendor protocol investigation status |
 | [security.md](docs/security.md) | Threat model and constraints |
 | [voice-feedback.md](docs/voice-feedback.md) | Spoken announcements: setup, rules, runtime, measurements |
+| [android.md](docs/android.md) | The Android build: what differs, building, installing, what is verified |
 | [troubleshooting.md](docs/troubleshooting.md) | Common problems |

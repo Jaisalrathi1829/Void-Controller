@@ -64,6 +64,11 @@ pub enum DeviceError {
     #[error("Windows API error: {0}")]
     Platform(String),
 
+    /// The user has not let this application use Bluetooth. Nothing is
+    /// wrong with the device or the radio; there is a permission to grant.
+    #[error("{0}")]
+    NotPermitted(String),
+
     #[error("invalid input: {0}")]
     InvalidInput(String),
 }

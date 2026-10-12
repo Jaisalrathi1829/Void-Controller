@@ -50,7 +50,12 @@ export interface DeviceIdentity {
 export interface BatteryReading {
   /** 0-100. */
   percent: number;
-  source: 'windows-pnp' | 'ble-battery-service' | 'vendor-protocol' | 'simulated';
+  source:
+    | 'windows-pnp'
+    | 'android-bluetooth'
+    | 'ble-battery-service'
+    | 'vendor-protocol'
+    | 'simulated';
   /** Some devices report per-earcup or case levels. Absent unless observed. */
   charging?: boolean;
   readAt: string;
