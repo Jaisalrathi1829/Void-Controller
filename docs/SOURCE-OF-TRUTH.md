@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- The commit that holds the code is `7bfd6e1` (see [§12](#12-git-state)). One thing made later on 2026-10-12 is **not yet committed**: the equalizer on the Android widget ([§17](#17-equalizer-on-the-android-widget-2026-10-12))
+- Everything described here is committed and pushed. The commit that holds the code is `1502442` (see [§12](#12-git-state))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -574,10 +574,14 @@ On `origin/main`:
 
 | `7bfd6e1` | The Android home-screen widget ([§16](#16-home-screen-widget-on-android-2026-10-12)), and the `Setups` folder tooling (`tools/collect-setups.ps1`) |
 
-Commits that touch only this document are bookkeeping; `7bfd6e1` is the one
+| `1502442` | The equalizer on the Android widget, and the widget's taps no longer waiting on one another ([§17](#17-equalizer-on-the-android-widget-2026-10-12)) |
+
+Commits that touch only this document are bookkeeping; `1502442` is the one
 to return to for the code.
 
 Earlier points to go back to, if something in the latest turns out wrong:
+`7bfd6e1` is the Android widget with the modes alone, as the owner reported
+working on the phone — with the 2.5 s wait between taps still in it;
 `b1f2a3f` is everything verified on the headphones, without the Android
 widget; `b5c0446` has the desktop widget and the phone fixes but not the two
 timing fixes of §15; `55e3684` is the Android port as first built, before any of that; and
@@ -903,7 +907,7 @@ version already on the phone.
 Asked for by the owner after the widget of §16 was working on the phone:
 "add eq to the android widget too".
 
-**Not committed yet** at the time of writing.
+Committed as `1502442`.
 
 ### What it is
 
