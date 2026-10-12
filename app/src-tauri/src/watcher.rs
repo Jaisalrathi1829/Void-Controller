@@ -56,16 +56,30 @@ impl Notice {
         }
     }
 
-    pub fn body(&self) -> String {
-        match self {
-            Self::Connected { .. } => "Your headphones are connected to this PC.".to_string(),
-            Self::Disconnected { .. } => {
-                "Your headphones are no longer connected to this PC.".to_string()
+    /// The text under the title. `host` is what this phone or computer is
+    /// called, when the system has said.
+    pub fn body(&self, host: Option<&str>) -> String {
+        match (self, host) {
+            (Self::Connected { .. }, Some(host)) => format!("Connected to {host}."),
+            (Self::Connected { .. }, None) => {
+                format!("Your headphones are connected to this {THIS_MACHINE}.")
             }
-            Self::LowBattery { percent, .. } => format!("{percent}% remaining."),
+            (Self::Disconnected { .. }, Some(host)) => {
+                format!("No longer connected to {host}.")
+            }
+            (Self::Disconnected { .. }, None) => {
+                format!("Your headphones are no longer connected to this {THIS_MACHINE}.")
+            }
+            (Self::LowBattery { percent, .. }, _) => format!("{percent}% remaining."),
         }
     }
 }
+
+/// What to call the machine when it has no name to give.
+#[cfg(target_os = "android")]
+const THIS_MACHINE: &str = "phone";
+#[cfg(not(target_os = "android"))]
+const THIS_MACHINE: &str = "PC";
 
 /// What one look at the headphones found to have changed.
 ///
@@ -192,13 +206,13 @@ impl WatchState {
     }
 }
 
-fn notify(app: &AppHandle, notice: &Notice) {
+fn notify(app: &AppHandle, notice: &Notice, host: Option<&str>) {
     // A notification that cannot be shown is not worth failing anything over.
     let _ = app
         .notification()
         .builder()
         .title(notice.title())
-        .body(notice.body())
+        .body(notice.body(host))
         .show();
 }
 
@@ -285,6 +299,19 @@ pub fn spawn(app: AppHandle) {
                 }
             }
 
+            // Before a connection is announced, so that it can be announced
+            // as a connection to this machine by name. Asked for at most
+            // every few minutes; the rest of the time this costs nothing.
+            if settings.voice_enabled && settings.announce_connection {
+                let host = tauri::async_runtime::spawn_blocking(crate::host::name)
+                    .await
+                    .ok()
+                    .flatten();
+                if host.is_some() {
+                    state.voice().set_host(host);
+                }
+            }
+
             let step = watch.observe(sighting.as_ref());
 
             // With auto reconnect off, headphones that leave are let go of:
@@ -292,8 +319,12 @@ pub fn spawn(app: AppHandle) {
             if step.lost && !settings.auto_reconnect {
                 state.detach();
             }
-            for notice in step.notices(&settings) {
-                notify(&app, &notice);
+            let notices = step.notices(&settings);
+            if !notices.is_empty() {
+                let host = crate::host::name();
+                for notice in &notices {
+                    notify(&app, notice, host.as_deref());
+                }
             }
             state.voice().observe_presence(&step);
 
@@ -311,8 +342,10 @@ pub fn spawn(app: AppHandle) {
                     || (settings.voice_enabled && settings.announce_battery));
             let connected = sighting.as_ref().is_some_and(|seen| seen.connected);
             if connected && (state.voice().wants_mode_readings() || battery_wanted) {
-                if let Ok(snapshot) = state.current().snapshot().await {
+                let device = state.current();
+                if let Ok(snapshot) = device.snapshot().await {
                     state.voice().observe_snapshot(&snapshot);
+                    state.voice().expect_modes(&device.known_custom_modes());
                 }
             }
 
@@ -545,10 +578,24 @@ mod tests {
             percent: 18,
         };
         assert_eq!(n.title(), "Aurora battery low");
-        assert_eq!(n.body(), "18% remaining.");
+        assert_eq!(n.body(None), "18% remaining.");
+        assert_eq!(n.body(Some("Nemesis")), "18% remaining.");
         assert_eq!(
             Notice::Connected { name: "Aurora".into() }.title(),
             "Aurora connected"
         );
+    }
+
+    /// A connection is to something, and the notification says what when the
+    /// system has given this machine a name.
+    #[test]
+    fn a_connection_notice_names_this_machine_when_it_has_a_name() {
+        let connected = Notice::Connected { name: "Aurora".into() };
+        let gone = Notice::Disconnected { name: "Aurora".into() };
+        assert_eq!(connected.body(Some("Galaxy S24 Ultra")), "Connected to Galaxy S24 Ultra.");
+        assert_eq!(gone.body(Some("Galaxy S24 Ultra")), "No longer connected to Galaxy S24 Ultra.");
+        // Without one it still says where, in general terms.
+        assert!(connected.body(None).starts_with("Your headphones are connected to this "));
+        assert!(gone.body(None).starts_with("Your headphones are no longer connected to this "));
     }
 }

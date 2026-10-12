@@ -76,7 +76,7 @@ export class BrowserSimulatedDevice {
           }
         : null,
       equalizer: this.connected ? { ...this.eq, source: 'simulated', readAt: now } : null,
-      windowsAudio: null,
+      systemAudio: null,
       lastError: null,
       updatedAt: now,
     };

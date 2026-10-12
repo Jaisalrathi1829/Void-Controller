@@ -33,6 +33,7 @@ caveat, and `CapabilityStatus::is_actionable()` returns `false` for it.
 | Battery | Windows PnP battery property (HFP child node) | **VERIFIED** | **Yes** — read 30% |
 | Device identity | Windows PnP | **VERIFIED** | **Yes** |
 | Windows volume | Core Audio | **VERIFIED** | **Yes** (see below) |
+| Phone media volume (Android) | Android's audio manager | VERIFIED on the phone it is read on | On the emulator only: read, set to a step, read back. Not yet on a phone with the headphones as its output |
 | Playback / transport | Windows media session (not yet wired) | UNKNOWN | No |
 | Noise control (Quiet) | BMAP over RFCOMM, `[31.3]` | **VERIFIED** | **Yes** — Aware → Quiet confirmed by read-back |
 | Aware mode | BMAP over RFCOMM, `[31.3]` | **VERIFIED** | **Yes** — Quiet → Aware confirmed by read-back |
@@ -72,9 +73,15 @@ until the headphones are paired and connected. When they are, the same code
 will read whatever endpoint Windows creates for them, and the capability will
 re-verify against that.
 
-This distinction matters and the code preserves it: `attach_windows_audio()`
+This distinction matters and the code preserves it: `attach_system()`
 builds a `HardwareProof` from the endpoint it actually read, naming that
 endpoint in the evidence string.
+
+On Android the same slot holds the phone's media volume, read through
+Android's audio manager, with the evidence naming what media was playing
+through when it was read. It is the phone's volume in exactly the sense that
+the Windows one is Windows': what the headphones play at while they are the
+output, and not a value they were asked for.
 
 Note also that Windows system volume for an endpoint is a different mechanism
 from any volume the headphones keep internally. The UI labels it as such and

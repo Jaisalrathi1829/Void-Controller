@@ -50,6 +50,15 @@ pub struct StoredSettings {
     /// When the headphones' own output is not available, speak through
     /// Windows' default output instead of staying silent.
     pub voice_use_default_output: bool,
+
+    /// Show the desktop widget: a small window of its own with the modes and
+    /// the equalizer, so that the main window need not be opened for them.
+    pub desktop_widget: bool,
+    /// Keep the widget above other windows.
+    pub widget_on_top: bool,
+    /// Where the widget was last put, in screen pixels. Checked against the
+    /// screens that are actually there before it is used.
+    pub widget_position: Option<(i32, i32)>,
 }
 
 /// Speaking rates offered, as percentages of the model's natural pace.
@@ -82,6 +91,12 @@ impl Default for StoredSettings {
             // Speech meant for the headphones does not come out of the
             // laptop's speakers unless that was asked for.
             voice_use_default_output: false,
+            // A window that appears on the desktop uninvited would be an
+            // imposition. Once asked for, it floats, which is what a widget
+            // is for; that can be switched off on the widget itself.
+            desktop_widget: false,
+            widget_on_top: true,
+            widget_position: None,
         }
     }
 }
@@ -120,6 +135,8 @@ pub enum SettingKey {
     AnnounceConnection,
     AnnounceBattery,
     VoiceUseDefaultOutput,
+    DesktopWidget,
+    WidgetOnTop,
 }
 
 impl StoredSettings {
@@ -140,6 +157,8 @@ impl StoredSettings {
             SettingKey::AnnounceConnection => self.announce_connection = value,
             SettingKey::AnnounceBattery => self.announce_battery = value,
             SettingKey::VoiceUseDefaultOutput => self.voice_use_default_output = value,
+            SettingKey::DesktopWidget => self.desktop_widget = value,
+            SettingKey::WidgetOnTop => self.widget_on_top = value,
         }
     }
 }
@@ -277,11 +296,12 @@ mod tests {
             announce_mode_changes: false,
             announce_connection: false,
             announce_battery: false,
+            widget_on_top: false,
             ..StoredSettings::default()
         }
     }
 
-    fn flags(s: &StoredSettings) -> [bool; 12] {
+    fn flags(s: &StoredSettings) -> [bool; 14] {
         [
             s.start_minimized,
             s.minimize_to_tray,
@@ -295,6 +315,8 @@ mod tests {
             s.announce_connection,
             s.announce_battery,
             s.voice_use_default_output,
+            s.desktop_widget,
+            s.widget_on_top,
         ]
     }
 
@@ -313,6 +335,8 @@ mod tests {
             SettingKey::AnnounceConnection,
             SettingKey::AnnounceBattery,
             SettingKey::VoiceUseDefaultOutput,
+            SettingKey::DesktopWidget,
+            SettingKey::WidgetOnTop,
         ];
         let mut seen = std::collections::HashSet::new();
         for key in keys {
@@ -365,6 +389,29 @@ mod tests {
             .unwrap();
         assert_eq!(after.voice_speed_percent, 200);
         assert_eq!(after.voice_id, crate::voice::assets::DEFAULT_VOICE);
+    }
+
+    /// The widget is off until asked for, floats once it is, and comes
+    /// back where it was left.
+    #[test]
+    fn the_widget_is_off_by_default_and_remembers_where_it_was_put() {
+        let s = StoredSettings::default();
+        assert!(!s.desktop_widget);
+        assert!(s.widget_on_top);
+        assert_eq!(s.widget_position, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::load(path.clone());
+        store
+            .update(|s| {
+                s.set(SettingKey::DesktopWidget, true);
+                s.widget_position = Some((-1200, 340));
+            })
+            .unwrap();
+        let reopened = SettingsStore::load(path).get();
+        assert!(reopened.desktop_widget);
+        assert_eq!(reopened.widget_position, Some((-1200, 340)), "a second screen to the left");
     }
 
     /// The startup-list switch is not a stored setting.

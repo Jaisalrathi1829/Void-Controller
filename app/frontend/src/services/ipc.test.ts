@@ -168,6 +168,8 @@ describe('settings', () => {
     announceConnection: true,
     announceBattery: true,
     voiceUseDefaultOutput: false,
+    desktopWidget: false,
+    widgetOnTop: true,
     voiceId: 'af_bella',
     voiceSpeedPercent: 100,
     voiceVolumePercent: 80,

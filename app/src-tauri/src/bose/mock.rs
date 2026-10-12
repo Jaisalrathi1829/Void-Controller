@@ -237,7 +237,8 @@ impl BoseDevice for MockBoseDevice {
             }),
             // Windows audio is a real subsystem; the mock device does not
             // fabricate it. The audio module supplies it independently.
-            windows_audio: None,
+            system_audio: None,
+            host_name: None,
             last_error: None,
             updated_at: now,
         })

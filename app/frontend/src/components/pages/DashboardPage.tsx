@@ -12,6 +12,7 @@ import {
   SegmentedControl,
 } from "../primitives";
 import { useApp, isUnavailable, type NoiseMode } from "../../store";
+import { hostPlatform } from "@/services/ipc";
 
 export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) {
   const {
@@ -24,6 +25,9 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
     capabilities,
     volume,
     setVolume,
+    volumeKnown,
+    audioEndpointName,
+    connectedTo,
     hardwareEq,
     setHardwareEq,
     profiles,
@@ -31,6 +35,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
     busy,
   } = useApp();
 
+  const onPhone = hostPlatform() === "android";
   const noiseDisabled = isUnavailable(capabilities.noiseControl);
   const noiseSwitching = busy === "setNoiseControlMode" || busy === "setNoiseControl";
   const noiseOptions: { value: NoiseMode; label: string; disabled?: boolean; hint?: string }[] = [
@@ -55,10 +60,15 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
             <h2>{deviceName}</h2>
             <ConnectionBadge state={connection} />
           </div>
+          {connectedTo && (
+            <p className="text-sm text-muted-foreground">
+              Connected to <span className="font-medium text-foreground">{connectedTo}</span>
+            </p>
+          )}
           <BatteryIndicator level={battery} charging={charging} size="lg" />
-          <motion.div initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ duration: 0.5 }}>
+          <div className="dv-enter">
             <DeviceVisual size={320} active={connection === "connected" || connection === "simulated"} />
-          </motion.div>
+          </div>
         </div>
 
         {/* Noise + volume inline */}
@@ -85,9 +95,30 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
           <div className="bg-card p-6">
             <div className="mb-3 flex items-center gap-2">
               <Volume2 className="size-4 text-muted-foreground" />
-              <SectionLabel>Volume</SectionLabel>
+              <SectionLabel>{onPhone ? "Phone volume" : "Volume"}</SectionLabel>
             </div>
-            <Range value={volume} onChange={setVolume} suffix="%" label="Output" />
+            <Range
+              value={volume}
+              onChange={setVolume}
+              suffix="%"
+              label={audioEndpointName ?? "Output"}
+              disabled={!volumeKnown}
+            />
+            {/* The phone's media volume moves in steps, and it is the
+                phone's: what the headphones play at while they are its
+                media output. */}
+            {onPhone && volumeKnown && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                The phone's media volume. It moves in the phone's own steps.
+              </p>
+            )}
+            {!volumeKnown && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {onPhone
+                  ? "The phone's media volume could not be read."
+                  : "No audio output to read a volume from."}
+              </p>
+            )}
           </div>
         </div>
       </Panel>

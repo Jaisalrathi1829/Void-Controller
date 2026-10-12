@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "widget",
+  "description": "The desktop widget. It is granted less than the main window: it can listen for the application's own events and be dragged by its header, and nothing else. Like the main window it reaches the headphones only through this crate's typed commands.",
+  "windows": [
+    "widget"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ],
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ]
+}

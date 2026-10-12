@@ -47,7 +47,9 @@ pub enum Category {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Announcement {
     Disconnected { name: String },
-    Connected { name: String },
+    /// `host` is what the phone or computer they connected to is called,
+    /// when that is known.
+    Connected { name: String, host: Option<String> },
     Mode(SpokenMode),
     LowBattery { percent: u8 },
     Test,
@@ -60,7 +62,10 @@ impl Announcement {
     pub fn text(&self) -> String {
         match self {
             Self::Disconnected { name } => format!("{name} disconnected."),
-            Self::Connected { name } => format!("{name} connected."),
+            Self::Connected { name, host: Some(host) } => {
+                format!("{name} connected to {host}.")
+            }
+            Self::Connected { name, host: None } => format!("{name} connected."),
             Self::Mode(SpokenMode::Quiet) => "Quiet mode activated.".to_string(),
             Self::Mode(SpokenMode::Aware) => "Aware mode activated.".to_string(),
             Self::Mode(SpokenMode::Custom(Some(label))) => format!("{label} mode activated."),
@@ -100,6 +105,38 @@ impl Announcement {
     pub fn is_automatic(&self) -> bool {
         !matches!(self, Self::Test)
     }
+}
+
+/// The longest device name that is spoken in full.
+const SPEAKABLE_NAME_CHARS: usize = 40;
+
+/// A device's name, as it can be said aloud.
+///
+/// Names are typed by people and by operating systems: "Jaisal's S24 Ultra",
+/// "DESKTOP-8A3F2K1", "living_room.pc". The separators become spaces, what is
+/// not a letter, a digit or an apostrophe is left out, and a name that runs
+/// on is cut at a word. An empty result means there is nothing to say.
+pub fn speakable_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '\u{2019}' => '\'',
+            c if c.is_alphanumeric() || c == '\'' => c,
+            _ => ' ',
+        })
+        .collect();
+    let mut spoken = String::new();
+    for word in cleaned.split_whitespace() {
+        let longer = spoken.chars().count() + word.chars().count() + 1;
+        if !spoken.is_empty() && longer > SPEAKABLE_NAME_CHARS {
+            break;
+        }
+        if !spoken.is_empty() {
+            spoken.push(' ');
+        }
+        spoken.extend(word.chars().take(SPEAKABLE_NAME_CHARS));
+    }
+    spoken
 }
 
 /// Follows the mode the headphones report and notices when it changes.
@@ -198,7 +235,7 @@ mod tests {
         assert_eq!(Announcement::Mode(SpokenMode::Quiet).text(), "Quiet mode activated.");
         assert_eq!(Announcement::Mode(SpokenMode::Aware).text(), "Aware mode activated.");
         assert_eq!(
-            Announcement::Connected { name: "Aurora".into() }.text(),
+            Announcement::Connected { name: "Aurora".into(), host: None }.text(),
             "Aurora connected."
         );
         assert_eq!(
@@ -206,6 +243,40 @@ mod tests {
             "Aurora disconnected."
         );
         assert_eq!(Announcement::Test.text(), "Voice feedback is ready.");
+    }
+
+    /// Which phone or computer the headphones connected to is part of the
+    /// sentence when it is known, and simply absent when it is not.
+    #[test]
+    fn a_connection_names_what_was_connected_to() {
+        let to = |host: &str| Announcement::Connected {
+            name: "Aurora".into(),
+            host: Some(host.into()),
+        };
+        assert_eq!(to("Galaxy S24 Ultra").text(), "Aurora connected to Galaxy S24 Ultra.");
+        assert_eq!(to("Nemesis").text(), "Aurora connected to Nemesis.");
+    }
+
+    #[test]
+    fn a_device_name_is_made_sayable() {
+        assert_eq!(speakable_name("Jaisal's S24 Ultra"), "Jaisal's S24 Ultra");
+        assert_eq!(speakable_name("Jaisal\u{2019}s S24"), "Jaisal's S24");
+        assert_eq!(speakable_name("DESKTOP-8A3F2K1"), "DESKTOP 8A3F2K1");
+        assert_eq!(speakable_name("living_room.pc"), "living room pc");
+        assert_eq!(speakable_name("  Nemesis  "), "Nemesis");
+        assert_eq!(speakable_name("\u{1F3A7}"), "", "nothing sayable is nothing");
+        assert_eq!(speakable_name(""), "");
+    }
+
+    #[test]
+    fn a_name_that_runs_on_is_cut_at_a_word() {
+        let long = "The Extremely Long Name Somebody Gave Their Telephone One Afternoon";
+        let spoken = speakable_name(long);
+        assert!(spoken.chars().count() <= SPEAKABLE_NAME_CHARS, "{spoken:?}");
+        assert!(long.starts_with(&spoken));
+        assert!(!spoken.ends_with(' '));
+        // One endless word is cut too, rather than read out whole.
+        assert_eq!(speakable_name(&"x".repeat(200)).chars().count(), SPEAKABLE_NAME_CHARS);
     }
 
     #[test]
@@ -236,7 +307,7 @@ mod tests {
         let test = Announcement::Test.priority();
         assert!(connection < mode && mode < battery && battery < test);
         assert_eq!(
-            Announcement::Connected { name: "A".into() }.priority(),
+            Announcement::Connected { name: "A".into(), host: None }.priority(),
             connection
         );
     }
@@ -246,7 +317,7 @@ mod tests {
         assert!(!Announcement::Test.is_automatic());
         assert!(Announcement::Mode(SpokenMode::Quiet).is_automatic());
         assert!(Announcement::LowBattery { percent: 5 }.is_automatic());
-        assert!(Announcement::Connected { name: "A".into() }.is_automatic());
+        assert!(Announcement::Connected { name: "A".into(), host: None }.is_automatic());
         assert_eq!(Announcement::Test.category(), Category::Test);
     }
 
@@ -337,7 +408,7 @@ mod tests {
         let t = ModeTracker::default();
         assert!(t.still_true(&Announcement::Test));
         assert!(t.still_true(&Announcement::LowBattery { percent: 9 }));
-        assert!(t.still_true(&Announcement::Connected { name: "A".into() }));
+        assert!(t.still_true(&Announcement::Connected { name: "A".into(), host: None }));
     }
 
     // --- what counts as a confirmed mode ------------------------------------

@@ -75,7 +75,9 @@ mode, taken from real, connected headphones, that differ.
 
 - Pressing a mode button announces nothing. Neither does the request being
   sent, nor the headphones acknowledging it. The announcement follows the read
-  that shows the new mode.
+  that shows the new mode — and after a change made from the application that
+  read is the one the change itself ends with, so the announcement does not
+  wait for the screen to refresh.
 - Asking for the mode the headphones are already in announces nothing.
 - The mode found when the application starts, or when the headphones
   reconnect, is where things stand, not a change. It is not announced.
@@ -95,6 +97,37 @@ The price is a little more Bluetooth traffic while the setting is on, and so
 possibly a little more battery use on the headphones. That has not been
 measured.
 
+A custom mode is announced by the headphones' own name for it — "Focus mode
+activated." Its sentence is made ready as soon as the headphones have listed
+their modes, the same as the two fixed ones, so the first switch into it is
+not kept waiting for synthesis.
+
+#### What used to make the custom mode late
+
+Three things, all of them about the list of modes rather than about speech
+(found 2026-10-12, from a report of the announcement lagging on Focus and
+sometimes on the mode after it):
+
+1. Listing the modes is the one request answered with several frames, and the
+   transport took the answer to be over only after half a second of silence.
+   The headphones in fact say when they are done — the captured reply ends
+   with `RESULT` from the address that was asked — so the wait was for
+   nothing. The reply now ends at that frame (`ends_drained_reply` in
+   `bose/bmap/stream.rs`); the silence remains as the fallback for a device
+   that does not send one.
+2. The list was asked for on every refresh spent in a custom mode, and once
+   more before every switch into one. Each asking held the link for that half
+   second, and the 150 ms mode checks queued behind it — which is why a press
+   of the button while in Focus could be late too. It is now asked for when
+   the headphones arrive, and every ten seconds while they are in a custom
+   mode.
+3. "Focus mode activated." was not among the sentences made ready ahead, so
+   the first time in each run it was synthesized on the spot.
+
+The first is a change to how a reply is read and has been run against the
+unit tests only, on the reply as it was captured from the headphones in
+Experiment 6; it has not yet been timed on the headphones themselves.
+
 ### Connection
 
 The watcher looks at Windows' device properties every 4 seconds.
@@ -107,6 +140,14 @@ The watcher looks at Windows' device properties every 4 seconds.
   audio output, because it is spoken through them.
 - "Disconnected" cannot be spoken into headphones that have gone. It is spoken
   only if another output has been allowed, and otherwise not at all.
+- "Connected" says what they connected to: "Aurora connected to Nemesis." The
+  name is this computer's own, or this phone's Bluetooth name — the machine
+  the application is running on, which is the one it saw them connect to.
+  Separators in a name are read as spaces ("DESKTOP-8A3F2K1" as "DESKTOP
+  8A3F2K1"), a name longer than 40 characters is cut at a word, and if the
+  system gives no name the sentence is simply "Aurora connected." Anything
+  else the headphones may be connected to at the same time is not named: they
+  have not been asked.
 - A disconnection also stops anything being spoken into the headphones and
   drops waiting mode and battery announcements, which are no longer true.
 
@@ -156,6 +197,7 @@ session volume is read or written.
 | `voice/policy.rs` | Turns confirmed observations into announcements; tracks the confirmed mode. |
 | `voice/queue.rs` | What is waiting to be said. |
 | `voice/mod.rs` | The service and its one worker thread: route → synthesize → play. |
+| `voice/store.rs` | Sentences already synthesized, kept on disk. |
 | `voice/kokoro.rs` | Kokoro inference through sherpa-onnx. |
 | `voice/assets.rs` | Where the model is, and whether it is the right one. |
 | `voice/backend.rs` | The real model and the real Windows output, behind one trait. |
@@ -201,23 +243,39 @@ Whatever arrives meanwhile waits:
 
 - **Not loaded until needed.** With voice feedback off, starting the
   application loads nothing; the model is first loaded by Test Voice. With it
-  on, the model is loaded once on the worker thread shortly after start, to
-  make the fixed sentences ready (see below), and released again when idle.
+  on, the model is loaded only for a sentence that has never been synthesized
+  in the chosen voice at the chosen speed — on the very first run, and after
+  a change of voice — and released again when idle.
 - **Checked before every load.** Eight files are compared by size and SHA-256
   against values pinned in the source. A model that is not the expected one is
   refused with a message; the native runtime aborts the whole process when
   handed a file it cannot parse, so it is never given the chance.
 - **Loaded once, reused.** One model instance serves every announcement.
-- **Released when idle.** After 90 seconds without synthesizing, the model is
-  unloaded.
-- **Sentences are cached.** The last 16 synthesized sentences (up to 80
-  characters each, about 150 KB apiece) are kept, keyed by text, voice and
-  speed. The announcements are a handful of fixed sentences, so after the
-  first time they play without the model.
+- **Released when idle.** After 90 seconds without synthesizing on Windows,
+  and after 8 seconds on Android, the model is unloaded. On Android the
+  allocator is then told to hand the freed memory back to the system
+  (`mallopt(M_PURGE_ALL)`), without which the application goes on being
+  counted at its loaded size.
+- **Sentences are cached in memory.** The last 16 synthesized sentences (up
+  to 80 characters each, about 150 KB apiece) are kept, keyed by text, voice
+  and speed.
+- **And kept on disk.** Every sentence of up to 80 characters is also written
+  to the application's cache folder (`spoken/`) the first time it is made:
+  16-bit audio, about 70 KB a sentence, at most 64 files, least recently used
+  dropped first. From then on it is read back instead of synthesized, in this
+  run and every later one. Each file names the model, voice, speed and
+  sentence it was made for and ends with a SHA-256 of everything before it; a
+  file that does not check out is deleted and the sentence made again. What
+  is kept is exactly what Kokoro produced — nothing else can put speech
+  there, and nothing is fetched. Deleting the folder costs nothing but the
+  time to make the sentences again.
 - **Made ready ahead.** With voice feedback on, the fixed sentences for the
-  enabled kinds are synthesized while idle, so the first real announcement
-  does not arrive seconds after the event. A real announcement interrupts
-  this.
+  enabled kinds — and the custom modes the headphones have listed — are made
+  ready while idle, so the first real announcement does not arrive seconds
+  after the event. After the first run that means reading a few small files.
+  A real announcement interrupts this, and the sentence that was interrupted
+  is taken up again afterwards. (It used to be dropped, which left that one
+  sentence to be synthesized, late, the first time it was needed.)
 - **Released on exit**, with playback stopped first.
 
 ### When announcements can happen
@@ -239,7 +297,13 @@ nothing, and one that differs is announced once.
 - No text is sent to the native layer for speaking. The window can ask for the
   fixed test sentence and nothing else; every other sentence is composed
   natively from a confirmed event.
-- Spoken sentences are not written to logs or to disk. The cache is in memory.
+- Spoken sentences are not written to logs. They are kept on disk as audio,
+  in the application's own cache folder (`spoken/`), so that they need not be
+  synthesized again; each file also holds the text of its sentence. Those
+  sentences are the fixed ones listed above, which include the headphones'
+  name, this machine's name, the names of the headphones' custom modes, and
+  battery levels that were announced. Nothing else is in the folder, nothing
+  reads it but this application, and deleting it loses nothing.
 - Nothing is downloaded by the application, at start-up or ever.
 
 ## Runtime choice

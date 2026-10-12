@@ -57,7 +57,10 @@ export function TopBar({ page }: { page: PageId }) {
   }, [trayOpen, simOpen]);
 
   return (
-    <header className="relative z-50 flex items-center justify-between gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur md:px-8 md:py-4">
+    // Frosted on a desktop. On a phone the bar is simply opaque: blurring
+    // whatever drifts behind it, every frame, is work a phone shows as
+    // stutter, for an effect nobody would miss at that size.
+    <header className="relative z-50 flex items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-3 md:bg-background/80 md:px-8 md:py-4 md:backdrop-blur">
       <AnimatePresence mode="wait">
         <motion.div
           key={page}

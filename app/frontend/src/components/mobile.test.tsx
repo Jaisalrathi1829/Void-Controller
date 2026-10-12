@@ -53,6 +53,8 @@ function settings(over: Partial<AppSettings> = {}): AppSettings {
     announceConnection: true,
     announceBattery: true,
     voiceUseDefaultOutput: false,
+    desktopWidget: false,
+    widgetOnTop: true,
     voiceId: 'af_bella',
     voiceSpeedPercent: 100,
     voiceVolumePercent: 80,
@@ -71,7 +73,7 @@ const snapshot: DeviceSnapshot = {
   battery: { percent: 70, source: 'android-bluetooth', readAt: '2026-10-11T09:00:00Z' },
   noiseControl: { mode: 'quiet', source: 'vendor-protocol', readAt: '2026-10-11T09:00:00Z' },
   equalizer: null,
-  windowsAudio: null,
+  systemAudio: null,
   lastError: null,
   updatedAt: '2026-10-11T09:00:00Z',
 };
@@ -211,6 +213,8 @@ describe('settings on Android', () => {
     useAgent(ANDROID_UA);
     await renderSettings();
     expect(screen.queryByRole('switch', { name: 'Start with Windows' })).not.toBeInTheDocument();
+    // A phone has no desktop to put a widget on.
+    expect(screen.queryByRole('switch', { name: 'Desktop widget' })).not.toBeInTheDocument();
     expect(screen.queryByRole('switch', { name: 'Start minimized' })).not.toBeInTheDocument();
     expect(screen.queryByRole('switch', { name: 'Minimize to tray' })).not.toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Auto-connect' })).toBeInTheDocument();
@@ -233,6 +237,7 @@ describe('settings on Android', () => {
     useAgent(DESKTOP_UA);
     await renderSettings();
     expect(screen.getByRole('switch', { name: 'Start with Windows' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Desktop widget' })).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Minimize to tray' })).toBeInTheDocument();
     expect(
       screen.queryByRole('switch', { name: 'Keep running in the background' }),

@@ -73,6 +73,27 @@ npm run tauri:build
 system-tray icon. Click the icon to bring it back, or right-click it and
 choose **Quit**. Starting the application again also brings it back.
 
+### The widget is gone
+
+It is a window of the application, so it is there only while the application
+is running. If the application is running, switch it on again in Settings →
+General → **Desktop widget**, or from the tray icon's menu. It opens where it
+was last left, unless that place is no longer on any screen — a second
+monitor since unplugged — in which case it opens at the bottom right of the
+main screen.
+
+### I closed the window and only the widget is left
+
+That is what the widget is for. Its arrows button opens the main window
+again. To close the application altogether, use **Quit** in the tray icon's
+menu; or, without a tray icon, hide the widget with its cross — the main
+window comes back — and close that.
+
+### The widget is covered by other windows, or will not go behind them
+
+The pin in its header decides. Pinned, it stays above everything; unpinned,
+it is an ordinary window that others can cover.
+
 ### No notification appeared
 
 Notifications are raised only for real headphones, and only on a change: the
@@ -125,9 +146,22 @@ Windows default output.
 ### The first announcement is late
 
 The model takes about a second to load and about as long as the sentence to
-synthesize it. With voice feedback on, the fixed sentences are made ready ahead
-of time and then play at once; a sentence in a newly chosen voice or speed has
-to be synthesized once first.
+synthesize it — longer on a phone. That is paid once per sentence, per voice
+and speed: each one is kept on disk the first time it is made, and read back
+from then on, in this run and every later one. So the wait is on the very
+first run after installing, and after choosing another voice or speed.
+
+If announcements are late every time, it is not this. See
+[voice-feedback.md](voice-feedback.md#what-used-to-make-the-custom-mode-late).
+
+### An announcement sounds wrong, or is cut short every time
+
+The sentences the application has said are kept as audio in its cache folder
+(`spoken`, under the application's cache directory). Each file is checked
+before it is played and thrown away if it does not check out, so a damaged
+one should cure itself. To start afresh anyway, delete the folder: every
+sentence is simply synthesized again the next time it is needed. On Android,
+"Clear cache" in the application's storage settings does the same.
 
 ### The application will not start: `sherpa-onnx-c-api.dll` was not found
 
@@ -153,6 +187,41 @@ not said which model they are" is the same thing seen a moment earlier.
 Switch on **Keep running in the background** in Settings → General. Android
 freezes applications that are not on screen unless they hold a foreground
 service, and that switch is the service.
+
+### Android: the application uses a lot of memory
+
+While the voice model is loaded it uses about a quarter of a gigabyte. That
+should be brief: it is loaded only to synthesize a sentence that has not been
+said before in the chosen voice, and released eight seconds later. The first
+start after installing makes the usual sentences once, which takes some tens
+of seconds; after that, starting the application does not load it at all.
+
+`adb logcat -s Aurora` shows it coming and going. If "voice model loaded"
+appears at every start, the sentences are not being kept — check that the
+application has storage to write its cache to.
+
+What remains — roughly 130 MB for the application and 100 MB for the web
+view that draws it, on the emulator — is its ordinary size.
+
+### Android: the volume slider does not land where I put it
+
+It lands on the nearest step of the phone's media volume, of which there are
+usually fifteen: ask for 50% and it shows 53%. That is the phone's volume,
+and those are its steps.
+
+### Android: the volume slider does not change the headphones
+
+It changes the phone's media volume, which is the headphones' volume only
+while they are what the phone is playing media through. The slider's label
+says what that is at the moment. If it says "Phone speaker", Android is not
+sending media to the headphones.
+
+### Android: the front screen stutters
+
+Every animation on it is meant to run without script and without redrawing
+anything, so it should not. If it does, Android's "Remove animations" or
+reduced-motion setting switches all of it off, and what the stutter looks
+like — and whether it comes at regular intervals — is worth writing down.
 
 ### Android build: "Creation symbolic link is not allowed for this system"
 

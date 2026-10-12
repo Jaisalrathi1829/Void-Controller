@@ -135,8 +135,18 @@ interface AppState {
   setVolume: (n: number) => void;
   muted: boolean;
   setMuted: (m: boolean) => void;
-  /** Windows endpoint the volume applies to, or null if none is active. */
+  /**
+   * What the volume belongs to — the Windows endpoint, or on Android the
+   * output media is playing through — or null if there is no reading.
+   */
   audioEndpointName: string | null;
+  /** Whether the system's volume has been read, and so can be shown. */
+  volumeKnown: boolean;
+  /**
+   * What the phone or computer the headphones are connected to is called,
+   * while they are connected to this one. Null otherwise.
+   */
+  connectedTo: string | null;
 
   hardwareEq: EqValues;
   setHardwareEq: (e: EqValues) => void;
@@ -375,6 +385,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // A switch flipped in the other window — or by the tray menu, or by the
+  // widget being closed — shows here too.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void ipc
+      .onSettingsChanged((s) => {
+        if (!cancelled) setSettings(s);
+      })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+
   const toggleSetting = useCallback(
     (k: ipc.SettingKey) => {
       const blocked = settings.unavailable[k];
@@ -486,7 +516,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     void ipc
       .onDeviceChanged(() => {
-        if (!busyRef.current) void refresh();
+        // Not while nobody is looking: the native layer goes on watching and
+        // announcing by itself, and the screen catches up when it is shown.
+        if (!busyRef.current && !document.hidden) void refresh();
       })
       .then((unlisten) => {
         if (cancelled) unlisten();
@@ -612,6 +644,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(id);
   }, [live, refresh]);
 
+  /* ---- coming back into view ----
+   *
+   * Nothing is re-read while the window is hidden, so what it shows may be
+   * old by the time it is looked at again. Read it then.
+   */
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden && !busyRef.current) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refresh]);
+
   /* ---- derived ---- */
   const connection = connectionFrom(snapshot);
   const simulated = snapshot?.source === "mock";
@@ -635,9 +680,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     : { bass: 0, mid: 0, treble: 0 };
 
-  const volume = snapshot?.windowsAudio?.volumePercent ?? 0;
-  const muted = snapshot?.windowsAudio?.muted ?? false;
-  const audioEndpointName = snapshot?.windowsAudio?.endpointName ?? null;
+  const volume = snapshot?.systemAudio?.volumePercent ?? 0;
+  const muted = snapshot?.systemAudio?.muted ?? false;
+  const audioEndpointName = snapshot?.systemAudio?.endpointName ?? null;
+  const volumeKnown = !!snapshot?.systemAudio;
+  // Only real headphones are connected to anything, and only while they are.
+  const connectedTo =
+    snapshot?.source === "real" && snapshot.connection === "connected"
+      ? (snapshot.hostName ?? null)
+      : null;
 
   /* ---- actions ---- */
   const setNoise = useCallback(
@@ -658,7 +709,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (n: number) => {
       void run(
         { kind: "setSystemVolume", percent: Math.round(n) },
-        { label: "Windows volume", eventType: "VOLUME" },
+        {
+          label: ipc.hostPlatform() === "android" ? "Phone volume" : "Windows volume",
+          eventType: "VOLUME",
+        },
       );
     },
     [run],
@@ -831,6 +885,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       muted,
       setMuted,
       audioEndpointName,
+      volumeKnown,
+      connectedTo,
       hardwareEq,
       setHardwareEq,
       softwareEq,
@@ -874,7 +930,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       battery, charging, deviceName, batterySource, capabilities, snapshot,
       noise, setNoise, noiseReadAt, deviceNotice, deviceError, allowBluetooth,
       ancLevel, setAncLevel, noiseLabel, windBlock, setWindBlock,
-      volume, setVolume, muted, setMuted, audioEndpointName,
+      volume, setVolume, muted, setMuted, audioEndpointName, volumeKnown, connectedTo,
       hardwareEq, setHardwareEq, softwareEq, setSoftwareEq,
       profiles, persistProfiles, applyProfile, events, capturing, toggleCapture,
       theme, setTheme, settings, toggleSetting, logLevel, reconnect, disconnect, refresh, busy,

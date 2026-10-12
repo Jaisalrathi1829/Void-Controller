@@ -1,4 +1,4 @@
-import { motion } from "motion/react";
+import type { CSSProperties } from "react";
 import { cn } from "./ui/utils";
 
 /**
@@ -79,10 +79,35 @@ function HeadphoneMark({ active }: { active: boolean }) {
   );
 }
 
+/** The arc of light that travels round the ring: dark, then warm, then white. */
+const ARC =
+  "conic-gradient(from 0deg, transparent 0deg, transparent 250deg, rgba(255,138,76,0.55) 320deg, #ffffff 355deg, rgba(180,120,255,0.55) 360deg)";
+
+/** Cuts a conic gradient down to a band at its rim, `width` pixels wide. */
+function rim(width: number, soft = false): CSSProperties {
+  const band = soft
+    ? `radial-gradient(farthest-side, transparent calc(100% - ${width}px), rgba(0,0,0,0.55) calc(100% - ${width / 2}px), transparent 100%)`
+    : `radial-gradient(farthest-side, transparent calc(100% - ${width + 1}px), #000 calc(100% - ${width}px))`;
+  return { WebkitMask: band, mask: band };
+}
+
 /**
- * DeviceVisual — realistic headphone render with layered, mesmerizing motion.
- * A bright light revolves around the ring, a specular highlight sweeps across
- * the photo, sound rings expand outward and an orbiting light dot circles it.
+ * DeviceVisual — the headphones, with light moving round them.
+ *
+ * Everything that moves here does so by rotating, sliding, scaling or fading
+ * a layer that is otherwise left alone: the animations are CSS keyframes on
+ * `transform` and `opacity` (see `styles.css`), which the browser runs on its
+ * compositor without redrawing anything and without waiting for script.
+ *
+ * It was not always so. The first version drove each layer from script every
+ * frame, animated a `filter`, blended a rotating layer onto the picture with
+ * `mix-blend-mode`, and relied on a rounded `overflow: hidden` to trim it.
+ * On a phone that meant redrawing filtered, masked layers sixty times a
+ * second, stuttering whenever the page was busy with anything else, and the
+ * rounded trim giving way for a frame now and then — a square of light
+ * flashing where the circle should have cut it off. So: no animated filters,
+ * no blending, and nothing that needs trimming, because every layer is
+ * already the shape it should be.
  */
 export function DeviceVisual({
   size = 320,
@@ -93,77 +118,60 @@ export function DeviceVisual({
   active?: boolean;
   className?: string;
 }) {
-  const ring = size * 0.8; // photo diameter
+  const ring = size * 0.8; // picture diameter
+  const orbit = ring * 1.12;
 
   return (
     <div
       className={cn("relative flex items-center justify-center", className)}
       style={{ width: size, height: size }}
     >
-      {/* ambient breathing glow */}
-      <motion.div
-        className="absolute rounded-full blur-3xl"
+      {/* ambient breathing glow — a gradient that is already soft, so it
+          needs no blur */}
+      <div
+        className={cn("dv-layer absolute rounded-full", active ? "dv-breathe" : "opacity-[0.08]")}
         style={{
-          width: size * 0.95,
-          height: size * 0.95,
-          background: "radial-gradient(circle, var(--primary) 0%, transparent 62%)",
+          width: size * 1.1,
+          height: size * 1.1,
+          background:
+            "radial-gradient(circle, color-mix(in oklch, var(--primary) 70%, transparent) 0%, color-mix(in oklch, var(--primary) 25%, transparent) 38%, transparent 68%)",
         }}
-        animate={
-          active
-            ? { opacity: [0.3, 0.6, 0.3], scale: [0.9, 1.1, 0.9] }
-            : { opacity: 0.06, scale: 1 }
-        }
-        transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      {/* REVOLVING LIGHT RING — a bright arc that sweeps around the circle.
-         Hue cycles through a warm aurora palette as it revolves. */}
+      {/* REVOLVING LIGHT RING — a bright arc that sweeps round the circle,
+          with a wider, fainter copy behind it for the glow. One layer turns;
+          the two bands are drawn into it once. */}
       {active && (
-        <motion.div
-          className="absolute rounded-full"
-          style={{
-            width: ring * 1.12,
-            height: ring * 1.12,
-            background:
-              "conic-gradient(from 0deg, transparent 0deg, transparent 250deg, rgba(255,138,76,0.5) 320deg, #ffffff 355deg, rgba(180,120,255,0.5) 360deg)",
-            WebkitMask:
-              "radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px))",
-            mask: "radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px))",
-            filter: "drop-shadow(0 0 7px rgba(255,150,90,0.7))",
-          }}
-          animate={{ rotate: 360, filter: [
-            "drop-shadow(0 0 7px rgba(255,150,90,0.75)) hue-rotate(0deg)",
-            "drop-shadow(0 0 7px rgba(255,150,90,0.75)) hue-rotate(360deg)",
-          ] }}
-          transition={{
-            rotate: { duration: 9, repeat: Infinity, ease: "linear" },
-            filter: { duration: 14, repeat: Infinity, ease: "linear" },
-          }}
-        />
+        <div
+          className="dv-layer dv-spin absolute"
+          style={{ width: orbit + 20, height: orbit + 20, animationDuration: "9s" }}
+        >
+          <div className="absolute inset-0 rounded-full" style={{ background: ARC, ...rim(22, true) }} />
+          <div
+            className="absolute rounded-full"
+            style={{ inset: 10, background: ARC, ...rim(6) }}
+          />
+        </div>
       )}
 
-      {/* expanding sound rings */}
+      {/* expanding sound rings, a third of the way apart */}
       {active &&
         [0, 1, 2].map((i) => (
-          <motion.span
+          <span
             key={i}
-            className="absolute rounded-full border-2 border-primary/40"
-            style={{ width: ring * 1.05, height: ring * 1.05 }}
-            initial={{ scale: 0.78, opacity: 0.7 }}
-            animate={{ scale: 1.35, opacity: 0 }}
-            transition={{ duration: 6, repeat: Infinity, delay: i * 2, ease: "easeOut" }}
+            className="dv-layer dv-ripple absolute rounded-full border-2 border-primary/40"
+            style={{ width: ring * 1.05, height: ring * 1.05, animationDelay: `${-i * 2}s` }}
           />
         ))}
 
       {/* slowly counter-rotating dashed halo */}
       {active && (
-        <motion.svg
-          className="absolute"
+        <svg
+          className="dv-layer dv-spin-back absolute"
           width={size * 0.98}
           height={size * 0.98}
           viewBox="0 0 100 100"
-          animate={{ rotate: -360 }}
-          transition={{ duration: 40, repeat: Infinity, ease: "linear" }}
+          style={{ animationDuration: "40s" }}
         >
           <circle
             cx="50"
@@ -176,65 +184,65 @@ export function DeviceVisual({
             strokeDasharray="1 6"
             strokeLinecap="round"
           />
-        </motion.svg>
+        </svg>
       )}
 
       {/* ORBITING LIGHT DOT — a glowing bead that circles the visual */}
       {active && (
-        <motion.div
-          className="absolute"
-          style={{ width: ring * 1.12, height: ring * 1.12 }}
-          animate={{ rotate: 360 }}
-          transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
+        <div
+          className="dv-layer dv-spin absolute"
+          style={{ width: orbit, height: orbit, animationDuration: "12s" }}
         >
-          <motion.span
-            className="absolute left-1/2 top-0 size-3 -translate-x-1/2 rounded-full bg-white"
+          <span
+            className="dv-layer dv-pulse absolute left-1/2 top-0 -ml-1.5 -mt-1.5 size-3 rounded-full bg-white"
             style={{ boxShadow: "0 0 12px 4px rgba(255,150,90,0.9), 0 0 4px 1px #fff" }}
-            animate={{ scale: [1, 1.5, 1], opacity: [0.85, 1, 0.85] }}
-            transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut" }}
           />
-        </motion.div>
+        </div>
       )}
 
-      {/* floating headphone photo */}
-      <motion.div
-        className="relative overflow-hidden rounded-full border border-white/20 shadow-[var(--shadow-lg)]"
+      {/* floating headphone picture. Nothing inside it reaches past its
+          edge, so there is nothing to trim. */}
+      <div
+        className={cn(
+          "dv-layer relative rounded-full border border-white/20 shadow-[var(--shadow-lg)]",
+          active && "dv-float",
+        )}
         style={{ width: ring, height: ring }}
-        initial={{ y: 0 }}
-        animate={active ? { y: [-8, 8, -8], rotate: [-2, 2, -2] } : { y: 0, rotate: 0 }}
-        transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
-        whileHover={{ scale: 1.05 }}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-surface-2 to-card" />
+        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-surface-2 to-card" />
         <div className="absolute inset-0 p-[14%]">
           <HeadphoneMark active={active} />
         </div>
         {/* subtle inner sheen */}
         <div className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-tr from-transparent via-transparent to-white/15" />
 
-        {/* BRIGHT REVOLVING SPECULAR SWEEP across the photo */}
+        {/* a highlight sweeping across the picture: plain white at low
+            opacity on a round layer of its own, fading out toward the
+            middle so that it reads as light catching the rim rather than
+            as a beam from the centre */}
         {active && (
-          <motion.div
-            className="pointer-events-none absolute inset-[-25%]"
+          <div
+            className="dv-layer dv-spin pointer-events-none absolute inset-0 rounded-full"
             style={{
+              animationDuration: "10s",
               background:
-                "conic-gradient(from 0deg, transparent 0deg, transparent 300deg, rgba(255,255,255,0.15) 330deg, rgba(255,255,255,0.75) 352deg, rgba(255,255,255,0.15) 358deg, transparent 360deg)",
-              mixBlendMode: "screen",
+                "conic-gradient(from 0deg, transparent 0deg, transparent 285deg, rgba(255,255,255,0.05) 315deg, rgba(255,255,255,0.26) 348deg, rgba(255,255,255,0.05) 357deg, transparent 360deg)",
+              WebkitMask: "radial-gradient(circle, transparent 18%, #000 78%)",
+              mask: "radial-gradient(circle, transparent 18%, #000 78%)",
             }}
-            animate={{ rotate: 360 }}
-            transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
           />
         )}
-      </motion.div>
+      </div>
 
-      {/* soft contact shadow beneath */}
-      <motion.div
-        className="absolute rounded-full bg-black/40 blur-md"
-        style={{ width: size * 0.4, height: size * 0.06, bottom: size * 0.06 }}
-        animate={
-          active ? { scaleX: [1, 0.8, 1], opacity: [0.42, 0.24, 0.42] } : { scaleX: 1, opacity: 0.3 }
-        }
-        transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
+      {/* soft contact shadow beneath — again a gradient rather than a blur */}
+      <div
+        className={cn("dv-layer absolute rounded-full", active ? "dv-shadow" : "opacity-30")}
+        style={{
+          width: size * 0.46,
+          height: size * 0.08,
+          bottom: size * 0.05,
+          background: "radial-gradient(closest-side, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.25) 45%, transparent 100%)",
+        }}
       />
     </div>
   );

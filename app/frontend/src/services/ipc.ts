@@ -199,6 +199,8 @@ export const SETTING_KEYS = [
   'announceConnection',
   'announceBattery',
   'voiceUseDefaultOutput',
+  'desktopWidget',
+  'widgetOnTop',
 ] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -263,6 +265,56 @@ export async function setSetting(key: SettingKey, value: boolean): Promise<AppSe
     throw { kind: 'unsupported', message: BROWSER_PREVIEW_SETTINGS } satisfies IpcError;
   }
   return invokeNative<AppSettings>('set_setting', { key, value });
+}
+
+/**
+ * Calls `handler` whenever the settings change, from any window, with the
+ * settings as they then stand. There are two windows — the main one and the
+ * widget — and a switch flipped in one has to show in the other.
+ */
+export async function onSettingsChanged(
+  handler: (settings: AppSettings) => void,
+): Promise<() => void> {
+  if (!hasNativeLayer()) return () => {};
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<AppSettings>('settings-changed', (event) => handler(event.payload));
+}
+
+/* ---- the desktop widget ---- */
+
+/** The native layer's name for the widget's window. */
+const WIDGET_WINDOW = 'widget';
+
+/**
+ * Whether this page is the desktop widget rather than the main window.
+ *
+ * Both load the same page; which one it is depends on the window it was
+ * loaded into. In a plain browser there are no windows to tell apart, so
+ * `#widget` on the address stands in, for looking at the widget by itself.
+ */
+export function isWidgetWindow(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!hasNativeLayer()) return window.location.hash === '#widget';
+  const internals = (
+    window as unknown as {
+      __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } };
+    }
+  ).__TAURI_INTERNALS__;
+  return internals?.metadata?.currentWindow?.label === WIDGET_WINDOW;
+}
+
+/**
+ * Brings the main window forward. Takes nothing: it can show this
+ * application's own window and nothing else.
+ */
+export async function showMainWindow(): Promise<void> {
+  if (!hasNativeLayer()) {
+    throw {
+      kind: 'unsupported',
+      message: 'There is no main window to open in the browser preview.',
+    } satisfies IpcError;
+  }
+  return invokeNative<void>('show_main_window');
 }
 
 /* ---- voice feedback ---- */

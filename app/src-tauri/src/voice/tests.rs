@@ -204,16 +204,27 @@ fn fast() -> Timing {
 }
 
 fn rig_with(settings: StoredSettings, timing: Timing, set_up: impl FnOnce(&mut Fake)) -> Rig {
+    rig_keeping(settings, timing, None, set_up)
+}
+
+/// As [`rig_with`], keeping what is synthesized in `spoken` if one is given.
+fn rig_keeping(
+    settings: StoredSettings,
+    timing: Timing,
+    spoken: Option<&std::path::Path>,
+    set_up: impl FnOnce(&mut Fake),
+) -> Rig {
     let mut fake = Fake::default();
     set_up(&mut fake);
     let fake = Arc::new(Mutex::new(fake));
     let store = Arc::new(SettingsStore::in_memory(settings));
     let statuses = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&statuses);
-    let voice = VoiceFeedback::start(
+    let voice = VoiceFeedback::start_with_store(
         Arc::clone(&store),
         Box::new(FakeBackend(Arc::clone(&fake))),
         timing,
+        spoken.map(|dir| store::SpeechStore::new(dir.to_path_buf())),
         move |status| sink.lock().push(status.clone()),
     );
     let rig = Rig {
@@ -322,10 +333,22 @@ fn real_snapshot(mode: Option<NoiseControlMode>) -> DeviceSnapshot {
     }
 }
 
+/// A snapshot of real, connected headphones in the custom mode they call
+/// `name`.
+fn custom_snapshot(name: &str) -> DeviceSnapshot {
+    let mut snapshot = real_snapshot(Some(NoiseControlMode::Custom));
+    if let Some(state) = &mut snapshot.noise_control {
+        state.label = Some(name.to_string());
+        state.level = Some(4);
+    }
+    snapshot
+}
+
 const QUIET: &str = "Quiet mode activated.";
 const AWARE: &str = "Aware mode activated.";
 const CONNECTED: &str = "Aurora connected.";
 const DISCONNECTED: &str = "Aurora disconnected.";
+const FOCUS: &str = "Focus mode activated.";
 
 // --- the model on disk -------------------------------------------------------
 
@@ -1419,4 +1442,247 @@ fn a_real_announcement_is_not_kept_waiting_behind_preparation() {
     r.fake.lock().hold_synth = false;
     r.settle();
     assert_eq!(r.spoken(), vec![TEST_PHRASE]);
+}
+
+/// The headphones' custom mode is announced as often as Quiet and Aware are,
+/// and is made ready the same way — once the headphones have said it exists.
+#[test]
+fn a_custom_mode_the_headphones_listed_is_made_ready_ahead_of_need() {
+    let r = rig_with(settings_on(), preparing(), |_| {});
+    r.settle();
+    assert_eq!(r.fake.lock().synths.len(), 4);
+
+    r.voice.expect_modes(&["Focus".to_string()]);
+    r.settle();
+    assert_eq!(r.fake.lock().synths.len(), 5);
+    assert_eq!(r.fake.lock().synths[4].0, FOCUS);
+    assert!(r.plays().is_empty(), "prepared, not spoken: naming a mode is not being in it");
+
+    // Being told again changes nothing.
+    r.voice.expect_modes(&["Focus".to_string(), " Focus ".to_string(), String::new()]);
+    r.settle();
+    assert_eq!(r.fake.lock().synths.len(), 5);
+
+    // And the switch into it then needs no synthesis.
+    r.snapshot(NoiseControlMode::Quiet);
+    r.voice.observe_snapshot(&custom_snapshot("Focus"));
+    r.settle();
+    assert_eq!(r.spoken(), vec![FOCUS]);
+    assert_eq!(r.fake.lock().synths.len(), 5);
+}
+
+#[test]
+fn a_custom_mode_is_not_made_ready_when_it_would_not_be_announced() {
+    let r = rig_with(
+        StoredSettings {
+            announce_mode_changes: false,
+            ..settings_on()
+        },
+        preparing(),
+        |_| {},
+    );
+    r.settle();
+    let before = r.fake.lock().synths.len();
+    r.voice.expect_modes(&["Focus".to_string()]);
+    r.settle();
+    assert_eq!(r.fake.lock().synths.len(), before);
+
+    // It is remembered, though, and made ready when announcements go on.
+    r.set(|s| s.announce_mode_changes = true);
+    r.settle();
+    assert!(r.fake.lock().synths.iter().any(|s| s.0 == FOCUS));
+}
+
+/// A voice change makes the custom mode's sentence again along with the rest.
+#[test]
+fn a_new_voice_makes_the_custom_mode_ready_too() {
+    let r = rig_with(settings_on(), preparing(), |_| {});
+    r.voice.expect_modes(&["Focus".to_string()]);
+    r.settle();
+    r.set(|s| s.voice_id = "bm_lewis".into());
+    r.settle();
+    let f = r.fake.lock();
+    assert!(f.synths.iter().any(|s| s.0 == FOCUS && s.1 == "bm_lewis"));
+}
+
+/// A sentence set aside so that an announcement could go first is not lost:
+/// it is made ready once the announcement is out. It used to be dropped,
+/// and then the first real use of it was late.
+#[test]
+fn a_preparation_set_aside_for_an_announcement_is_taken_up_again() {
+    let r = rig_with(settings_on(), preparing(), |f| f.hold_synth = true);
+    r.until("preparation has started", |r| !r.fake.lock().synths.is_empty());
+    let interrupted = r.fake.lock().synths[0].0.clone();
+
+    r.voice.test().unwrap();
+    r.until("the test has been taken up", |r| {
+        r.fake.lock().synths.iter().any(|s| s.0 == TEST_PHRASE)
+    });
+    r.fake.lock().hold_synth = false;
+    r.settle();
+
+    assert_eq!(r.spoken(), vec![TEST_PHRASE]);
+    let f = r.fake.lock();
+    let attempts = f.synths.iter().filter(|s| s.0 == interrupted).count();
+    assert_eq!(attempts, 2, "started, set aside, then finished");
+    for sentence in [QUIET, AWARE, CONNECTED, DISCONNECTED] {
+        assert!(f.synths.iter().any(|s| s.0 == sentence), "{sentence} was made ready");
+    }
+}
+
+/// Stop means stop. What was being prepared is not quietly started again.
+#[test]
+fn stop_speaking_does_not_take_preparation_up_again() {
+    let r = rig_with(settings_on(), preparing(), |f| f.hold_synth = true);
+    r.until("preparation has started", |r| !r.fake.lock().synths.is_empty());
+    r.voice.stop();
+    r.fake.lock().hold_synth = false;
+    r.settle();
+    assert_eq!(r.fake.lock().synths.len(), 1, "only the attempt that was stopped");
+}
+
+// --- sentences kept on disk ---------------------------------------------------
+
+/// The point of keeping them: the second time the application runs, the
+/// usual sentences are said without the model ever being loaded.
+#[test]
+fn a_sentence_kept_on_disk_is_said_without_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let clips = {
+        let first = rig_keeping(settings_on(), fast(), Some(dir.path()), |_| {});
+        first.snapshot(NoiseControlMode::Aware);
+        first.snapshot(NoiseControlMode::Quiet);
+        first.settle();
+        assert_eq!(first.spoken(), vec![QUIET]);
+        assert_eq!(first.fake.lock().loads, 1);
+        let clips = first.fake.lock().clips.clone();
+        clips
+    };
+
+    // The application starts again: nothing in memory, the files still there.
+    let second = rig_keeping(settings_on(), fast(), Some(dir.path()), |f| f.clips = clips);
+    second.snapshot(NoiseControlMode::Aware);
+    second.snapshot(NoiseControlMode::Quiet);
+    second.settle();
+    assert_eq!(second.spoken(), vec![QUIET]);
+    let f = second.fake.lock();
+    assert!(f.synths.is_empty(), "nothing was synthesized");
+    assert_eq!(f.loads, 0, "the model was never loaded");
+    assert!(!second.voice.status().model_loaded);
+}
+
+/// Preparing ahead on a later run is reading a few small files.
+#[test]
+fn preparing_ahead_from_disk_does_not_load_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let first = rig_keeping(settings_on(), preparing(), Some(dir.path()), |_| {});
+        first.settle();
+        assert_eq!(first.fake.lock().synths.len(), 4);
+    }
+    let second = rig_keeping(settings_on(), preparing(), Some(dir.path()), |_| {});
+    second.settle();
+    assert!(second.fake.lock().synths.is_empty());
+    assert_eq!(second.fake.lock().loads, 0);
+    // Nothing on screen claimed to be synthesizing, either.
+    assert!(!second.states().contains(&VoiceState::Synthesizing));
+}
+
+/// Another voice, or another speed, is other audio and is made afresh.
+#[test]
+fn a_kept_sentence_is_only_used_for_the_voice_and_speed_it_was_made_in() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let first = rig_keeping(settings_on(), fast(), Some(dir.path()), |_| {});
+        first.voice.test().unwrap();
+        first.settle();
+    }
+    let other_voice = StoredSettings {
+        voice_id: "am_adam".into(),
+        ..settings_on()
+    };
+    let second = rig_keeping(other_voice, fast(), Some(dir.path()), |_| {});
+    second.voice.test().unwrap();
+    second.settle();
+    assert_eq!(second.fake.lock().synths.len(), 1);
+    assert_eq!(second.fake.lock().synths[0].1, "am_adam");
+}
+
+/// A kept file that has been damaged is not played. The sentence is made
+/// again, as if it had never been kept.
+#[test]
+fn a_damaged_kept_sentence_is_synthesized_again() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let first = rig_keeping(settings_on(), fast(), Some(dir.path()), |_| {});
+        first.voice.test().unwrap();
+        first.settle();
+    }
+    for entry in std::fs::read_dir(dir.path()).unwrap() {
+        let path = entry.unwrap().path();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 40;
+        bytes[last] ^= 0xFF;
+        std::fs::write(&path, bytes).unwrap();
+    }
+    let second = rig_keeping(settings_on(), fast(), Some(dir.path()), |_| {});
+    second.voice.test().unwrap();
+    second.settle();
+    assert_eq!(second.spoken(), vec![TEST_PHRASE]);
+    assert_eq!(second.fake.lock().synths.len(), 1, "made again");
+}
+
+// --- which phone or computer ---------------------------------------------------
+
+/// Once this machine's name is known, a connection is announced as a
+/// connection to it.
+#[test]
+fn a_connection_names_the_machine_the_headphones_connected_to() {
+    let r = rig(|_| {});
+    r.voice.set_host(Some("Galaxy S24 Ultra".into()));
+    r.step(|s| {
+        s.changed = true;
+        s.returned = true;
+    });
+    r.settle();
+    assert_eq!(r.spoken(), vec!["Aurora connected to Galaxy S24 Ultra."]);
+}
+
+/// A name the system gave in a form nobody would say is said as words, and
+/// one with nothing sayable in it is left out altogether.
+#[test]
+fn a_host_name_is_spoken_as_words_or_not_at_all() {
+    let r = rig(|_| {});
+    r.voice.set_host(Some("DESKTOP-8A3F2K1".into()));
+    r.step(|s| s.returned = true);
+    r.settle();
+    r.voice.set_host(Some("---".into()));
+    r.step(|s| s.lost = true);
+    r.step(|s| s.returned = true);
+    r.settle();
+    assert_eq!(
+        r.spoken(),
+        vec!["Aurora connected to DESKTOP 8A3F2K1.", CONNECTED]
+    );
+}
+
+/// The sentence made ready ahead is the one that will be said.
+#[test]
+fn the_connection_sentence_made_ready_is_the_one_with_the_machines_name() {
+    let r = rig_with(settings_on(), preparing(), |_| {});
+    r.settle();
+    r.voice.set_host(Some("Nemesis".into()));
+    r.settle();
+    let made = r.fake.lock().synths.len();
+    assert!(r
+        .fake
+        .lock()
+        .synths
+        .iter()
+        .any(|s| s.0 == "Aurora connected to Nemesis."));
+
+    r.step(|s| s.returned = true);
+    r.settle();
+    assert_eq!(r.spoken(), vec!["Aurora connected to Nemesis."]);
+    assert_eq!(r.fake.lock().synths.len(), made, "nothing more to synthesize");
 }

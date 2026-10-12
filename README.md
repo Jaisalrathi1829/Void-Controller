@@ -64,6 +64,25 @@ Build installers with `npm run tauri:build` rather than a bare `tauri build`:
 the script adds `tauri.bundle.conf.json`, which packages the two speech-runtime
 DLLs the executable cannot start without.
 
+### Desktop widget (optional)
+
+A small window of its own with the three noise modes and the three equalizer
+bands, so that the main window need not be opened to change them. Switch it
+on in Settings → General → **Desktop widget**, or from the tray icon's menu.
+
+- Drag it by its header. It comes back where it was left.
+- The pin keeps it above other windows, or lets them cover it.
+- The arrows open the main window; the cross hides the widget.
+- With the widget showing, closing the main window leaves the widget running.
+  With **Start with Windows** and **Start minimized** on as well, signing in
+  brings up the widget alone.
+
+It is part of the same application — it has to be, because the headphones
+accept one control connection from a computer — so the application must be
+running for it to be there. Everything on it shows what the headphones
+report, and a change counts only when they confirm it, exactly as in the main
+window.
+
 ### Voice feedback (optional)
 
 The application can speak confirmed changes — "Quiet mode activated.",
@@ -166,8 +185,11 @@ app/
     autostart.rs  "Start with Windows" (the user's startup list)
     settings.rs   Settings file
     tray.rs       System-tray icon
+    widget.rs     The desktop widget's window
     watcher.rs    Background presence watcher and notifications
-    voice/        Voice feedback: announcement rules, queue, Kokoro, worker
+    host.rs       What this computer or phone is called ("connected to ...")
+    voice/        Voice feedback: announcement rules, queue, Kokoro, worker,
+                  and the sentences already synthesized, kept on disk
     android/      Android's Bluetooth, device list and audio, via the Kotlin bridge
     gen/android/  The Android project (Kotlin bridge, background service, manifest)
     audio/        Windows audio: endpoints, and playback of synthesized speech

@@ -167,14 +167,18 @@ pub struct EqState {
     pub read_at: String,
 }
 
-/// Windows audio endpoint state. Deliberately separate from any Bose-internal
-/// volume: they are different mechanisms and the UI never conflates them.
+/// The host system's own volume: a Windows audio endpoint, or Android's media
+/// volume. Deliberately separate from any Bose-internal volume: they are
+/// different mechanisms and the UI never conflates them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WindowsAudioState {
+pub struct SystemAudioState {
+    /// What the volume belongs to: the Windows endpoint's name, or on Android
+    /// the output media is playing through at the moment.
     pub endpoint_name: String,
     pub endpoint_id: String,
-    /// 0-100, Windows system volume for this endpoint.
+    /// 0-100. The Windows volume for this endpoint, or Android's media
+    /// volume as a share of its steps.
     pub volume_percent: u8,
     pub muted: bool,
     pub is_default_render: bool,
@@ -200,7 +204,12 @@ pub struct DeviceSnapshot {
     pub battery: Option<BatteryReading>,
     pub noise_control: Option<NoiseControlState>,
     pub equalizer: Option<EqState>,
-    pub windows_audio: Option<WindowsAudioState>,
+    pub system_audio: Option<SystemAudioState>,
+    /// What the phone or computer this application runs on is called — the
+    /// thing the headphones are connected to when they are connected here.
+    /// `None` when the system would not say.
+    #[serde(default)]
+    pub host_name: Option<String>,
     pub last_error: Option<String>,
     pub updated_at: String,
 }
@@ -217,7 +226,8 @@ impl DeviceSnapshot {
             battery: None,
             noise_control: None,
             equalizer: None,
-            windows_audio: None,
+            system_audio: None,
+            host_name: None,
             last_error: None,
             updated_at: super::now_rfc3339(),
         }

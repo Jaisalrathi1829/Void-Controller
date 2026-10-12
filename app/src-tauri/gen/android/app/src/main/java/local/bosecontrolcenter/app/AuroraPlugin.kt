@@ -21,6 +21,7 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -85,6 +86,22 @@ class KeepAliveArgs {
 @InvokeArg
 class LogArgs {
     var message: String = ""
+}
+
+@InvokeArg
+class VolumeArgs {
+    /** A step of the media volume, counted from its lowest. */
+    var level: Int = 0
+}
+
+@InvokeArg
+class MuteArgs {
+    var muted: Boolean = false
+}
+
+@InvokeArg
+class NoteArgs {
+    var what: String = ""
 }
 
 /**
@@ -170,6 +187,56 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(LogArgs::class.java)
         Log.i(TAG, args.message)
         invoke.resolve()
+    }
+
+    /**
+     * One line saying how much native memory the process holds, labelled with
+     * what has just happened. The voice model is nearly all of it while it is
+     * loaded, so this is how its coming and going can be seen from outside.
+     */
+    @Command
+    fun noteMemory(invoke: Invoke) {
+        val args = invoke.parseArgs(NoteArgs::class.java)
+        val megabytes = Debug.getNativeHeapAllocatedSize() / (1024 * 1024)
+        Log.i(TAG, "${args.what}: native heap $megabytes MB")
+        invoke.resolve()
+    }
+
+    /**
+     * What this phone calls itself. Its Bluetooth name is what the headphones
+     * know it by; without leave to read that, the name in its settings; and
+     * failing both, the model.
+     */
+    @SuppressLint("MissingPermission")
+    @Command
+    fun hostName(invoke: Invoke) {
+        work.execute {
+            val fromBluetooth = try {
+                if (hasBluetooth()) adapter?.name else null
+            } catch (e: Exception) {
+                null
+            }
+            val fromSettings = try {
+                Settings.Global.getString(activity.contentResolver, Settings.Global.DEVICE_NAME)
+            } catch (e: Exception) {
+                null
+            }
+            val name = listOf(fromBluetooth, fromSettings, Build.MODEL)
+                .firstOrNull { !it.isNullOrBlank() }
+            // Where it came from, not what it is.
+            Log.i(
+                TAG,
+                "phone name taken from " + when {
+                    !fromBluetooth.isNullOrBlank() -> "its Bluetooth name"
+                    !fromSettings.isNullOrBlank() -> "its settings"
+                    name != null -> "its model"
+                    else -> "nowhere: the system gave none"
+                }
+            )
+            val result = JSObject()
+            if (name != null) result.put("name", name.trim())
+            invoke.resolve(result)
+        }
     }
 
     // --- permissions ---------------------------------------------------------
@@ -591,6 +658,109 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
                 .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
                 ?.let { result.put("speaker", JSObject().put("id", it.id).put("name", "Phone speaker")) }
             invoke.resolve(result)
+        }
+    }
+
+    // --- the phone's media volume ---------------------------------------------
+
+    private fun outputLabel(info: AudioDeviceInfo): String = when (info.type) {
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Phone speaker"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headphones"
+        else -> info.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Audio output"
+    }
+
+    /**
+     * What media is playing through at the moment. Android 13 and later say;
+     * before that it is worked out the way Android itself chooses: a
+     * Bluetooth output if there is one, then a wired one, then the speaker.
+     */
+    private fun mediaOutputName(): String? {
+        val outputs = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                val media = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+                val routed = audio.getAudioDevicesForAttributes(media).firstOrNull()
+                if (routed != null) {
+                    val sameKind = outputs.filter { it.type == routed.type }
+                    val exact = sameKind.firstOrNull { it.address == routed.address }
+                    (exact ?: sameKind.firstOrNull())?.let { return outputLabel(it) }
+                }
+            } catch (e: Throwable) {
+                // Fall through to working it out.
+            }
+        }
+        outputs.firstOrNull { isBluetoothOutput(it) }?.let { return outputLabel(it) }
+        outputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+        }?.let { return outputLabel(it) }
+        outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }?.let { return outputLabel(it) }
+        return null
+    }
+
+    private fun lowestMediaVolume(): Int =
+        if (Build.VERSION.SDK_INT >= 28) audio.getStreamMinVolume(AudioManager.STREAM_MUSIC) else 0
+
+    /** The media volume as Android holds it, in its own steps. */
+    private fun volumeState(): JSObject {
+        val lowest = lowestMediaVolume()
+        val highest = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val now = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val result = JSObject()
+            .put("level", (now - lowest).coerceAtLeast(0))
+            .put("steps", (highest - lowest).coerceAtLeast(0))
+            .put("muted", audio.isStreamMute(AudioManager.STREAM_MUSIC))
+        mediaOutputName()?.let { result.put("output", it) }
+        return result
+    }
+
+    /** Reads the media volume. Changes nothing. */
+    @Command
+    fun volumeGet(invoke: Invoke) {
+        work.execute {
+            try {
+                invoke.resolve(volumeState())
+            } catch (e: Exception) {
+                invoke.reject(e.message ?: "the media volume could not be read")
+            }
+        }
+    }
+
+    /**
+     * Sets the media volume to a step and answers with what Android then
+     * holds, which is for the caller to compare. No volume panel is shown.
+     */
+    @Command
+    fun volumeSet(invoke: Invoke) {
+        val args = invoke.parseArgs(VolumeArgs::class.java)
+        work.execute {
+            try {
+                val lowest = lowestMediaVolume()
+                val highest = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                val step = (lowest + args.level).coerceIn(lowest, highest)
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, step, 0)
+                invoke.resolve(volumeState())
+            } catch (e: Exception) {
+                invoke.reject(e.message ?: "the media volume could not be changed")
+            }
+        }
+    }
+
+    @Command
+    fun muteSet(invoke: Invoke) {
+        val args = invoke.parseArgs(MuteArgs::class.java)
+        work.execute {
+            try {
+                val direction = if (args.muted) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0)
+                invoke.resolve(volumeState())
+            } catch (e: Exception) {
+                invoke.reject(e.message ?: "the media volume could not be changed")
+            }
         }
     }
 

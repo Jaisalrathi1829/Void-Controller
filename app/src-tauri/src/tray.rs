@@ -12,6 +12,7 @@ pub const TRAY_ID: &str = "main";
 pub const MAIN_WINDOW: &str = "main";
 
 const MENU_OPEN: &str = "open";
+const MENU_WIDGET: &str = "widget";
 const MENU_QUIT: &str = "quit";
 
 /// Brings the main window back: un-minimized, visible, in front.
@@ -41,9 +42,11 @@ pub fn sync(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let failed = |e: tauri::Error| format!("could not create the tray icon: {e}");
     let open = MenuItem::with_id(app, MENU_OPEN, "Open Bose QC Control Center", true, None::<&str>)
         .map_err(failed)?;
+    let widget = MenuItem::with_id(app, MENU_WIDGET, "Show or hide the widget", true, None::<&str>)
+        .map_err(failed)?;
     let separator = PredefinedMenuItem::separator(app).map_err(failed)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>).map_err(failed)?;
-    let menu = Menu::with_items(app, &[&open, &separator, &quit]).map_err(failed)?;
+    let menu = Menu::with_items(app, &[&open, &widget, &separator, &quit]).map_err(failed)?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Bose QC Control Center")
@@ -52,6 +55,7 @@ pub fn sync(app: &AppHandle, enabled: bool) -> Result<(), String> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             MENU_OPEN => show_main(app),
+            MENU_WIDGET => crate::widget::toggle(app),
             MENU_QUIT => app.exit(0),
             _ => {}
         })

@@ -39,6 +39,40 @@ use control::{
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How long the mode list is good for while the headphones are in a custom
+/// mode, before a routine refresh asks for it again.
+///
+/// The list is what gives a custom mode's level, which is on screen and can
+/// be changed from a phone, so it has to be asked for now and then. It is
+/// several frames where everything else is one, and the link is held while
+/// they arrive, so nothing else can be asked meanwhile — not even which mode
+/// the headphones are in. Asking on every refresh, as this once did, at a
+/// time when each asking also waited half a second for silence, made a press
+/// of the headphones' button wait behind it more often than not.
+const MODE_LIST_FRESH: Duration = Duration::from_secs(10);
+
+/// How soon the list is asked for again when it did not give what was needed:
+/// no list at all, or none that has the mode the headphones are in.
+const MODE_LIST_RETRY: Duration = Duration::from_secs(3);
+
+/// Whether a routine refresh should ask for the mode list.
+///
+/// `age` is how long ago it was last asked for, `None` if it has not been
+/// since the headphones were last away. `known` is whether that produced an
+/// answer of either kind — a list, or a list that could not be read as
+/// documented. `current_listed` is whether the list has the mode the
+/// headphones are in now.
+fn mode_list_due(age: Option<Duration>, known: bool, in_custom: bool, current_listed: bool) -> bool {
+    let Some(age) = age else {
+        return true;
+    };
+    if !known || (in_custom && !current_listed) {
+        return age >= MODE_LIST_RETRY;
+    }
+    in_custom && age >= MODE_LIST_FRESH
+}
 
 /// Where the host's own battery reading comes from on this platform.
 #[cfg(not(target_os = "android"))]
@@ -1053,15 +1087,20 @@ impl BoseDevice for RealBoseDevice {
 
                         // The mode list says whether a custom mode exists and,
                         // while the headphones are in one, what it is called
-                        // and how strong it is. It is read once, and again on
-                        // every refresh spent in a custom mode, because that
+                        // and how strong it is. It is read once, and now and
+                        // then while they are in a custom mode, because that
                         // is when its level is on screen and may be changed
                         // from elsewhere. A failure is remembered by the link
                         // and surfaces as the capability's reason.
                         let in_custom = preset_for_index(link.config(), index).is_none();
                         let status = link.status();
-                        let never_read = status.slots.is_none() && status.slots_problem.is_none();
-                        if in_custom || never_read {
+                        let known = status.slots.is_some() || status.slots_problem.is_some();
+                        let current_listed = status.slots_problem.is_some()
+                            || status
+                                .slots
+                                .as_ref()
+                                .is_some_and(|t| t.slots.iter().any(|s| s.index == index));
+                        if mode_list_due(link.slots_age(), known, in_custom, current_listed) {
                             let _ = link.read_slots(false);
                         }
 
@@ -1123,7 +1162,8 @@ impl BoseDevice for RealBoseDevice {
                 (Some(_), Some(reading)) if obs.connected => Some(eq_state(reading)),
                 _ => None,
             },
-            windows_audio: None,
+            system_audio: None,
+            host_name: None,
             last_error,
             updated_at: now,
         })
@@ -1223,6 +1263,42 @@ impl BoseDevice for RealBoseDevice {
         self.link_status.read().battery.as_ref().map(|b| b.percent)
     }
 
+    fn reported_noise_control(&self) -> Option<NoiseControlState> {
+        if !self.is_attached() {
+            return None;
+        }
+        let obs = self.observed.read().clone();
+        if !obs.connected {
+            return None;
+        }
+        let target = control_target(&obs).ok()?;
+        let link = self.link_status.read();
+        link.confirmed
+            .as_ref()
+            .map(|c| noise_state(&target.config, c, link.slots.as_ref()))
+    }
+
+    fn known_custom_modes(&self) -> Vec<String> {
+        if !self.is_attached() {
+            return Vec::new();
+        }
+        let obs = self.observed.read().clone();
+        if !obs.connected {
+            return Vec::new();
+        }
+        let Ok(target) = control_target(&obs) else {
+            return Vec::new();
+        };
+        let link = self.link_status.read();
+        match &link.slots {
+            Some(table) => usable_slots(&target.config, &table.slots)
+                .into_iter()
+                .map(|slot| slot.name.trim().to_string())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// One `GET` of the current mode over the link that is already open.
     ///
     /// Unlike [`noise_control`](Self::noise_control) this does not look the
@@ -1297,11 +1373,16 @@ impl BoseDevice for RealBoseDevice {
                 let target = match wanted {
                     Wanted::Preset(preset) => Target::Preset(preset),
                     // "Custom" is whichever custom mode the headphones have.
-                    // The list is read fresh, so the choice is made from what
-                    // they hold now.
+                    // The choice is made from what they hold now: the list
+                    // is asked for, unless they gave it within the last few
+                    // seconds, in which case that one is it.
                     Wanted::Custom => {
                         let current = link.read_mode(true)?;
-                        let slots = link.read_slots(true)?;
+                        let recent = link.slots_age().is_some_and(|age| age < MODE_LIST_FRESH);
+                        let slots = match link.status().slots {
+                            Some(table) if recent => table.slots,
+                            _ => link.read_slots(true)?,
+                        };
                         let last = link.status().last_custom_slot;
                         match pick_custom_slot(link.config(), &slots, Some(current), last) {
                             Some(slot) => Target::Slot {
@@ -1536,6 +1617,113 @@ mod tests {
     }
 
     // --- which devices get a control link -----------------------------------
+
+    // --- what the headphones last said, kept in hand ------------------------
+
+    /// A backend that has been told, as a refresh would tell it, that the
+    /// test headphones are connected and what their link last learned.
+    fn backend_knowing(link: LinkStatus) -> RealBoseDevice {
+        let dev = RealBoseDevice::new(None);
+        *dev.observed.write() = aurora();
+        *dev.link_status.write() = link;
+        dev
+    }
+
+    #[test]
+    fn the_reported_mode_is_the_last_one_the_headphones_confirmed() {
+        let dev = backend_knowing(open_link(0));
+        let reported = dev.reported_noise_control().expect("a confirmed mode");
+        assert_eq!(reported.mode, NoiseControlMode::Quiet);
+        assert_eq!(reported.label, None);
+
+        let dev = backend_knowing(LinkStatus {
+            slots: slots(6),
+            ..open_link(2)
+        });
+        let reported = dev.reported_noise_control().expect("a confirmed mode");
+        assert_eq!(reported.mode, NoiseControlMode::Custom);
+        assert_eq!(reported.label.as_deref(), Some("Focus"));
+        assert_eq!(reported.level, Some(4));
+    }
+
+    /// Nothing confirmed is nothing reported — not a default, and not what
+    /// was last asked for.
+    #[test]
+    fn with_nothing_confirmed_there_is_no_reported_mode() {
+        let dev = backend_knowing(LinkStatus::default());
+        assert_eq!(dev.reported_noise_control(), None);
+
+        // Confirmed once, but the headphones have since gone.
+        let dev = backend_knowing(open_link(1));
+        dev.observed.write().connected = false;
+        assert_eq!(dev.reported_noise_control(), None);
+
+        // Or this application has let go of them.
+        let dev = backend_knowing(open_link(1));
+        dev.attached.store(false, Ordering::SeqCst);
+        assert_eq!(dev.reported_noise_control(), None);
+    }
+
+    /// Only custom modes that are set up are named: not the presets, and not
+    /// an empty slot.
+    #[test]
+    fn the_known_custom_modes_are_the_ones_the_headphones_listed_as_set_up() {
+        let dev = backend_knowing(LinkStatus {
+            slots: slots(6),
+            ..open_link(0)
+        });
+        assert_eq!(dev.known_custom_modes(), vec!["Focus".to_string()]);
+
+        let unlisted = backend_knowing(open_link(0));
+        assert!(unlisted.known_custom_modes().is_empty(), "no list, no names");
+
+        let dev = backend_knowing(LinkStatus {
+            slots: slots(6),
+            ..open_link(0)
+        });
+        dev.observed.write().connected = false;
+        assert!(dev.known_custom_modes().is_empty());
+    }
+
+    // --- how often the mode list is asked for -------------------------------
+
+    #[test]
+    fn the_mode_list_is_asked_for_once_when_the_headphones_arrive() {
+        assert!(mode_list_due(None, false, false, false));
+        assert!(mode_list_due(None, false, true, false));
+    }
+
+    /// With the list in hand and the headphones in Quiet or Aware, there is
+    /// nothing on screen that the list would change.
+    #[test]
+    fn outside_a_custom_mode_the_list_in_hand_is_kept() {
+        for age in [Duration::ZERO, MODE_LIST_FRESH, Duration::from_secs(86_400)] {
+            assert!(!mode_list_due(Some(age), true, false, false), "{age:?}");
+        }
+    }
+
+    /// In a custom mode the level is on screen and can be changed from a
+    /// phone, so the list is asked for again — but not on every refresh.
+    #[test]
+    fn in_a_custom_mode_the_list_is_refreshed_now_and_then() {
+        let recent = MODE_LIST_FRESH - Duration::from_secs(1);
+        assert!(!mode_list_due(Some(Duration::ZERO), true, true, true));
+        assert!(!mode_list_due(Some(recent), true, true, true));
+        assert!(mode_list_due(Some(MODE_LIST_FRESH), true, true, true));
+    }
+
+    /// A list that failed to arrive, or that does not have the mode the
+    /// headphones turn out to be in, is asked for again soon.
+    #[test]
+    fn a_list_that_did_not_give_what_was_needed_is_asked_for_again_soon() {
+        let just_now = MODE_LIST_RETRY - Duration::from_secs(1);
+        // Nothing came of the last attempt.
+        assert!(!mode_list_due(Some(just_now), false, false, false));
+        assert!(mode_list_due(Some(MODE_LIST_RETRY), false, false, false));
+        // A custom mode made since the list was read.
+        assert!(!mode_list_due(Some(just_now), true, true, false));
+        assert!(mode_list_due(Some(MODE_LIST_RETRY), true, true, false));
+    }
 
     #[test]
     fn the_test_headphones_qualify_for_a_control_link() {

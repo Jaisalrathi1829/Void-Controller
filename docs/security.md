@@ -30,6 +30,14 @@ hardware.
 operations, and notifications. It does not grant shell access, filesystem
 access, or HTTP.
 
+The desktop widget is a second window and has a capability file of its own,
+`capabilities/widget.json`, which grants it less than the main window: the
+application's own events, and being dragged. It loads the same page under
+the same content security policy, and reaches the headphones through the same
+typed commands; there is nothing it can ask for that the main window cannot.
+The one command added for it, `show_main_window`, takes no arguments and
+brings this application's own window forward.
+
 The asset protocol is disabled in `tauri.conf.json`, and the corresponding
 `protocol-asset` crate feature was removed rather than enabling the protocol to
 match it.

@@ -17,7 +17,7 @@ pub use capability::{
 pub use command::{CommandOutcome, DeviceCommand};
 pub use state::{
     BatteryReading, BatterySource, ConnectionState, DeviceIdentity, DeviceSnapshot, DeviceSource,
-    EqSettings, EqState, NoiseControlMode, NoiseControlState, Transport, WindowsAudioState,
+    EqSettings, EqState, NoiseControlMode, NoiseControlState, Transport, SystemAudioState,
 };
 pub use traits::BoseDevice;
 

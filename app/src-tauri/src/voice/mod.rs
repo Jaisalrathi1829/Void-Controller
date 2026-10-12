@@ -7,6 +7,7 @@
 //! | [`policy`] | Decides whether a confirmed change is worth saying, and what the sentence is. |
 //! | [`queue`] | Holds what is waiting: priority order, one per subject, bounded. |
 //! | this module | One worker thread that takes the next announcement, synthesizes it and plays it. |
+//! | [`store`] | Sentences already synthesized, kept on disk so the model is rarely needed. |
 //! | [`kokoro`] | Kokoro inference, on this machine. |
 //! | [`backend`] | The real model and the real Windows audio output. |
 //!
@@ -28,6 +29,7 @@ pub mod backend;
 pub mod kokoro;
 pub mod policy;
 pub mod queue;
+pub mod store;
 
 use crate::audio::{Output, Played};
 use crate::device::state::{DeviceSnapshot, DeviceSource};
@@ -40,6 +42,7 @@ use policy::{Announcement, Category, ModeTracker};
 use queue::Queue;
 use serde::Serialize;
 use std::collections::VecDeque;
+use store::SpeechStore;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -200,13 +203,28 @@ pub struct Timing {
 impl Timing {
     pub fn standard() -> Self {
         Self {
-            idle_unload: Duration::from_secs(90),
+            idle_unload: IDLE_UNLOAD,
             route_wait: Duration::from_secs(8),
             route_retry: Duration::from_millis(500),
             prepare_ahead: true,
         }
     }
 }
+
+/// How long the model stays in memory after it was last needed.
+///
+/// On a phone the model is most of what the application weighs — about a
+/// quarter of a gigabyte — and the sentences it has already made are kept on
+/// disk, so it is let go almost at once. On a desktop it is kept a little
+/// longer, for someone trying voices one after another.
+#[cfg(target_os = "android")]
+const IDLE_UNLOAD: Duration = Duration::from_secs(8);
+#[cfg(not(target_os = "android"))]
+const IDLE_UNLOAD: Duration = Duration::from_secs(90);
+
+/// How many custom-mode names are remembered for preparing ahead. The
+/// headphones hold two.
+const CUSTOM_MODES_REMEMBERED: usize = 8;
 
 /// Speech volume as a gain. Squared, so that the slider's steps sound even:
 /// loudness is heard roughly logarithmically, and a straight line would put
@@ -222,6 +240,9 @@ struct Current {
     automatic: bool,
     /// Pre-synthesizing a sentence for later, not speaking one.
     preparing: bool,
+    /// Set when a preparation is interrupted to let an announcement through:
+    /// it is taken up again afterwards rather than forgotten.
+    resume: bool,
     cancel: Arc<AtomicBool>,
 }
 
@@ -230,6 +251,11 @@ struct Shared {
     mode: ModeTracker,
     /// Sentences to synthesize ahead of need, when there is nothing to say.
     prepare: VecDeque<String>,
+    /// The custom modes the headphones have said they hold, by name, so that
+    /// "Focus mode activated." is as ready as "Quiet mode activated." is.
+    custom_modes: Vec<String>,
+    /// What this phone or computer is called, for "connected to …".
+    host: Option<String>,
     recheck_requested: u64,
     recheck_done: u64,
     shutdown: bool,
@@ -246,6 +272,8 @@ struct Inner {
     settings: Arc<SettingsStore>,
     emit: Box<dyn Fn(&VoiceStatus) + Send + Sync>,
     timing: Timing,
+    /// Where synthesized sentences are kept between runs, if anywhere.
+    store: Option<SpeechStore>,
 }
 
 /// How one announcement ended.
@@ -275,11 +303,24 @@ fn allowed(announcement: &Announcement, settings: &StoredSettings) -> bool {
 }
 
 impl VoiceFeedback {
-    /// Starts the service and its worker thread.
+    /// Starts the service and its worker thread, keeping nothing on disk.
     pub fn start(
         settings: Arc<SettingsStore>,
         backend: Box<dyn Backend>,
         timing: Timing,
+        emit: impl Fn(&VoiceStatus) + Send + Sync + 'static,
+    ) -> Self {
+        Self::start_with_store(settings, backend, timing, None, emit)
+    }
+
+    /// Starts the service and its worker thread. Sentences it synthesizes
+    /// are kept in `store`, and read back from there instead of being made
+    /// again.
+    pub fn start_with_store(
+        settings: Arc<SettingsStore>,
+        backend: Box<dyn Backend>,
+        timing: Timing,
+        store: Option<SpeechStore>,
         emit: impl Fn(&VoiceStatus) + Send + Sync + 'static,
     ) -> Self {
         let status = VoiceStatus {
@@ -298,6 +339,8 @@ impl VoiceFeedback {
                 queue: Queue::default(),
                 mode: ModeTracker::default(),
                 prepare: VecDeque::new(),
+                custom_modes: Vec::new(),
+                host: None,
                 recheck_requested: 0,
                 recheck_done: 0,
                 shutdown: false,
@@ -311,6 +354,7 @@ impl VoiceFeedback {
             settings,
             emit: Box::new(emit),
             timing,
+            store,
         });
 
         let worker = Arc::clone(&inner);
@@ -333,7 +377,7 @@ impl VoiceFeedback {
             return Err(shared.status.detail.clone());
         }
         shared.queue.push(Announcement::Test);
-        cancel_preparing(&shared);
+        cancel_preparing(&mut shared);
         drop(shared);
         self.inner.wake.notify_all();
         Ok(())
@@ -344,7 +388,9 @@ impl VoiceFeedback {
         let mut shared = self.inner.shared.lock();
         shared.queue.clear();
         shared.prepare.clear();
-        if let Some(current) = &shared.current {
+        if let Some(current) = &mut shared.current {
+            // Called off, not set aside.
+            current.resume = false;
             current.cancel.store(true, Ordering::SeqCst);
         }
     }
@@ -378,8 +424,9 @@ impl VoiceFeedback {
 
         if before.voice_enabled && !after.voice_enabled {
             shared.prepare.clear();
-            if let Some(current) = &shared.current {
+            if let Some(current) = &mut shared.current {
                 if current.automatic {
+                    current.resume = false;
                     current.cancel.store(true, Ordering::SeqCst);
                 }
             }
@@ -392,7 +439,7 @@ impl VoiceFeedback {
             || before.announce_connection != after.announce_connection;
         let prepare = self.inner.timing.prepare_ahead && after.voice_enabled && shared.assets_ok;
         if prepare && (voice_changed || switches_changed) {
-            shared.prepare = sentences_to_prepare(after).into();
+            shared.prepare = sentences_to_prepare(after, &shared).into();
         }
         drop(shared);
         self.inner.wake.notify_all();
@@ -406,6 +453,59 @@ impl VoiceFeedback {
         settings.voice_enabled
             && settings.announce_mode_changes
             && self.inner.shared.lock().assets_ok
+    }
+
+    /// Tells the service which custom modes the headphones hold, as the
+    /// headphones listed them, so their announcements can be made ready
+    /// before the first switch into one. Says nothing and changes no state:
+    /// a name here is not a reading of the mode.
+    pub fn expect_modes(&self, names: &[String]) {
+        if names.is_empty() || !self.inner.timing.prepare_ahead {
+            return;
+        }
+        let settings = self.inner.settings.get();
+        let mut shared = self.inner.shared.lock();
+        let mut added = false;
+        for name in names {
+            let name = name.trim();
+            if name.is_empty() || shared.custom_modes.iter().any(|known| known == name) {
+                continue;
+            }
+            if shared.custom_modes.len() >= CUSTOM_MODES_REMEMBERED {
+                shared.custom_modes.remove(0);
+            }
+            shared.custom_modes.push(name.to_string());
+            if shared.assets_ok && settings.voice_enabled && settings.announce_mode_changes {
+                let mode = policy::SpokenMode::Custom(Some(name.to_string()));
+                shared.prepare.push_back(Announcement::Mode(mode).text());
+                added = true;
+            }
+        }
+        drop(shared);
+        if added {
+            self.inner.wake.notify_all();
+        }
+    }
+
+    /// Tells the service what this phone or computer is called, so that a
+    /// connection can be announced as "connected to" it.
+    pub fn set_host(&self, name: Option<String>) {
+        let name = name
+            .map(|n| policy::speakable_name(&n))
+            .filter(|n| !n.is_empty());
+        let settings = self.inner.settings.get();
+        let mut shared = self.inner.shared.lock();
+        if shared.host == name {
+            return;
+        }
+        shared.host = name;
+        let prepare = self.inner.timing.prepare_ahead && settings.voice_enabled && shared.assets_ok;
+        if prepare && settings.announce_connection {
+            // The connection sentence has just changed.
+            shared.prepare = sentences_to_prepare(&settings, &shared).into();
+        }
+        drop(shared);
+        self.inner.wake.notify_all();
     }
 
     /// Takes a snapshot of the device as evidence of its mode.
@@ -469,6 +569,7 @@ impl VoiceFeedback {
         if step.returned {
             let back = Announcement::Connected {
                 name: step.name.clone(),
+                host: shared.host.clone(),
             };
             self.push_automatic(&mut shared, back, &settings);
         }
@@ -516,10 +617,12 @@ impl VoiceFeedback {
 }
 
 /// A real announcement has arrived: stop synthesizing ahead, so that it is
-/// not kept waiting behind a sentence nobody has asked for yet.
-fn cancel_preparing(shared: &Shared) {
-    if let Some(current) = &shared.current {
+/// not kept waiting behind a sentence nobody has asked for yet. The sentence
+/// that was interrupted is taken up again once the announcement is out.
+fn cancel_preparing(shared: &mut Shared) {
+    if let Some(current) = &mut shared.current {
         if current.preparing {
+            current.resume = true;
             current.cancel.store(true, Ordering::SeqCst);
         }
     }
@@ -528,16 +631,23 @@ fn cancel_preparing(shared: &Shared) {
 /// The fixed sentences worth having ready: without this, the first "Quiet
 /// mode activated" after a voice change would arrive a couple of seconds
 /// after the mode did.
-fn sentences_to_prepare(settings: &StoredSettings) -> Vec<String> {
+fn sentences_to_prepare(settings: &StoredSettings, shared: &Shared) -> Vec<String> {
     use policy::SpokenMode;
     let mut sentences = Vec::new();
     if settings.announce_mode_changes {
         sentences.push(Announcement::Mode(SpokenMode::Quiet).text());
         sentences.push(Announcement::Mode(SpokenMode::Aware).text());
+        for name in &shared.custom_modes {
+            sentences.push(Announcement::Mode(SpokenMode::Custom(Some(name.clone()))).text());
+        }
     }
     if settings.announce_connection {
         if let Some(name) = &settings.preferred_device_name {
-            sentences.push(Announcement::Connected { name: name.clone() }.text());
+            let connected = Announcement::Connected {
+                name: name.clone(),
+                host: shared.host.clone(),
+            };
+            sentences.push(connected.text());
             sentences.push(Announcement::Disconnected { name: name.clone() }.text());
         }
     }
@@ -656,7 +766,8 @@ fn check_assets(inner: &Inner, backend: &mut dyn Backend) {
     if ok && inner.timing.prepare_ahead {
         let settings = inner.settings.get();
         if settings.voice_enabled {
-            inner.shared.lock().prepare = sentences_to_prepare(&settings).into();
+            let mut shared = inner.shared.lock();
+            shared.prepare = sentences_to_prepare(&settings, &shared).into();
         }
     }
 }
@@ -711,6 +822,15 @@ fn speech_for(
     if let Some(speech) = cached(inner, &key) {
         return Ok(speech);
     }
+    // Made on an earlier occasion and kept: no model needed.
+    let keepable = text.chars().count() <= CACHEABLE_CHARS;
+    if let (true, Some(store)) = (keepable, &inner.store) {
+        if let Some(speech) = store.load(text, voice.id, settings.voice_speed_percent) {
+            let speech = Arc::new(speech);
+            remember(inner, key, &speech);
+            return Ok(speech);
+        }
+    }
 
     if !backend.is_loaded() {
         set_status(inner, |s| {
@@ -745,6 +865,10 @@ fn speech_for(
         }
     };
     *last_used = Instant::now();
+    if let (true, Some(store)) = (keepable, &inner.store) {
+        // If it cannot be kept it is made again next time; nothing is lost.
+        let _ = store.save(text, voice.id, settings.voice_speed_percent, &speech);
+    }
     remember(inner, key, &speech);
     Ok(speech)
 }
@@ -774,6 +898,7 @@ fn say(
         shared.current = Some(Current {
             automatic: announcement.is_automatic(),
             preparing: false,
+            resume: false,
             cancel: Arc::clone(&cancel),
         });
     }
@@ -894,6 +1019,7 @@ fn prepare(inner: &Inner, backend: &mut dyn Backend, sentence: String, last_used
         shared.current = Some(Current {
             automatic: true,
             preparing: true,
+            resume: false,
             cancel: Arc::clone(&cancel),
         });
     }
@@ -908,7 +1034,14 @@ fn prepare(inner: &Inner, backend: &mut dyn Backend, sentence: String, last_used
         last_used,
     );
 
-    inner.shared.lock().current = None;
+    {
+        let mut shared = inner.shared.lock();
+        let interrupted = shared.current.take().is_some_and(|current| current.resume);
+        // Set aside for an announcement, not called off: back to the front.
+        if interrupted && matches!(result, Err(Outcome::Dropped)) && !shared.shutdown {
+            shared.prepare.push_front(sentence);
+        }
+    }
     let loaded = backend.is_loaded();
     set_status(inner, |status| {
         status.speaking = None;

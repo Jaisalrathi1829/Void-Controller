@@ -105,6 +105,9 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_Media_KernelStreaming",
     "Win32_Media_Multimedia",
+
+    # This computer's name, for "connected to ..."
+    "Win32_System_SystemInformation",
 ]
 
 [features]

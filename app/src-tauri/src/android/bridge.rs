@@ -154,6 +154,23 @@ pub fn bundled_model_root() -> Result<Option<String>, String> {
     call::<Reply>("modelRoot", ()).map(|reply| reply.path)
 }
 
+/// What this phone calls itself: its Bluetooth name where that can be read,
+/// otherwise the device name from its settings. `None` if it gives neither.
+pub fn host_name() -> Result<Option<String>, String> {
+    #[derive(Deserialize)]
+    struct Reply {
+        #[serde(default)]
+        name: Option<String>,
+    }
+    call::<Reply>("hostName", ()).map(|reply| reply.name)
+}
+
+/// Tells the Kotlin side whether the model is in memory, which is the one
+/// thing it cannot see for itself and needs for its own log lines.
+pub fn note_memory(what: &str) {
+    let _ = run("noteMemory", serde_json::json!({ "what": what }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

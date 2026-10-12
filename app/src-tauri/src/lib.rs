@@ -11,19 +11,22 @@ pub mod autostart;
 pub mod bluetooth;
 pub mod bose;
 pub mod device;
+pub mod host;
 pub mod settings;
 #[cfg(desktop)]
 pub mod tray;
 pub mod util;
 pub mod voice;
 pub mod watcher;
+#[cfg(desktop)]
+pub mod widget;
 
 use bose::{MockBoseDevice, RealBoseDevice};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 use device::capability::{CapabilityKey, HardwareProof, Mechanism};
 use device::command::{CommandOutcome, DeviceCommand};
-#[cfg(windows)]
-use device::state::WindowsAudioState;
+#[cfg(any(windows, target_os = "android"))]
+use device::state::SystemAudioState;
 use device::state::{DeviceSnapshot, DeviceSource, NoiseControlMode, NoiseControlState};
 use device::traits::BoseDevice;
 use parking_lot::RwLock;
@@ -183,9 +186,16 @@ pub struct SettingsView {
     pub announce_connection: bool,
     pub announce_battery: bool,
     pub voice_use_default_output: bool,
+    pub desktop_widget: bool,
+    pub widget_on_top: bool,
     /// Switches that cannot be used in this build, each with the reason.
     pub unavailable: BTreeMap<SettingKey, String>,
 }
+
+/// Emitted to every window when the settings change, with the settings as
+/// they then stand. There is more than one window now, and a switch flipped
+/// in one has to show in the other.
+pub const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 
 impl SettingsView {
     fn build(stored: &StoredSettings) -> Self {
@@ -196,12 +206,16 @@ impl SettingsView {
         }
         let start_with_windows = autostart_blocked.is_none()
             && autostart::Autostart::for_this_app().is_ok_and(|entry| entry.is_enabled());
-        // A phone has no minimized state to start in.
+        // A phone has no minimized state to start in, and no desktop to
+        // put a widget on.
         #[cfg(mobile)]
-        unavailable.insert(
+        for key in [
             SettingKey::StartMinimized,
-            "Not available on Android.".to_string(),
-        );
+            SettingKey::DesktopWidget,
+            SettingKey::WidgetOnTop,
+        ] {
+            unavailable.insert(key, "Not available on Android.".to_string());
+        }
 
         Self {
             start_with_windows,
@@ -221,6 +235,8 @@ impl SettingsView {
             announce_connection: stored.announce_connection,
             announce_battery: stored.announce_battery,
             voice_use_default_output: stored.voice_use_default_output,
+            desktop_widget: stored.desktop_widget,
+            widget_on_top: stored.widget_on_top,
             unavailable,
         }
     }
@@ -259,7 +275,8 @@ type UiResult<T> = Result<T, UiError>;
 
 // --- Commands ---------------------------------------------------------------
 
-/// Attaches Windows audio state to a device snapshot.
+/// Attaches what the host system knows to a device snapshot: its volume,
+/// and its own name.
 ///
 /// Audio is a system concern rather than a device-backend one: the endpoint
 /// exists whether we are talking to a mock or to real headphones. Keeping it
@@ -268,8 +285,54 @@ type UiResult<T> = Result<T, UiError>;
 ///
 /// Reading an endpoint successfully is genuine hardware evidence that the
 /// volume path works, so the capability is promoted accordingly.
-#[cfg_attr(not(windows), allow(unused_mut))]
-fn attach_windows_audio(mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
+fn attach_system(mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
+    snapshot.host_name = host::name();
+
+    // Android has one volume that matters here: the one media plays at,
+    // which is the headphones' while they are the media output.
+    #[cfg(target_os = "android")]
+    {
+        match android::sound::media_volume() {
+            Ok(volume) if volume.steps > 0 => {
+                let output = volume
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| "Media".to_string());
+                let proof = HardwareProof::observed_passively(
+                    CapabilityKey::Volume,
+                    format!("read Android media volume, playing through {output:?}"),
+                );
+                let _ = snapshot
+                    .capabilities
+                    .get_mut(CapabilityKey::Volume)
+                    .verify_with_hardware(&proof, Mechanism::AndroidAudio);
+
+                snapshot.system_audio = Some(SystemAudioState {
+                    endpoint_id: util::stable_id("android-media-volume"),
+                    endpoint_name: output,
+                    volume_percent: volume.percent(),
+                    muted: volume.muted,
+                    is_default_render: true,
+                    is_default_communications: false,
+                    sample_rate_hz: None,
+                    channels: None,
+                });
+            }
+            Ok(_) => {
+                let _ = snapshot
+                    .capabilities
+                    .get_mut(CapabilityKey::Volume)
+                    .mark_unsupported("Android reports a media volume with no steps.");
+            }
+            Err(e) => {
+                let _ = snapshot
+                    .capabilities
+                    .get_mut(CapabilityKey::Volume)
+                    .mark_unsupported(format!("Android's media volume could not be read: {e}"));
+            }
+        }
+    }
+
     #[cfg(windows)]
     {
         match audio::default_output_endpoint() {
@@ -283,7 +346,7 @@ fn attach_windows_audio(mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
                     .get_mut(CapabilityKey::Volume)
                     .verify_with_hardware(&proof, Mechanism::WindowsAudio);
 
-                snapshot.windows_audio = Some(WindowsAudioState {
+                snapshot.system_audio = Some(SystemAudioState {
                     endpoint_name: ep.name,
                     endpoint_id: util::stable_id(&ep.id),
                     volume_percent: ep.volume_percent,
@@ -331,7 +394,33 @@ async fn get_snapshot(state: tauri::State<'_, AppState>) -> UiResult<DeviceSnaps
     // just found to be reporting. A request to change mode never reaches the
     // voice service; only the state that results from it does, here.
     state.voice().observe_snapshot(&snapshot);
-    Ok(attach_windows_audio(snapshot))
+    // The custom modes the headphones listed, so that saying one's name does
+    // not have to wait for it to be synthesized the first time.
+    state.voice().expect_modes(&dev.known_custom_modes());
+    let snapshot = attach_system(snapshot);
+    // And what this machine is called, for announcing a connection to it.
+    if let Some(host) = &snapshot.host_name {
+        state.voice().set_host(Some(host.clone()));
+    }
+    Ok(snapshot)
+}
+
+/// Hands the voice service the mode the headphones themselves last reported.
+///
+/// Called straight after a change was asked for. What it passes on is the
+/// headphones' own read-back, never the request: if they did not change, or
+/// did not answer, there is nothing new here and nothing is said. Without
+/// this the announcement waits for the next full refresh, which can be most
+/// of a second behind.
+fn observe_reported_mode(state: &AppState, device: &dyn BoseDevice) {
+    if device.source() != DeviceSource::Real {
+        return;
+    }
+    if let Some(reported) = device.reported_noise_control() {
+        state
+            .voice()
+            .observe_mode(voice::policy::SpokenMode::from_state(&reported));
+    }
 }
 
 #[tauri::command]
@@ -364,7 +453,7 @@ async fn set_device_source(
     let dev = state.current();
     let snapshot = dev.snapshot().await?;
     state.voice().observe_snapshot(&snapshot);
-    Ok(attach_windows_audio(snapshot))
+    Ok(attach_system(snapshot))
 }
 
 fn platform_error(message: String) -> UiError {
@@ -425,6 +514,25 @@ fn set_setting(
                 .update(|s| s.set(key, value))
                 .map_err(platform_error)?;
         }
+        SettingKey::DesktopWidget | SettingKey::WidgetOnTop => {
+            #[cfg(mobile)]
+            return Err(UiError {
+                message: "There is no desktop widget on Android.".to_string(),
+                kind: "unsupported".to_string(),
+            });
+            #[cfg(desktop)]
+            {
+                state
+                    .settings()
+                    .update(|s| s.set(key, value))
+                    .map_err(platform_error)?;
+                // The window follows the switch.
+                match key {
+                    SettingKey::DesktopWidget => widget::sync(&app, value),
+                    _ => widget::set_on_top(&app, value),
+                }
+            }
+        }
         _ => {
             state
                 .settings()
@@ -437,7 +545,19 @@ fn set_setting(
     // takes effect on what is being said right now and not just from the
     // next event.
     state.voice().settings_changed(&before, &after);
-    Ok(SettingsView::build(&after))
+    let view = SettingsView::build(&after);
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, &view);
+    Ok(view)
+}
+
+/// Brings the main window forward. For the widget, whose whole point is that
+/// the main window is usually not open. Takes nothing: it can show this
+/// application's own window and nothing else.
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    #[cfg(desktop)]
+    tray::show_main(&app);
+    let _ = &app;
 }
 
 /// The voice settings that are not on/off switches.
@@ -481,6 +601,7 @@ impl VoiceOption {
 
 #[tauri::command]
 fn set_voice_option(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     option: VoiceOption,
 ) -> UiResult<SettingsView> {
@@ -495,7 +616,9 @@ fn set_voice_option(
         })
         .map_err(platform_error)?;
     state.voice().settings_changed(&before, &after);
-    Ok(SettingsView::build(&after))
+    let view = SettingsView::build(&after);
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, &view);
+    Ok(view)
 }
 
 #[tauri::command]
@@ -534,11 +657,31 @@ async fn recheck_voice_model(state: tauri::State<'_, AppState>) -> UiResult<Voic
 /// mock exercises exactly the same checks the hardware path does.
 #[tauri::command]
 async fn execute_command(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     command: DeviceCommand,
 ) -> UiResult<CommandOutcome> {
     command.validate()?;
 
+    // Whatever comes of it, the device may now be in another state, and a
+    // second window — the widget, or the main window behind it — is showing
+    // the old one. The window that asked re-reads by itself.
+    let changes_something = !matches!(
+        command,
+        DeviceCommand::RefreshSnapshot
+            | DeviceCommand::ReadBattery
+            | DeviceCommand::ReadNoiseControl
+            | DeviceCommand::ReadEqualizer
+            | DeviceCommand::ReadDeviceInfo
+    );
+    let outcome = run_command(&state, command).await;
+    if changes_something {
+        let _ = app.emit(watcher::DEVICE_CHANGED_EVENT, ());
+    }
+    outcome
+}
+
+async fn run_command(state: &AppState, command: DeviceCommand) -> UiResult<CommandOutcome> {
     let dev = state.current();
     let outcome = match command {
         DeviceCommand::Connect => dev.connect().await?,
@@ -547,7 +690,11 @@ async fn execute_command(
             let _ = dev.disconnect().await;
             dev.connect().await?
         }
-        DeviceCommand::SetNoiseControl { mode } => dev.set_noise_control(mode).await?,
+        DeviceCommand::SetNoiseControl { mode } => {
+            let outcome = dev.set_noise_control(mode).await;
+            observe_reported_mode(state, dev.as_ref());
+            outcome?
+        }
         DeviceCommand::SetEqualizer { settings } => dev.set_equalizer(settings).await?,
 
         DeviceCommand::RefreshSnapshot
@@ -574,10 +721,27 @@ async fn execute_command(
                     ))
                 }
             }
-            #[cfg(not(windows))]
+            // Android's media volume moves in steps, so the nearest step is
+            // what is set, and success is Android then reporting that step.
+            #[cfg(target_os = "android")]
+            {
+                let (asked, after) =
+                    android::sound::set_media_volume(percent).map_err(platform_error)?;
+                if after.level == asked {
+                    CommandOutcome::applied()
+                } else {
+                    CommandOutcome::sent_unverified(format!(
+                        "The phone reports {}% after requesting {percent}%.",
+                        after.percent()
+                    ))
+                }
+            }
+            #[cfg(not(any(windows, target_os = "android")))]
             {
                 let _ = percent;
-                CommandOutcome::unsupported("Core Audio is only available on Windows.")
+                CommandOutcome::unsupported(
+                    "System volume is only implemented for Windows and Android.",
+                )
             }
         }
 
@@ -593,10 +757,23 @@ async fn execute_command(
                     )
                 }
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "android")]
+            {
+                let after = android::sound::set_media_mute(muted).map_err(platform_error)?;
+                if after.muted == muted {
+                    CommandOutcome::applied()
+                } else {
+                    CommandOutcome::sent_unverified(
+                        "The phone did not report the requested mute state.",
+                    )
+                }
+            }
+            #[cfg(not(any(windows, target_os = "android")))]
             {
                 let _ = muted;
-                CommandOutcome::unsupported("Core Audio is only available on Windows.")
+                CommandOutcome::unsupported(
+                    "System volume is only implemented for Windows and Android.",
+                )
             }
         }
 
@@ -654,10 +831,17 @@ async fn get_current_mode(
 /// The outcome is `applied` only if the device then reported that mode.
 #[tauri::command]
 async fn set_noise_control_mode(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     mode: NoiseModeRequest,
 ) -> UiResult<CommandOutcome> {
-    Ok(state.current().set_noise_control(mode.into()).await?)
+    let device = state.current();
+    let outcome = device.set_noise_control(mode.into()).await;
+    // Whatever came of it, what the headphones now report is what is said.
+    observe_reported_mode(&state, device.as_ref());
+    // And what any other window should now show.
+    let _ = app.emit(watcher::DEVICE_CHANGED_EVENT, ());
+    Ok(outcome?)
 }
 
 /// Opens the Windows Bluetooth settings page.
@@ -857,14 +1041,31 @@ pub fn run() {
                 android::bridge::bundled_model_root()
                     .map(|root| root.map(std::path::PathBuf::from))
             });
-            let voice = VoiceFeedback::start(
+            // Sentences already synthesized are kept, so that the model —
+            // most of what this application weighs once loaded — is needed
+            // only for a sentence that has not been said before. The cache
+            // folder is the place for it: everything there can be made again.
+            let spoken = app
+                .path()
+                .app_cache_dir()
+                .or_else(|_| app.path().app_local_data_dir())
+                .ok()
+                .map(|dir| voice::store::SpeechStore::new(dir.join("spoken")));
+            let voice = VoiceFeedback::start_with_store(
                 Arc::clone(&store),
                 Box::new(backend),
                 voice::Timing::standard(),
+                spoken,
                 move |status| {
                     let _ = status_target.emit(voice::VOICE_STATUS_EVENT, status);
                 },
             );
+            // What this machine is called, for "connected to …". Asked off
+            // the start-up path: on Android the answer comes from Kotlin.
+            {
+                let voice = voice.clone();
+                std::thread::spawn(move || voice.set_host(host::name()));
+            }
 
             // Start on real hardware when the headphones are already paired
             // with this PC, and on the labelled simulation otherwise.
@@ -878,10 +1079,18 @@ pub fn run() {
                     }
                 }
 
+                // The widget, if it was left on. It is a window of its own and
+                // is put back where it was.
+                if settings.desktop_widget {
+                    widget::open(&handle);
+                }
+
                 // The window is created hidden so that "start minimized" never
-                // flashes it on screen. It stays hidden only if there is a tray
-                // icon to bring it back; otherwise it is shown, minimized or not.
-                let stay_hidden = settings.start_minimized && tray::is_present(&handle);
+                // flashes it on screen. It stays hidden only if there is
+                // something to bring it back — the tray icon, or the widget —
+                // and otherwise it is shown, minimized or not.
+                let stay_hidden = settings.start_minimized
+                    && (tray::is_present(&handle) || settings.desktop_widget);
                 if !stay_hidden {
                     if let Some(window) = app.get_webview_window(tray::MAIN_WINDOW) {
                         let _ = window.show();
@@ -912,23 +1121,40 @@ pub fn run() {
             let _ = (window, event);
             #[cfg(desktop)]
             {
+            let app = window.app_handle();
+            if window.label() == widget::WIDGET_WINDOW {
+                match event {
+                    tauri::WindowEvent::Moved(position) => {
+                        widget::moved(app, position.x, position.y);
+                    }
+                    // Closed from the keyboard rather than by its own button:
+                    // the same thing, and the switch has to say so.
+                    tauri::WindowEvent::CloseRequested { .. } => widget::closed_by_user(app),
+                    _ => {}
+                }
+                return;
+            }
             if window.label() != tray::MAIN_WINDOW {
                 return;
             }
-            let app = window.app_handle();
             let Some(state) = app.try_state::<AppState>() else {
                 return;
             };
-            // Only while the setting is on *and* the icon exists.
-            if !state.settings().get().minimize_to_tray || !tray::is_present(app) {
-                return;
-            }
+            // Hiding to the tray: only while the setting is on *and* the
+            // icon exists.
+            let to_tray = state.settings().get().minimize_to_tray && tray::is_present(app);
             match event {
-                tauri::WindowEvent::CloseRequested { api, .. } => {
+                // With the widget up, closing the main window leaves the
+                // widget running — which is what the widget is for — and the
+                // widget can bring the window back. With neither a tray icon
+                // nor a widget, closing the window closes the application.
+                tauri::WindowEvent::CloseRequested { api, .. }
+                    if to_tray || widget::is_open(app) =>
+                {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-                tauri::WindowEvent::Resized(_) => {
+                tauri::WindowEvent::Resized(_) if to_tray => {
                     if window.is_minimized().unwrap_or(false) {
                         let _ = window.hide();
                     }
@@ -956,6 +1182,7 @@ pub fn run() {
             list_audio_endpoints,
             open_bluetooth_settings,
             request_bluetooth_permission,
+            show_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Bose QC Control Center")

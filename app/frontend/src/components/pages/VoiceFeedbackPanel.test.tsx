@@ -44,6 +44,8 @@ function settings(over: Partial<AppSettings> = {}): AppSettings {
     announceConnection: true,
     announceBattery: true,
     voiceUseDefaultOutput: false,
+    desktopWidget: false,
+    widgetOnTop: true,
     voiceId: 'af_bella',
     voiceSpeedPercent: 100,
     voiceVolumePercent: 80,
@@ -91,7 +93,7 @@ const snapshot: DeviceSnapshot = {
   battery: null,
   noiseControl: { mode: 'quiet', source: 'vendor-protocol', readAt: '2026-10-10T09:00:00Z' },
   equalizer: null,
-  windowsAudio: null,
+  systemAudio: null,
   lastError: null,
   updatedAt: '2026-10-10T09:00:00Z',
 };
@@ -377,7 +379,7 @@ describe('Test Voice and Stop Speaking', () => {
 describe('what is announced', () => {
   it.each<[string, SettingKey]>([
     ['Voice feedback', 'voiceEnabled'],
-    ['Quiet / Aware mode changes', 'announceModeChanges'],
+    ['Mode changes', 'announceModeChanges'],
     ['Connection and disconnection', 'announceConnection'],
     ['Low battery warning', 'announceBattery'],
   ])('%s is its own switch', async (name, key) => {
@@ -409,7 +411,7 @@ describe('what is announced', () => {
     await renderPanel();
     expect(toggle('Voice feedback')).toBeEnabled();
     for (const name of [
-      'Quiet / Aware mode changes',
+      'Mode changes',
       'Connection and disconnection',
       'Low battery warning',
     ]) {
@@ -419,15 +421,22 @@ describe('what is announced', () => {
 
   it('names the headphones in the connection sentences', async () => {
     await renderPanel();
-    expect(screen.getByText(/“Aurora connected.”/)).toBeInTheDocument();
+    expect(screen.getByText(/“Aurora connected to …”, naming this computer/)).toBeInTheDocument();
     expect(screen.getByText(/“Aurora disconnected.”/)).toBeInTheDocument();
+  });
+
+  // The custom mode is announced like the other two, by its own name, and
+  // the switch says so rather than naming only Quiet and Aware.
+  it('says that a custom mode is announced by its own name', async () => {
+    await renderPanel();
+    expect(screen.getByText(/a custom mode by the name the headphones give it/)).toBeInTheDocument();
   });
 
   it('does not invent a name when no headphones are remembered', async () => {
     ipcMock.getSettings.mockResolvedValue(settings({ preferredDeviceName: null }));
     ipcMock.getSnapshot.mockResolvedValue({ ...snapshot, identity: null });
     await renderPanel();
-    expect(screen.getByText(/The headphones’ name, then “connected.”/)).toBeInTheDocument();
+    expect(screen.getByText(/The headphones’ name, then “connected to”/)).toBeInTheDocument();
     expect(screen.queryByText(/No device/)).not.toBeInTheDocument();
   });
 });

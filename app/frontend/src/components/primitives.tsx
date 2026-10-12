@@ -42,20 +42,20 @@ export function Panel({
   children,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
+  // Arrives and lifts by CSS. A panel is most of a page, and one that waits
+  // on script to become visible is a page that stays blank whenever script
+  // is busy, which on a phone it can be for a noticeable moment.
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 18, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      whileHover={{ y: -4, boxShadow: "var(--shadow-lg)" }}
-      transition={{ type: "spring", stiffness: 260, damping: 26 }}
+    <div
       className={cn(
-        "rounded-xl border border-border bg-card shadow-[var(--shadow-sm)]",
+        "panel-enter rounded-xl border border-border bg-card shadow-[var(--shadow-sm)]",
+        "transition-[translate,box-shadow] duration-200 hover:-translate-y-1 hover:shadow-[var(--shadow-lg)]",
         className,
       )}
-      {...(props as any)}
+      {...props}
     >
       {children}
-    </motion.div>
+    </div>
   );
 }
 
@@ -155,10 +155,8 @@ export function ConnectionBadge({ state, className }: { state: ConnectionState; 
         {m.pulse && (
           <span className={cn("absolute inline-flex size-full animate-ping rounded-full opacity-75", dotColor[m.tone])} />
         )}
-        <motion.span
-          className={cn("relative inline-flex size-1.5 rounded-full", dotColor[m.tone])}
-          animate={{ scale: [1, 1.4, 1] }}
-          transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+        <span
+          className={cn("pulse-grow relative inline-flex size-1.5 rounded-full", dotColor[m.tone])}
         />
       </span>
       {m.label}
@@ -203,13 +201,14 @@ export function BatteryIndicator({
   const Icon = charging ? Zap : level <= 10 ? BatteryWarning : level <= 20 ? BatteryLow : BatteryFull;
   return (
     <span className={cn("inline-flex items-center gap-1.5", colorClass, size === "lg" && "gap-2")}>
-      <motion.span
-        animate={charging ? { scale: [1, 1.15, 1] } : level <= 20 ? { opacity: [1, 0.4, 1] } : {}}
-        transition={{ duration: charging ? 1.2 : 1.6, repeat: Infinity }}
-        className="inline-flex"
+      <span
+        className={cn(
+          "inline-flex",
+          charging ? "pulse-grow-slight" : level <= 20 ? "pulse-fade" : undefined,
+        )}
       >
         <Icon className={size === "lg" ? "size-5" : "size-4"} />
-      </motion.span>
+      </span>
       {showLabel && (
         <span className={cn(size === "lg" ? "text-base font-medium" : "text-sm")}>
           <AnimatedNumber value={level} suffix="%" />
@@ -385,16 +384,25 @@ export function Range({
         {leftLabel && <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">{leftLabel}</span>}
         <div className="relative flex-1">
           <div className="h-1.5 w-full rounded-full bg-surface-2" />
+          {/* `initial={false}`: a slider appears showing its value. It does
+              not sweep up to it from zero, which reads as the value changing. */}
           <motion.div
             className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-primary"
+            initial={false}
             animate={{ width: `${pct}%` }}
             transition={{ type: "spring", stiffness: 320, damping: 30 }}
           />
+          {/* The halo follows the thumb with a spring, and breathes by
+              itself in CSS: a pulse that never ends is not something to
+              drive from script on every frame, for every slider on screen. */}
           <motion.div
-            className="pointer-events-none absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/25"
-            animate={{ left: `${pct}%`, scale: [1, 1.6, 1], opacity: [0.5, 0, 0.5] }}
-            transition={{ left: { type: "spring", stiffness: 320, damping: 30 }, scale: { duration: 2, repeat: Infinity }, opacity: { duration: 2, repeat: Infinity } }}
-          />
+            className="pointer-events-none absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2"
+            initial={false}
+            animate={{ left: `${pct}%` }}
+            transition={{ type: "spring", stiffness: 320, damping: 30 }}
+          >
+            <span className="thumb-halo block size-full rounded-full bg-primary/25" />
+          </motion.div>
           <input
             type="range"
             aria-label={label}

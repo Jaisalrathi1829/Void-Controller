@@ -47,6 +47,22 @@ pub trait BoseDevice: Send + Sync {
         None
     }
 
+    /// The mode the device itself last reported, if the backend has one in
+    /// hand. Costs nothing: nothing is asked of the device.
+    ///
+    /// After a change this is the device's own read-back, which is what
+    /// makes it fit to announce: it is never what was merely asked for.
+    fn reported_noise_control(&self) -> Option<NoiseControlState> {
+        None
+    }
+
+    /// The names of the custom modes the device has listed, if the backend
+    /// has the list in hand. Costs nothing, and says nothing about which mode
+    /// is active.
+    fn known_custom_modes(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The mode, asked for as cheaply as the backend can: one question to the
     /// device and nothing else. For asking often.
     ///

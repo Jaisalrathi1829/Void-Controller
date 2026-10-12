@@ -78,7 +78,7 @@ function snapshot(opts: {
         }
       : null,
     equalizer: null,
-    windowsAudio: null,
+    systemAudio: null,
     lastError,
     updatedAt: '2026-10-10T09:00:00Z',
   };

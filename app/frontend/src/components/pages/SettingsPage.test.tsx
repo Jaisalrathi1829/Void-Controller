@@ -40,6 +40,8 @@ function settings(over: Partial<AppSettings> = {}): AppSettings {
     announceConnection: true,
     announceBattery: true,
     voiceUseDefaultOutput: false,
+    desktopWidget: false,
+    widgetOnTop: true,
     voiceId: 'af_bella',
     voiceSpeedPercent: 100,
     voiceVolumePercent: 80,
@@ -59,7 +61,7 @@ function snapshot(mode: 'quiet' | 'aware' = 'quiet'): DeviceSnapshot {
     battery: null,
     noiseControl: { mode, source: 'vendor-protocol', readAt: '2026-10-10T09:00:00Z' },
     equalizer: null,
-    windowsAudio: null,
+    systemAudio: null,
     lastError: null,
     updatedAt: '2026-10-10T09:00:00Z',
   };
@@ -250,5 +252,32 @@ describe('headphones coming and going', () => {
     await waitFor(() =>
       expect(ipcMock.getSnapshot.mock.calls.length).toBeGreaterThan(readsBefore),
     );
+  });
+});
+
+describe('the desktop widget', () => {
+  it('is a switch of its own, off until asked for', async () => {
+    ipcMock.getSettings.mockResolvedValue(settings());
+    ipcMock.setSetting.mockResolvedValue(settings({ desktopWidget: true }));
+    await renderPage();
+    expect(toggle('Desktop widget')).toHaveAttribute('aria-checked', 'false');
+
+    await userEvent.click(toggle('Desktop widget'));
+
+    await waitFor(() => expect(ipcMock.setSetting).toHaveBeenCalledWith('desktopWidget', true));
+    await waitFor(() => expect(toggle('Desktop widget')).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  // Whether it floats only means something while there is a widget.
+  it('offers "keep on top" only while the widget is on', async () => {
+    ipcMock.getSettings.mockResolvedValue(settings({ desktopWidget: false }));
+    await renderPage();
+    expect(screen.queryByRole('switch', { name: 'Keep the widget on top' })).not.toBeInTheDocument();
+  });
+
+  it('shows "keep on top" as the native layer has it', async () => {
+    ipcMock.getSettings.mockResolvedValue(settings({ desktopWidget: true, widgetOnTop: false }));
+    await renderPage();
+    expect(toggle('Keep the widget on top')).toHaveAttribute('aria-checked', 'false');
   });
 });

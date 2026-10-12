@@ -87,11 +87,15 @@ export interface EqState extends EqSettings {
   readAt: string;
 }
 
-/** Windows audio endpoint state — distinct from any Bose-internal volume. */
-export interface WindowsAudioState {
+/**
+ * The host system's own volume — a Windows audio endpoint, or Android's media
+ * volume. Distinct from any Bose-internal volume.
+ */
+export interface SystemAudioState {
+  /** The Windows endpoint, or on Android what media is playing through. */
   endpointName: string;
   endpointId: string;
-  /** 0-100, Windows system volume for this endpoint. */
+  /** 0-100. On Android, the media volume as a share of its steps. */
   volumePercent: number;
   muted: boolean;
   isDefaultRender: boolean;
@@ -116,7 +120,12 @@ export interface DeviceSnapshot {
   battery: BatteryReading | null;
   noiseControl: NoiseControlState | null;
   equalizer: EqState | null;
-  windowsAudio: WindowsAudioState | null;
+  systemAudio: SystemAudioState | null;
+  /**
+   * What the phone or computer running this application is called — the
+   * thing the headphones are connected to when they are connected here.
+   */
+  hostName?: string | null;
 
   /** Populated when `connection === 'error'`. */
   lastError: string | null;

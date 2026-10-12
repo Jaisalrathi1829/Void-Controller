@@ -99,6 +99,8 @@ impl CapabilityKey {
 #[serde(rename_all = "kebab-case")]
 pub enum Mechanism {
     WindowsAudio,
+    /// Android's media volume, through its audio manager.
+    AndroidAudio,
     WindowsBluetooth,
     WindowsPnp,
     WindowsMediaSession,

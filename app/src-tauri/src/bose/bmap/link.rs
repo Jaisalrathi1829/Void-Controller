@@ -207,6 +207,8 @@ pub struct BmapLink<C: Connector> {
     now_text: fn() -> String,
     session: Option<Session<C::Stream>>,
     last_open_failure: Option<(Instant, String)>,
+    /// When the mode list was last asked for, whatever came of it.
+    slots_asked: Option<Instant>,
     status: LinkStatus,
     attempts: Vec<Attempt>,
     wire_log: Vec<WireEvent>,
@@ -223,6 +225,7 @@ impl<C: Connector> BmapLink<C> {
             now_text,
             session: None,
             last_open_failure: None,
+            slots_asked: None,
             status: LinkStatus::default(),
             attempts: Vec::new(),
             wire_log: Vec::new(),
@@ -239,6 +242,17 @@ impl<C: Connector> BmapLink<C> {
 
     pub fn is_open(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// How long ago the mode list was last asked for, if it has been since
+    /// the headphones were last seen to go.
+    ///
+    /// Listing the modes is slow in a way nothing else here is: the reply is
+    /// several frames with nothing to mark the last, so it is over only when
+    /// the headphones have been silent for a while. Callers use this to
+    /// decide whether the list they have will do.
+    pub fn slots_age(&self) -> Option<Duration> {
+        self.slots_asked.map(|asked| asked.elapsed())
     }
 
     /// Every route tried by the most recent open, in order.
@@ -283,6 +297,7 @@ impl<C: Connector> BmapLink<C> {
         self.status.confirmed = None;
         self.status.slots = None;
         self.status.slots_problem = None;
+        self.slots_asked = None;
         self.status.eq = None;
         self.status.eq_problem = None;
         self.status.battery = None;
@@ -423,6 +438,7 @@ impl<C: Connector> BmapLink<C> {
         self.ensure_open(force)?;
         let session = self.session.as_ref().expect("session ensured above");
         let result = custom::read_slots(&session.conn);
+        self.slots_asked = Some(Instant::now());
         self.collect_wire_log();
 
         match result {
@@ -1252,6 +1268,16 @@ mod tests {
 
     /// The mode list can be edited from a phone while the headphones are
     /// away, so it is not carried across a disconnection.
+    #[test]
+    fn the_age_of_the_mode_list_runs_from_when_it_was_asked_for() {
+        let mut link = link(vec![Ok(session(vec![vec![status(0)], vec![mode_list(6)]]))]);
+        assert_eq!(link.slots_age(), None, "never asked");
+        link.read_slots(true).unwrap();
+        assert!(link.slots_age().expect("asked") < Duration::from_secs(5));
+        link.device_gone();
+        assert_eq!(link.slots_age(), None, "the list went with the headphones");
+    }
+
     #[test]
     fn a_device_that_went_away_takes_its_mode_list_with_it() {
         let stream = session(vec![vec![status(2)], vec![mode_list(6)]]);

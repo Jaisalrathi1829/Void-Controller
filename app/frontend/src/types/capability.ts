@@ -78,6 +78,7 @@ export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
 /** How a capability is (or would be) reached. Shown in diagnostics. */
 export type CapabilityMechanism =
   | 'windows-audio'
+  | 'android-audio'
   | 'windows-bluetooth'
   | 'windows-pnp'
   | 'windows-media-session'

@@ -91,7 +91,8 @@ pub struct Timing {
     pub settle: Duration,
     /// Longest wait for the reply to a request.
     pub reply_timeout: Duration,
-    /// Silence that ends a multi-frame (drained) reply.
+    /// Silence that ends a multi-frame (drained) reply — when the device
+    /// does not end it itself. See [`ends_drained_reply`].
     pub drain_gap: Duration,
     /// Hard ceiling on a drained reply, however chatty the device is.
     pub drain_limit: Duration,
@@ -122,6 +123,31 @@ impl Timing {
             drain_limit: Duration::from_millis(80),
         }
     }
+}
+
+/// The operators with which a device closes its answer to a `START`.
+const OP_ERROR: u8 = 4;
+const OP_RESULT: u8 = 6;
+
+/// Whether `frame` is the device saying it has finished answering a drained
+/// request sent to `want`.
+///
+/// A drained reply is several frames, most of them from another address:
+/// `START [31.1]`, "list the modes", is answered with one `[31.6] STATUS` per
+/// mode. Captured from the test headphones, the whole of it is
+///
+/// ```text
+/// [31.1] PROCESSING, [31.6] PROCESSING, [31.6] STATUS × 4,
+/// [31.6] RESULT, [31.1] RESULT
+/// ```
+///
+/// — the address that was asked answers `RESULT` last, or `ERROR` if it will
+/// not answer at all. That frame is the end, and waiting past it for the
+/// device to fall silent only holds the link, for half a second, with
+/// nothing more coming. A device that never sends it is still handled: the
+/// silence ends the reply, as before.
+fn ends_drained_reply(frame: &[u8], want: (u8, u8)) -> bool {
+    (frame[0], frame[1]) == want && matches!(frame[2] & 0x0F, OP_RESULT | OP_ERROR)
 }
 
 /// Direction of a logged wire event.
@@ -286,6 +312,7 @@ impl<S: ByteStream> StreamTransport<S> {
         let mut frames: Vec<u8> = Vec::new();
         let mut unrelated = 0usize;
         let mut matched = false;
+        let mut finished = false;
 
         loop {
             // Hand over every frame that is now complete.
@@ -301,13 +328,17 @@ impl<S: ByteStream> StreamTransport<S> {
                 if from_requested || drain {
                     matched = true;
                 }
+                if drain && ends_drained_reply(&frame, want) {
+                    finished = true;
+                }
                 frames.extend_from_slice(&frame);
             }
 
             // A plain request is answered once a frame from the address we
             // asked has arrived whole. Anything still pending belongs to a
-            // later frame and is left for the next request to discard.
-            if matched && !drain {
+            // later frame and is left for the next request to discard. A
+            // drained one is answered once the device has said it is done.
+            if matched && (!drain || finished) {
                 return Ok(frames);
             }
 
@@ -412,6 +443,8 @@ pub mod testing {
         pub incoming: VecDeque<Chunk>,
         pub sent: Vec<Vec<u8>>,
         pub fail_send: bool,
+        /// How many times the stream has been asked for bytes.
+        pub reads: usize,
     }
 
     /// Cheap handle so a test can inspect what was sent after the transport
@@ -458,6 +491,7 @@ pub mod testing {
 
         fn recv(&mut self, _timeout: Duration) -> io::Result<Recv> {
             let mut st = self.state.lock();
+            st.reads += 1;
             match st.incoming.pop_front() {
                 Some(Chunk::Data(b)) => Ok(Recv::Data(b)),
                 Some(Chunk::Silence) | None => Ok(Recv::Timeout),
@@ -669,6 +703,105 @@ mod tests {
             t.send_recv(&GET_MODE).unwrap(),
             [0x1F, 0x03, 0x03, 0x01, 0x00]
         );
+    }
+
+    // The mode list as the test headphones send it (see `ends_drained_reply`),
+    // with one-byte stand-ins for the 47-byte configurations.
+    const LIST_MODES: [u8; 4] = [0x1F, 0x01, 0x05, 0x00];
+    const LIST_PROCESSING: [u8; 4] = [0x1F, 0x01, 0x07, 0x00];
+    const CONFIG_PROCESSING: [u8; 4] = [0x1F, 0x06, 0x07, 0x00];
+    const CONFIG_RESULT: [u8; 4] = [0x1F, 0x06, 0x06, 0x00];
+    const LIST_RESULT: [u8; 4] = [0x1F, 0x01, 0x06, 0x00];
+
+    fn config(index: u8) -> [u8; 5] {
+        [0x1F, 0x06, 0x03, 0x01, index]
+    }
+
+    fn whole_list() -> Vec<u8> {
+        let mut burst = Vec::new();
+        burst.extend(LIST_PROCESSING);
+        burst.extend(CONFIG_PROCESSING);
+        for index in 0..4 {
+            burst.extend(config(index));
+        }
+        burst.extend(CONFIG_RESULT);
+        burst.extend(LIST_RESULT);
+        burst
+    }
+
+    /// The device says when it has finished. Nothing is waited for after
+    /// that — which is the half second this used to cost every time.
+    #[test]
+    fn a_drained_reply_ends_when_the_device_says_it_is_done() {
+        let s = ScriptedStream::new().on_send(vec![data(&whole_list())]);
+        let got = transport(s.clone()).send_recv_drain(&LIST_MODES).unwrap();
+        assert_eq!(got, whole_list());
+        // One look for anything stale before sending, one read that brought
+        // the reply, and no third to listen for silence.
+        assert_eq!(s.state.lock().reads, 2);
+    }
+
+    #[test]
+    fn a_drained_reply_arriving_in_pieces_is_collected_whole() {
+        let burst = whole_list();
+        let (first, rest) = burst.split_at(11);
+        let (second, third) = rest.split_at(9);
+        let s = ScriptedStream::new().on_send(vec![data(first), data(second), data(third)]);
+        let got = transport(s.clone()).send_recv_drain(&LIST_MODES).unwrap();
+        assert_eq!(got, burst);
+        assert_eq!(s.state.lock().reads, 4, "no read after the last piece");
+    }
+
+    /// Only the address that was asked can close the reply. `[31.6] RESULT`
+    /// arrives before the end, and is not it.
+    #[test]
+    fn a_result_from_another_address_does_not_end_a_drained_reply() {
+        let mut head = Vec::new();
+        head.extend(LIST_PROCESSING);
+        head.extend(CONFIG_PROCESSING);
+        head.extend(config(0));
+        head.extend(CONFIG_RESULT);
+        let mut tail = Vec::new();
+        tail.extend(config(1));
+        tail.extend(LIST_RESULT);
+
+        let s = ScriptedStream::new().on_send(vec![data(&head), data(&tail)]);
+        let got = transport(s).send_recv_drain(&LIST_MODES).unwrap();
+        assert_eq!(got, [head, tail].concat());
+    }
+
+    /// Being told the request was already in hand is not being told it is
+    /// finished.
+    #[test]
+    fn processing_from_the_asked_address_does_not_end_a_drained_reply() {
+        let mut tail = Vec::new();
+        tail.extend(config(0));
+        tail.extend(LIST_RESULT);
+        let s = ScriptedStream::new().on_send(vec![data(&LIST_PROCESSING), data(&tail)]);
+        let got = transport(s).send_recv_drain(&LIST_MODES).unwrap();
+        assert_eq!(got, [LIST_PROCESSING.to_vec(), tail].concat());
+    }
+
+    #[test]
+    fn an_error_from_the_asked_address_ends_a_drained_reply() {
+        let refused = [0x1F, 0x01, 0x04, 0x01, 0x04];
+        let s = ScriptedStream::new().on_send(vec![data(&refused)]);
+        let got = transport(s.clone()).send_recv_drain(&LIST_MODES).unwrap();
+        assert_eq!(got, refused);
+        assert_eq!(s.state.lock().reads, 2);
+    }
+
+    /// A device that never says it is done is still answered for: silence
+    /// ends the reply, as it always did.
+    #[test]
+    fn a_drained_reply_with_no_end_marker_still_ends_at_silence() {
+        let mut burst = Vec::new();
+        burst.extend(config(0));
+        burst.extend(config(1));
+        let s = ScriptedStream::new().on_send(vec![data(&burst)]);
+        let got = transport(s.clone()).send_recv_drain(&LIST_MODES).unwrap();
+        assert_eq!(got, burst);
+        assert_eq!(s.state.lock().reads, 3, "one more read, which found silence");
     }
 
     #[test]

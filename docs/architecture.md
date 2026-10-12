@@ -185,6 +185,53 @@ The model and the audio output sit behind one trait. The tests of scheduling
 and policy substitute it; the tests that claim real speech do not. See
 [voice-feedback.md](voice-feedback.md).
 
+It is handed one more thing, also after the fact: when a change of mode was
+asked for, the mode the headphones reported at the end of it. That is still
+their report and never the request — it is the read-back the change is
+verified by — and it means the announcement does not wait for the next
+refresh of the screen.
+
+### The model is the exception, not the rule
+
+A loaded model is a quarter of a gigabyte, which on a phone is most of the
+application. So the worker is built to need it as seldom as possible: a
+sentence is kept on disk the first time it is synthesized, and read back
+from then on. The sentences this application says are few and fixed, so
+after its first run the model is loaded only when the voice is changed. The
+files are checked before they are played and thrown away if they do not
+check out; nothing but the model can put speech there.
+
+### The interface animates without script
+
+Everything on screen that moves continuously — the headphone visual, the
+glows behind each page, the pulses on a badge or a slider — is a CSS
+animation of `transform` or `opacity` on a layer that is otherwise left
+alone. The browser's compositor carries those by itself: nothing is redrawn
+and no script runs, so they do not stutter when the page is busy re-reading
+the device, and they cost nothing while the window is hidden. Script-driven
+animation is kept for things that happen once, in response to something.
+Pages and panels arrive by CSS too, so that none of them can be left
+invisible waiting for script.
+
+### The widget is a window, not a program
+
+The desktop widget could have been a small program of its own. It is a
+second window of this one instead, for one reason that decides it: the
+headphones accept a single control connection from a computer. Two programs
+would have to take turns with it or talk to each other; two windows of one
+program simply share the link, the settings and the voice service that are
+already there.
+
+It loads the same page as the main window and is told apart by the name of
+the window it was loaded into, so there is one interface to build and one set
+of typed commands. Each window re-reads the device after a change it made;
+the native layer tells the other one, and tells both when a setting changes,
+so neither shows what the other has since altered.
+
+There is always a way back to the application: closing the main window with
+the widget up hides the main window, and closing the widget with the main
+window hidden and no tray icon brings the main window back.
+
 ### One instance
 
 Two copies of the application would fight over the headphones' single control

@@ -63,6 +63,234 @@
   }
 }
 
+/*
+ * The headphone visual (components/DeviceVisual.tsx).
+ *
+ * Each of these only moves or fades a layer. Nothing is redrawn while they
+ * run, so the browser's compositor carries them on its own, at full rate,
+ * whatever the page's script is busy with — which is what keeps the visual
+ * from stuttering each time the device is re-read. Durations are set on the
+ * elements, since the layers turn at different speeds.
+ */
+@keyframes dv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes dv-spin-back {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+@keyframes dv-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+@keyframes dv-ripple {
+  from {
+    opacity: 0.7;
+    transform: scale(0.78);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+@keyframes dv-float {
+  0%,
+  100% {
+    transform: translate3d(0, -8px, 0) rotate(-2deg);
+  }
+  50% {
+    transform: translate3d(0, 8px, 0) rotate(2deg);
+  }
+}
+@keyframes dv-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.5);
+  }
+}
+@keyframes dv-shadow {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scaleX(1);
+  }
+  50% {
+    opacity: 0.24;
+    transform: scaleX(0.8);
+  }
+}
+
+/*
+ * Small pulses that never end — the connection dot, a low battery, the halo
+ * on a slider. In CSS for the same reason as the visual above: so that
+ * nothing has to run in script while they do.
+ */
+@keyframes pulse-grow {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(var(--pulse-to, 1.4));
+  }
+}
+@keyframes pulse-fade {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+@keyframes thumb-halo {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+.pulse-grow {
+  animation: pulse-grow 1.8s ease-in-out infinite;
+}
+.pulse-grow-slight {
+  --pulse-to: 1.15;
+  animation: pulse-grow 1.2s ease-in-out infinite;
+}
+.pulse-fade {
+  animation: pulse-fade 1.6s ease-in-out infinite;
+}
+.thumb-halo {
+  animation: thumb-halo 2s ease-in-out infinite;
+}
+
+/* The desktop widget's window is see-through; only its card is drawn. */
+html.widget,
+html.widget body,
+html.widget #root {
+  background: transparent;
+}
+
+/* A screen arriving. Its resting state is its ordinary one, so if the
+   animation never ran at all the screen would simply be there. */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+}
+.page-enter {
+  animation: page-enter 0.18s ease-out;
+}
+
+/* A panel arriving, and the headphone visual arriving inside one. */
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.98);
+  }
+}
+.panel-enter {
+  animation: panel-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes dv-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+.dv-enter {
+  animation: dv-enter 0.5s ease-out;
+}
+
+/* The two glows behind every page, drifting slowly. */
+@keyframes ambient-a {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(120px, 80px, 0) scale(1.2);
+  }
+}
+@keyframes ambient-b {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1.1);
+  }
+  50% {
+    transform: translate3d(-100px, -60px, 0) scale(1);
+  }
+}
+.ambient-glow {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.ambient-glow-a {
+  animation: ambient-a 22s ease-in-out infinite;
+}
+.ambient-glow-b {
+  animation: ambient-b 26s ease-in-out infinite;
+}
+/* On a phone they stay where they are. To drift, each needs a layer of its
+   own, and at a phone's pixel density two layers this size are tens of
+   megabytes of graphics memory, drawn under everything on every frame, for
+   a movement too slow and too faint to be missed. Left still, they are just
+   part of the background. */
+@media (max-width: 767px) {
+  .ambient-glow {
+    animation: none;
+    will-change: auto;
+    backface-visibility: visible;
+  }
+}
+
+/* Its own layer, drawn once and then only moved. */
+.dv-layer {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+}
+.dv-spin {
+  animation: dv-spin 10s linear infinite;
+}
+.dv-spin-back {
+  animation: dv-spin-back 40s linear infinite;
+}
+.dv-breathe {
+  animation: dv-breathe 6s ease-in-out infinite;
+}
+.dv-ripple {
+  animation: dv-ripple 6s ease-out infinite;
+}
+.dv-float {
+  animation: dv-float 7s ease-in-out infinite;
+}
+.dv-pulse {
+  animation: dv-pulse 2.6s ease-in-out infinite;
+}
+.dv-shadow {
+  animation: dv-shadow 7s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

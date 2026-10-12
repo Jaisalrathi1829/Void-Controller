@@ -769,3 +769,65 @@ on the headphones (firmware 1.0.6-80+f5f219b):
 This is what makes it reasonable to ask for the mode every 150 ms while spoken
 mode announcements are on, which is how a press of the button on the
 headphones is noticed: the channel pushes nothing (Experiment 2).
+
+## Experiment 9 — a mode list ends when the headphones say so (2026-10-12)
+
+**No new traffic was sent for this.** It is a change to how an existing,
+read-only reply is read, made from the capture already taken in Experiment 6,
+and it has not yet been timed on the headphones.
+
+`START [31.1]` — "list the modes" — is the one request here that is answered
+with several frames, most of them from another address. As captured from the
+test unit:
+
+```
+1F 01 07 00            [31.1] PROCESSING
+1F 06 07 00            [31.6] PROCESSING
+1F 06 03 2F …  × 4     [31.6] STATUS, one 47-byte configuration per slot
+1F 06 06 00            [31.6] RESULT
+1F 01 06 00            [31.1] RESULT
+```
+
+Upstream's transport, and this one until now, read such a reply by waiting
+for the device to fall silent: 500 ms with nothing arriving meant it was
+over. So every listing took the reply plus half a second, with the control
+link held throughout — and nothing else can be asked while it is held, not
+even which mode the headphones are in.
+
+That mattered more than it looks:
+
+- The list was read on every refresh spent in a custom mode (every 4–5 s),
+  and again before every switch into one.
+- The 150 ms mode checks that catch a press of the headphones' button queue
+  behind it.
+
+So a switch into "Focus" from the application waited about half a second
+before anything was sent and about half a second more before the screen and
+the announcement caught up, and a button press while in Focus could be late
+by up to the same amount. This is what was reported from a phone as "the
+voice prompt lags on Focus, and sometimes on the mode after it".
+
+The reply carries its own end. The address that was asked answers `RESULT`
+last (or `ERROR`, if it will not answer at all), and nothing follows. The
+transport now treats that frame as the end of a drained reply
+(`ends_drained_reply` in `bose/bmap/stream.rs`):
+
+- only a frame from the address the request was sent to counts — `[31.6]
+  RESULT` arrives one frame earlier and is not the end;
+- `PROCESSING` from that address is not the end either;
+- a device that never sends the frame is handled as before, by silence.
+
+Alongside it, the list is asked for less: once when the headphones arrive,
+then every ten seconds while they are in a custom mode (its level is on
+screen then and can be changed from a phone), and before a switch into a
+custom mode only if it was not read within the last ten seconds.
+
+**Established:** the frame order above, by capture (Experiment 6). That the
+transport returns at the last frame without a further read, by unit test
+against that capture, including the reply arriving split across reads.
+
+**Not established:** the time a listing now takes on the headphones. The
+expectation is tens of milliseconds, like any other request; it has not been
+measured, because the desktop application was running and holds the one
+control connection. `hw_diag_mode_slots` prints the wire log and will show
+it.

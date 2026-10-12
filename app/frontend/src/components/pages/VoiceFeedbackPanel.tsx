@@ -242,23 +242,25 @@ export function VoiceFeedbackPanel() {
         <SectionLabel>Announce</SectionLabel>
         <div className="mt-2">
           <Row
-            title="Quiet / Aware mode changes"
-            desc="“Quiet mode activated.” or “Aware mode activated.”, once the headphones report the new mode"
+            title="Mode changes"
+            desc="“Quiet mode activated.”, “Aware mode activated.”, or a custom mode by the name the headphones give it — once they report the new mode"
             unavailable={settings.unavailable.announceModeChanges}
           >
-            {toggle("announceModeChanges", "Quiet / Aware mode changes", kindsOff)}
+            {toggle("announceModeChanges", "Mode changes", kindsOff)}
           </Row>
           <Row
             title="Connection and disconnection"
             desc={
               name ? (
                 <>
-                  “{name} connected.” through the headphones. “{name} disconnected.” cannot be
-                  spoken into headphones that have gone, so it needs the other output below.
+                  “{name} connected to …”, naming this {onPhone ? "phone" : "computer"}, through
+                  the headphones. “{name} disconnected.” cannot be spoken into headphones that
+                  have gone, so it needs the other output below.
                 </>
               ) : (
                 <>
-                  The headphones’ name, then “connected.” or “disconnected.” The second cannot be
+                  The headphones’ name, then “connected to” and this{" "}
+                  {onPhone ? "phone" : "computer"}’s name, or “disconnected.” The second cannot be
                   spoken into headphones that have gone, so it needs the other output below.
                 </>
               )

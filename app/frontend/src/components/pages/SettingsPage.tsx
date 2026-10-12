@@ -96,6 +96,19 @@ export function SettingsPage() {
                 "Closing or minimizing the window keeps the app running in the system tray",
               )}
           {row("autoConnect", "Auto-connect", "Connect to preferred device on launch")}
+          {!onPhone &&
+            row(
+              "desktopWidget",
+              "Desktop widget",
+              "A small panel of its own for the modes and the equalizer. With it showing, closing this window leaves the widget running",
+            )}
+          {!onPhone &&
+            settings.desktopWidget &&
+            row(
+              "widgetOnTop",
+              "Keep the widget on top",
+              "Above other windows. Off, it stays where it is put and other windows can cover it",
+            )}
         </div>
       </Panel>
 

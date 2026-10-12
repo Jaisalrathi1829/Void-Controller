@@ -36,8 +36,17 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
 }
 
 export function DevicePage({ onNavigate }: { onNavigate: (p: any) => void }) {
-  const { deviceName, connection, battery, charging, reconnect, disconnect, snapshot, events } =
-    useApp();
+  const {
+    deviceName,
+    connection,
+    battery,
+    charging,
+    reconnect,
+    disconnect,
+    snapshot,
+    events,
+    connectedTo,
+  } = useApp();
   const [showId, setShowId] = useState(false);
 
   const timeline = events.filter((e) => CONNECTION_EVENT_TYPES.has(e.type)).slice(0, 8);
@@ -76,6 +85,12 @@ export function DevicePage({ onNavigate }: { onNavigate: (p: any) => void }) {
           <SectionLabel>Device Information</SectionLabel>
           <div className="mt-3">
             <InfoRow label="Connection"><ConnectionBadge state={connection} /></InfoRow>
+            {/* This machine's own name, shown only while the headphones are
+                connected to it. Anything else they may be connected to at
+                the same time is not something they have been asked. */}
+            <InfoRow label="Connected to">
+              {connectedTo ?? <span className="text-muted-foreground">—</span>}
+            </InfoRow>
             <InfoRow label="Transport">
               {snapshot && snapshot.transport !== "none" ? (
                 <span className="inline-flex items-center gap-1.5">

@@ -149,7 +149,7 @@ mod tests {
         Announcement::Mode(SpokenMode::Aware)
     }
     fn connected() -> Announcement {
-        Announcement::Connected { name: "Aurora".into() }
+        Announcement::Connected { name: "Aurora".into(), host: None }
     }
     fn disconnected() -> Announcement {
         Announcement::Disconnected { name: "Aurora".into() }

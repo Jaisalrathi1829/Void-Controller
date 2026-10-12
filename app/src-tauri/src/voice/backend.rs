@@ -117,6 +117,29 @@ fn plain_path(path: PathBuf) -> PathBuf {
     }
 }
 
+/// Hands the memory the model has just given up back to Android.
+///
+/// Letting go of the model frees about a quarter of a gigabyte, but the
+/// allocator keeps what it is given back in case it is wanted again, and the
+/// application goes on being counted as that large. This tells it to return
+/// the lot. The request has existed since Android 9, and the thorough form of
+/// it since Android 14; where neither is understood, nothing happens.
+#[cfg(target_os = "android")]
+fn release_freed_memory() {
+    extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    const M_PURGE: i32 = -101;
+    const M_PURGE_ALL: i32 = -104;
+    // Safety: `mallopt` takes two integers and touches nothing of ours. An
+    // option it does not know is refused with a zero.
+    unsafe {
+        if mallopt(M_PURGE_ALL, 0) == 0 {
+            mallopt(M_PURGE, 0);
+        }
+    }
+}
+
 impl Backend for KokoroBackend {
     fn assets_dir(&self) -> String {
         assets::model_dir(&self.voice_root).display().to_string()
@@ -153,6 +176,8 @@ impl Backend for KokoroBackend {
         // files: they may have changed since they were last looked at, and
         // the runtime does not survive being given the wrong ones.
         self.kokoro = Some(Kokoro::load_verified(&files)?);
+        #[cfg(target_os = "android")]
+        crate::android::bridge::note_memory("voice model loaded");
         Ok(())
     }
 
@@ -161,7 +186,13 @@ impl Backend for KokoroBackend {
     }
 
     fn unload(&mut self) {
-        self.kokoro = None;
+        let was_loaded = self.kokoro.take().is_some();
+        #[cfg(target_os = "android")]
+        if was_loaded {
+            release_freed_memory();
+            crate::android::bridge::note_memory("voice model released");
+        }
+        let _ = was_loaded;
     }
 
     fn synthesize(

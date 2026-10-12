@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Everything described here is committed and pushed. The commit that holds the code is `55e3684` (see [§12](#12-git-state))
+- Committed and pushed: everything up to `55e3684` (see [§12](#12-git-state)). The work of the second half of 2026-10-12 — [§13](#13-second-round-on-android-2026-10-12) and [§14](#14-desktop-widget-2026-10-12) — is in the working tree and **not yet committed**
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -155,14 +155,28 @@ fresh connection. Outcomes on the wire to the UI: `applied`,
 | Refuses to speak through the phone when headphones are absent and the fallback is off | Status "Unavailable" with the reason |
 | Background service | `AuroraService isForeground=true`, type `connectedDevice`, notification shown; restored at next launch |
 
+### Android — reported by the owner from a Galaxy S24 Ultra (2026-10-12)
+
+Not instrumented; this is what the owner said of the build of 2026-10-11
+while reporting its problems.
+
+| Feature | Report |
+| --- | --- |
+| The phone build (arm64) runs on the phone | Yes |
+| Bluetooth control: modes switched, including the custom one | Yes |
+| Announcements spoken, including with the app in the background | Yes — late on the custom mode, see [§13](#13-second-round-on-android-2026-10-12) |
+
 ### Not verified anywhere yet
 
-- The **phone build (arm64) starting on a real phone**
-- **Bluetooth control from Android**: identifying the model, reading or
-  changing mode, level, EQ
-- Speech routed to the headphones' own output on Android
+- The **build of 2026-10-12** on a phone — every fix in §13
+- Custom-mode level and EQ from Android
+- Which output Android used for speech
 - Battery level on Android
-- Announcements in the background on a phone
+- The volume slider moving the headphones' volume from a phone
+- The spoken and shown "connected to …" on a phone
+- How long a mode listing takes on the headphones now that it ends at the
+  device's own end marker (Experiment 9) — expected tens of milliseconds,
+  not measured
 - Connect / disconnect announcements and the low-battery warning on real
   hardware (either platform) — logic is unit-tested only
 - Whether the headphones accept a control connection from the phone while a
@@ -230,8 +244,10 @@ file it cannot parse.
 - **Battery:** warn once at ≤ 20 %; re-arm only above 25 %. Routine
   percentage announcements are **not implemented**.
 - **Texts:** "Quiet mode activated." · "Aware mode activated." ·
-  "*name* mode activated." · "Aurora connected." · "Aurora disconnected." ·
-  "Battery low. *N* percent." · test: "Voice feedback is ready."
+  "*name* mode activated." · "Aurora connected to *this machine's name*."
+  (or "Aurora connected." when the system gives no name) ·
+  "Aurora disconnected." · "Battery low. *N* percent." · test: "Voice
+  feedback is ready."
 - **Priority:** connection, mode, low battery, (reserved), test. One per
   subject waits; queue holds 8; nothing overlaps.
 - **Output:** the headphones' own output, found by device identity not name.
@@ -245,6 +261,21 @@ While mode announcements are on, the watcher asks for the mode every
 link (`peek_noise_control`). Sentences are synthesized ahead of need, so the
 audio starts 1–3 ms after the change is seen. Cost: more Bluetooth traffic
 while that setting is on (battery effect not measured).
+
+A change made from the application is announced from the read-back the
+change itself ends with (`observe_reported_mode` in `lib.rs`), not from the
+next refresh.
+
+### Sentences are kept on disk
+
+`voice/store.rs`. Every sentence of up to 80 characters is written to
+`<cache dir>/spoken/` the first time it is synthesized and read back from
+then on: 16-bit audio, at most 64 files, least recently used dropped first,
+each ending in a SHA-256 of itself and naming the model, voice, speed and
+sentence it is for. A file that fails its check is deleted. The model is
+therefore loaded only for a sentence never said before in that voice — the
+first run, and after a change of voice — and unloaded after 90 s idle on
+Windows, 8 s on Android.
 
 ### Measurements (Windows, i7-14650HX, debug build, 2 threads)
 
@@ -274,6 +305,8 @@ platform layer.
 | Battery | PnP | Android's level; else `GET [2.2]` |
 | Speech out | WASAPI on the endpoint | `AudioTrack`, headphones' output preferred |
 | Alive off screen | Tray | Foreground service `AuroraService` |
+| Volume slider | Core Audio, default output | `AudioManager`, media stream, in its steps |
+| This machine's name | `GetComputerNameExW` | Bluetooth adapter name, else settings, else model |
 
 Key files:
 
@@ -326,6 +359,11 @@ Android specifics worth remembering:
 | arm64 APK crashed at launch on the emulator | ONNX Runtime's CPU detection crashes under ARM translation | Emulator-only; test with `-Target x86_64` |
 | Android project was not tracked by git | Root `.gitignore` ignored all of `app/src-tauri/gen/` | Ignore only `gen/schemas/` |
 | Sliders could commit twice on touch | Pointer-up and touch-end both fire | One commit per value within 800 ms; `touch-action: none` |
+| Phone: ~500 MB in the background | The voice model was loaded at every start and held 90 s after each use | Sentences kept on disk; 8 s unload on Android; `mallopt(M_PURGE_ALL)` |
+| Phone: announcement late on the custom mode, sometimes on the next one | Listing the modes waited 500 ms for silence, was done on every refresh in a custom mode and before every switch into one, and held the link meanwhile; the custom mode's sentence was never prepared | End the reply at the device's `RESULT` frame; list far less often; prepare custom-mode sentences; announce from the write's own read-back |
+| Phone: the dashboard animation glitched | Script-driven animation on every frame, an animated `filter`, `mix-blend-mode`, trimming by rounded `overflow: hidden`, two 120 px blurs behind every page, a frosted header, and a page rebuild on every connection-state change | CSS `transform`/`opacity` animation only; none of those effects; page rebuilt only when replaced |
+| A page could come up blank after the connection state changed | `AnimatePresence mode="wait"` left the incoming page at opacity 0 when the key changed again during the exit animation | Pages fade in by CSS and are not held back for an exit animation |
+| A preparation interrupted by an announcement was lost | It was popped from the queue and never put back | Put back at the front when it was set aside rather than called off |
 
 Tooling quirks of this environment: bash heredocs that contain apostrophes or
 backslashes get mangled — write patch scripts to a file and run them; `cargo
@@ -436,16 +474,16 @@ Lint (two old lints in first-commit lines are allowed):
 cargo clippy --manifest-path app/src-tauri/Cargo.toml --lib --tests -- -D warnings -A clippy::redundant_closure -A clippy::collapsible_match
 ```
 
-### Last known-good results (2026-10-11)
+### Last known-good results
 
-| Suite | Result |
-| --- | --- |
-| Rust app | 432 passed, 0 failed, 38 ignored |
-| Frontend | 180 passed; `tsc` clean; `vite build` OK |
-| Vendored crate / tools | 103 / 16 / 27 / 32 passed |
-| Clippy | clean |
-| Hardware (Windows) | `hw_a1–3`, `hw_b0–b7`, `voice_hw_*`, `hw_diag_battery`, `hw_diag_product_id` all pass |
-| Android compile | `aarch64` and `x86_64` |
+| Suite | Result | When |
+| --- | --- | --- |
+| Rust app | 477 passed, 0 failed, 38 ignored | 2026-10-12 |
+| Frontend | 196 passed; `tsc` clean; `vite build` OK | 2026-10-12 |
+| Vendored crate / tools | 103 / 16 / 27 / 32 passed | 2026-10-11 |
+| Clippy | clean but for the two old lints allowed above | 2026-10-12 |
+| Hardware (Windows) | `hw_a1–3`, `hw_b0–b7`, `voice_hw_*`, `hw_diag_battery`, `hw_diag_product_id` all pass | 2026-10-11 — **not re-run** after the changes of 2026-10-12, which touch how a mode listing is read |
+| Android compile | `aarch64` and `x86_64` | 2026-10-12 |
 
 `npm run lint` has never worked: the repo has no ESLint config.
 
@@ -492,6 +530,9 @@ phone, not for distribution.
 | Android: announcements stop off screen | Turn on "Keep running in the background" |
 | Android build: symbolic link error | Use `tools\build-android.ps1`, not `tauri android build` |
 | Phone APK crashes on the emulator | Expected; build with `-Target x86_64` |
+| Android: a lot of memory | `adb logcat -s Aurora`: is "voice model loaded" followed within seconds by "released"? |
+| Android: volume slider lands elsewhere | It sets the nearest of the phone's own steps |
+| An announcement is late every time | Is it the first run in that voice? Otherwise see Experiment 9 in protocol-notes.md |
 | Anything on the phone | `adb logcat -s Aurora` |
 
 To get back to a known-good state, check out `55e3684` (Windows and Android), or `659446f` for the last commit before the Android port (Windows only, confirmed by ear).
@@ -500,7 +541,7 @@ To get back to a known-good state, check out `55e3684` (Windows and Android), or
 
 ## 12. Git state
 
-All on `origin/main`, nothing left uncommitted:
+On `origin/main`:
 
 | Commit | Holds |
 | --- | --- |
@@ -511,6 +552,159 @@ All on `origin/main`, nothing left uncommitted:
 Later commits that touch only this document are bookkeeping; `55e3684` is the
 one to return to for the code.
 
+**Not committed yet:** the second round of 2026-10-12, [§13](#13-second-round-on-android-2026-10-12),
+and the desktop widget, [§14](#14-desktop-widget-2026-10-12). They sit in the
+working tree on top of `d1f387f`.
+
 Not in the repository, by design: build output (`target/`, `gen/android/app/build/`),
 the compiled libraries, the installers and APKs, and the voice model. They are
 rebuilt or reinstalled with the commands in [§8](#8-build-run-test--exact-commands).
+
+---
+
+## 13. Second round on Android (2026-10-12)
+
+The owner ran the first phone build on a Galaxy S24 Ultra and reported five
+things. This section records what each turned out to be, what was changed,
+and what has and has not been checked.
+
+### What was reported, found and done
+
+| # | Reported | Found | Done |
+| --- | --- | --- | --- |
+| 1 | ~500 MB in the background | The voice model, loaded at every start to prepare sentences and held 90 s after each use. Emulator: 300–355 MB for the app process, ~95 MB for its web view | Sentences kept on disk (`voice/store.rs`); model unloaded after 8 s on Android; freed memory returned with `mallopt(M_PURGE_ALL)`; nothing re-read while the window is hidden |
+| 2 | The revolving headphones glitch | Script-driven animation on every frame; an animated `filter`; `mix-blend-mode`; trimming by rounded `overflow: hidden`; two 120 px blurs behind every page; a frosted header; the page rebuilt on every connection-state change, by a transition that could stick at transparent; panels that waited on script to become visible | All animation is CSS on `transform`/`opacity`; none of those effects remain on a phone, where the background glows are also held still; a page is rebuilt only when replaced; pages and panels appear by CSS |
+| 3 | Volume slider "Windows only" | True | Phone media volume through `AudioManager`, set to the nearest step and read back |
+| 4 | Say which device it is connected to | — | This machine's name (`host.rs`): shown on the dashboard and Device page, spoken as "Aurora connected to …", used in the notification |
+| 5 | Voice prompt late on the custom mode, sometimes on others | The mode list: each read waited 500 ms for silence with the link held; it was read on every refresh in a custom mode and before every switch into one; the custom mode's sentence was never prepared; an interrupted preparation was lost | Reply ends at the device's `RESULT` frame (Experiment 9); list read on arrival and every 10 s in a custom mode; custom-mode sentences prepared; interrupted preparations resumed; a change made from the app is announced from its own read-back |
+
+### New and changed files
+
+| File | What |
+| --- | --- |
+| `app/src-tauri/src/voice/store.rs` | **New.** Synthesized sentences on disk, checksummed, 64 files, least recently used dropped |
+| `app/src-tauri/src/host.rs` | **New.** This machine's name |
+| `app/src-tauri/src/voice/mod.rs` | `start_with_store`, `expect_modes`, `set_host`, resumable preparation, 8 s unload on Android |
+| `app/src-tauri/src/voice/policy.rs` | `Connected { name, host }`, `speakable_name` |
+| `app/src-tauri/src/voice/backend.rs` | `release_freed_memory` (Android) |
+| `app/src-tauri/src/bose/bmap/stream.rs` | `ends_drained_reply` |
+| `app/src-tauri/src/bose/bmap/link.rs` | `slots_age` |
+| `app/src-tauri/src/bose/real.rs` | `mode_list_due`, `reported_noise_control`, `known_custom_modes` |
+| `app/src-tauri/src/device/{traits,state,capability}.rs` | Two trait methods; `SystemAudioState` (was `WindowsAudioState`), `host_name`; `Mechanism::AndroidAudio` |
+| `app/src-tauri/src/lib.rs`, `watcher.rs` | `attach_system`, `observe_reported_mode`, Android volume and mute, host name passed to voice and notifications |
+| `app/src-tauri/src/android/{bridge,sound}.rs` | `host_name`, `note_memory`; `MediaVolume`, `percent_of`, `level_for`; playback asks Android whether it is done only once it could be |
+| `…/AuroraPlugin.kt` | `volumeGet`, `volumeSet`, `muteSet`, `hostName`, `noteMemory` |
+| `app/frontend/src/components/DeviceVisual.tsx`, `styles.css` | The visual, and every endless animation, in CSS |
+| `app/frontend/src/App.tsx` | `screenKey`; CSS page entrance; plain gradients for the background glows |
+| `app/frontend/src/components/{primitives,TopBar}.tsx` | Panels by CSS; pulses by CSS; opaque header on a phone |
+| `app/frontend/src/store.tsx`, `pages/{Dashboard,Device}Page.tsx`, `pages/VoiceFeedbackPanel.tsx` | `connectedTo`, `volumeKnown`, phone wording, no re-read while hidden |
+
+Wire change: the snapshot field `windowsAudio` is now `systemAudio`, and
+there is a new `hostName`.
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| Unit tests | `cargo test --lib`, `vitest run` | 477 Rust, 196 frontend, all passing |
+| Memory on the emulator (x86-64, Android 16), `dumpsys meminfo` PSS | Before / after | App process 300–355 MB → 115–129 MB; native heap 190–240 MB → 14–31 MB. Web view process ~80–105 MB either way |
+| Second start loads no model | `adb logcat -s Aurora` | No "voice model loaded" line |
+| First start after install | same | "loaded: native heap 214 MB" … "released: native heap 39 MB", ~21 s apart on the emulator |
+| Test Voice | Android's audio log | First press: model loaded, an `AudioTrack` from the app, focus held ~2.3 s, model released 8 s after its last use. Second press: played at once, no synthesis |
+| Phone volume | `cmd media_session volume --get`; Android's audio log | Slider moved the media stream from step 5 to 12 of 15; `setStreamVolume(… index:12 … oldIndex:5) from local.bosecontrolcenter.app`; slider then read 80 % |
+| Phone name | log | "phone name taken from its Bluetooth name" |
+| Dashboard and Device page draw | Emulator screenshots; browser preview at phone and desktop width, light and dark | Yes. In the browser: 19 CSS animations running, none script-driven, no element with a filter, backdrop filter or blend mode at phone width |
+
+### Not checked
+
+- **Anything on the phone.** The build with these changes has not been run
+  on the S24 Ultra. Smoothness in particular cannot be judged on the
+  emulator, which draws in software.
+- **The headphones, at all, after these changes.** The Windows hardware tests
+  were not re-run: the desktop application was open and holds the one control
+  connection. The change that most wants it is the mode-list read
+  (Experiment 9): run `hw_diag_mode_slots`, `hw_b4`, `hw_b5` and the
+  `voice_hw_*` tests with the application closed.
+- Memory on a phone; the volume slider with the headphones as the phone's
+  output; the spoken "connected to …".
+- The Windows installer has not been rebuilt. The desktop application the
+  owner is running is the build from before these changes.
+
+### What the owner then reported from the phone
+
+After installing the build below over the old one: **218 MB in the
+background** (from about 500), which is what the emulator predicted, and the
+front screen "a little smoother". Not yet reported: the Focus prompt's
+timing, the volume slider against the headphones, and the spoken and shown
+"connected to …". What stutter remains has not been described, so it has not
+been chased.
+
+### Builds
+
+| | |
+| --- | --- |
+| Phone | `app\src-tauri\target\android\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, built 2026-10-12 10:16, 139,191,458 bytes, SHA-256 `1afecbc08f9c61092bbf3f4acd108c7da2cce650b398f00dd19d060bc4c2e978`. It differs from the emulator build that was exercised by one stylesheet rule (the background glows held still at phone width), checked in a browser at that width. **This is the build the owner installed** and reported on: 218 MB in the background, "a little smoother". The Gradle output folder has since been rebuilt with the widget's changes, which do nothing on a phone |
+| Emulator | `…\apk\x86_64\release\app-x86_64-release.apk`, built 2026-10-12 |
+| Windows installer, with the widget and the voice model | `app\src-tauri\target\release\bundle\nsis\Bose QC Control Center_0.1.0_x64-setup.exe`, built 2026-10-12 16:52, 105,174,541 bytes, SHA-256 `d8d73931fbb016492c68f0b801c771529f4cb265a81dcf2ee6b5e6fbc6764f7e`. Installed by the owner, who reports that it works |
+
+---
+
+## 14. Desktop widget (2026-10-12)
+
+Asked for by the owner: a floating panel on the Windows desktop for the modes
+and the equalizer, so that the application need not be opened for them.
+
+### What it is
+
+A second window of the same application (`widget.rs`), 316 × 352, frameless,
+transparent around a rounded card, off the taskbar, and by default above
+other windows. It has the three modes, the three equalizer bands, the
+battery, a line saying how the last change went, and three buttons: pin,
+open the main window, hide.
+
+| Decision | Why |
+| --- | --- |
+| A window, not a separate program | One control connection per computer; a second program could not have it too |
+| The same page, told apart by window name | One interface and one set of typed commands. `isWidgetWindow()` in `services/ipc.ts` |
+| Made only while the setting is on | A hidden second web view would cost memory for nothing |
+| Made on a thread of its own, and torn down from one | On Windows, making a window from inside a command or event handler deadlocks; and a window should not be destroyed from inside a request it is waiting on |
+| A capability file of its own, `capabilities/widget.json` | It needs less than the main window: events and dragging |
+| Position remembered, checked against the screens present | A place on a monitor since unplugged is not used (`widget::place`) |
+| Always a way back | Closing the main window with the widget up hides it; closing the widget with the main window hidden and no tray icon shows the main window |
+
+Settings added: `desktopWidget` (off by default), `widgetOnTop` (on by
+default), and the stored `widgetPosition`. Events added: `settings-changed`
+to every window after any setting changes; `device-changed` is now also sent
+after a command that may have changed the device, so the window that did not
+make the change catches up.
+
+Ways to switch it: Settings → General → Desktop widget; the tray menu's "Show
+or hide the widget"; the cross on the widget itself.
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| Placement, including a lost monitor and negative coordinates | `widget::tests` | 7 tests pass |
+| The widget's interface: what it shows, changing a mode and a band, an unconfirmed change leaving the selection alone, its three buttons, following a setting changed elsewhere | `WidgetApp.test.tsx` | 16 tests pass |
+| How it looks at its real size, light and dark, and that a click on a mode works end to end against the simulated device | Browser preview at 316 × 352 with `#widget` | As intended; no console errors |
+| The whole suite | | 485 Rust, 215 frontend |
+
+### Reported by the owner
+
+After installing the installer listed in [§13](#13-second-round-on-android-2026-10-12)
+on the Windows laptop: **"it works perfectly"**. That is the only evidence
+there is for the window itself — it was never opened during development,
+because the owner's installed application was running and a second copy only
+brings the first forward.
+
+### Not checked
+
+- Anything about the window by measurement or by test: transparency,
+  dragging, staying on top, staying off the taskbar, coming back where it was
+  left, and the two "way back" rules rest on the owner's report above, which
+  did not go through them one by one.
+- A second monitor, or one unplugged while the widget was on it. The
+  placement rule for that is unit-tested only.
+- The Windows hardware tests have still not been re-run since the changes of
+  §13.
