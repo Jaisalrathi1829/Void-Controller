@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Committed and pushed: everything up to `55e3684` (see [§12](#12-git-state)). The work of the second half of 2026-10-12 — [§13](#13-second-round-on-android-2026-10-12) and [§14](#14-desktop-widget-2026-10-12) — is in the working tree and **not yet committed**
+- Everything described here is committed and pushed. The commit that holds the code is `b5c0446` (see [§12](#12-git-state))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -535,7 +535,7 @@ phone, not for distribution.
 | An announcement is late every time | Is it the first run in that voice? Otherwise see Experiment 9 in protocol-notes.md |
 | Anything on the phone | `adb logcat -s Aurora` |
 
-To get back to a known-good state, check out `55e3684` (Windows and Android), or `659446f` for the last commit before the Android port (Windows only, confirmed by ear).
+To get back to a known-good state, check out `b5c0446` (everything, including the widget). If the trouble is in that commit itself, `55e3684` is Windows and Android as first built, and `659446f` is the last commit before the Android port (Windows only, confirmed by ear).
 
 ---
 
@@ -548,13 +548,15 @@ On `origin/main`:
 | `365b820` | Verified noise control, custom mode, hardware EQ, settings, local voice feedback |
 | `659446f` | 150 ms button detection, settle pause removed, Windows installer with the voice model, verbatim-path fix |
 | `55e3684` | The Android port (`src/android/`, `gen/android/`, `tools/build-android.ps1`, phone layout), battery over the control protocol, `DeviceError::NotPermitted`, `docs/android.md`, and this file |
+| `b5c0446` | The fixes from the first run on a phone ([§13](#13-second-round-on-android-2026-10-12)): sentences kept on disk, the mode list read to its end marker, CSS-only animation, phone media volume, "connected to". And the desktop widget ([§14](#14-desktop-widget-2026-10-12)) |
 
-Later commits that touch only this document are bookkeeping; `55e3684` is the
-one to return to for the code.
+Commits that touch only this document are bookkeeping; `b5c0446` is the one
+to return to for the code.
 
-**Not committed yet:** the second round of 2026-10-12, [§13](#13-second-round-on-android-2026-10-12),
-and the desktop widget, [§14](#14-desktop-widget-2026-10-12). They sit in the
-working tree on top of `d1f387f`.
+Earlier points to go back to, if something in the latest turns out wrong:
+`55e3684` is the Android port as first built — before the phone fixes and
+the widget — and `659446f` is the last commit before Android, Windows only,
+confirmed by ear.
 
 Not in the repository, by design: build output (`target/`, `gen/android/app/build/`),
 the compiled libraries, the installers and APKs, and the voice model. They are
