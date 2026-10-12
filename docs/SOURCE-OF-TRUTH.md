@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- The commit that holds the code is `b1f2a3f` (see [§12](#12-git-state)). Two things made later on 2026-10-12 are **not yet committed**: the `Setups` folder tooling (`tools/collect-setups.ps1` and the build scripts that call it), and the Android home-screen widget ([§16](#16-home-screen-widget-on-android-2026-10-12))
+- Everything described here is committed and pushed. The commit that holds the code is `7bfd6e1` (see [§12](#12-git-state))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -571,12 +571,15 @@ On `origin/main`:
 
 | `b1f2a3f` | What the hardware run of 2026-10-12 led to ([§15](#15-hardware-run-2026-10-12)): the custom-mode switch and level write sent as single-reply requests, the guard on the speech runtime's pronunciation folder, `hw_b8` |
 
-Commits that touch only this document are bookkeeping; `b1f2a3f` is the one
+| `7bfd6e1` | The Android home-screen widget ([§16](#16-home-screen-widget-on-android-2026-10-12)), and the `Setups` folder tooling (`tools/collect-setups.ps1`) |
+
+Commits that touch only this document are bookkeeping; `7bfd6e1` is the one
 to return to for the code.
 
 Earlier points to go back to, if something in the latest turns out wrong:
-`b5c0446` has the widget and the phone fixes but not the two timing fixes of
-§15; `55e3684` is the Android port as first built, before any of that; and
+`b1f2a3f` is everything verified on the headphones, without the Android
+widget; `b5c0446` has the desktop widget and the phone fixes but not the two
+timing fixes of §15; `55e3684` is the Android port as first built, before any of that; and
 `659446f` is the last commit before Android, Windows only, confirmed by ear.
 
 Not in the repository, by design: build output (`target/`, `gen/android/app/build/`),
@@ -805,7 +808,7 @@ Asked for by the owner: Android offers an "add widget" entry for
 applications that have one, this one had none, and a widget was wanted for
 the modes — "modes only".
 
-**Not committed yet** at the time of writing.
+Committed as `7bfd6e1`.
 
 ### What it is
 
