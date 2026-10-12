@@ -39,7 +39,7 @@ class MainActivity : TauriActivity() {
 
   private fun takeWidgetRequest(intent: Intent?) {
     val mode = ModeWidget.requestFrom(intent) ?: return
-    WidgetBus.ask(mode)
+    WidgetBus.ask("mode", mode)
     ModeWidget.render(applicationContext)
   }
 

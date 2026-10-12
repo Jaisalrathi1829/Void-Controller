@@ -41,11 +41,15 @@ brings this application's own window forward.
 The Android home-screen widget is not a window and loads no page. Its
 receiver is declared `exported="false"`, so only Android itself and this
 application can send it anything; the taps it receives are pending intents
-this application made, immutable, each naming one of three modes. What it
-passes to the native layer is that name and nothing else, read there into the
-same closed type the interface's mode requests are read into — a name that is
-not one of the three is dropped, and there is no form in which bytes could be
-sent. The switch then goes through the same verified command as any other.
+this application made, immutable, each naming one of three modes, or one of
+three equalizer bands and a direction. What it passes to the native layer is
+those names and nothing else. A mode is read there into the same closed type
+the interface's mode requests are read into; a band and a direction into two
+closed types of their own. A name that is not one of them is dropped, and
+there is no form in which a level, an amount or bytes could be sent: the
+level an equalizer step ends at is worked out in the native layer, from what
+the headphones report at that moment, one decibel away and inside the range.
+The change then goes through the same verified command as any other.
 The two bridge commands added for it, like the rest of the bridge, can be
 called only from the native layer.
 

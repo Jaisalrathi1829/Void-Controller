@@ -92,18 +92,22 @@ window.
 ### Home-screen widget (Android)
 
 The phone build has a widget for the home screen with the three noise modes
-and nothing else: **Quiet**, **Aware**, and the custom mode under the name
-the headphones give it. Long-press the home screen → **Widgets** → **Bose QC
-Control Center** → **Noise modes**.
+— **Quiet**, **Aware**, and the custom mode under the name the headphones
+give it — and under them the equalizer: bass, mid and treble, each with its
+level and a step down and a step up. Long-press the home screen →
+**Widgets** → **Bose QC Control Center** → **Modes and equalizer**. It comes
+two rows tall; made one row tall it is the modes alone.
 
 - With **Keep running in the background** on (Settings → General), a tap
   switches the mode there and then, without the application coming up.
 - With it off, or with the application closed, the widget says "Tap to open
   the app", and a tap on a mode opens the application and asks it for that
-  mode.
+  mode. A tap on an equalizer step opens the application and changes
+  nothing.
 
-It highlights the mode the headphones report, never the one that was tapped,
-and highlights nothing when the application is not there to vouch for it.
+It highlights the mode and shows the levels the headphones report, never
+what was tapped, and shows neither when the application is not there to
+vouch for them.
 Details: [docs/android.md](docs/android.md#the-home-screen-widget).
 
 ### Voice feedback (optional)

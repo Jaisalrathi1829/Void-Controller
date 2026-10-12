@@ -63,6 +63,13 @@ pub trait BoseDevice: Send + Sync {
         Vec::new()
     }
 
+    /// The equalizer the device itself last reported, if the backend has one
+    /// in hand. Costs nothing: nothing is asked of the device. It is as old
+    /// as its `read_at` says, and is forgotten when the device goes.
+    fn reported_equalizer(&self) -> Option<EqState> {
+        None
+    }
+
     /// The mode, asked for as cheaply as the backend can: one question to the
     /// device and nothing else. For asking often.
     ///

@@ -112,7 +112,23 @@ and after a tap, nothing is highlighted until the headphones confirm the
 change. A line such as "Not confirmed" or "Could not reach them" says how
 the last tap went if it did not simply work.
 
-### "Noise modes" is not in the phone's list of widgets
+### The phone's widget has no equalizer on it
+
+It is drawn only when the widget has the room: two rows tall and about three
+columns wide. A widget placed before the equalizer was added is one row
+tall. Long-press it, and drag its bottom handle down a row — or remove it and
+add "Modes and equalizer" again, which comes two rows tall.
+
+### The phone's widget shows a dash for bass, mid and treble
+
+It shows a level only when the headphones have reported one, to an
+application that is running. A dash with "Tap to open the app" means the
+application is not being run; with "Not connected", that the headphones are
+not there. With "Connected" it means the equalizer has not been read yet: it
+is read within a few seconds of the widget being placed or stretched, and
+again a minute later if that failed.
+
+### "Modes and equalizer" is not in the phone's list of widgets
 
 Open the application once after installing it. Android does not offer the
 widgets of an application that has never been started.

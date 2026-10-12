@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The home-screen widget, on a light home screen. -->
 <resources>
-    <string name="widget_label">Noise modes</string>
-    <string name="widget_description">Switch your headphones between Quiet, Aware and your custom mode.</string>
+    <string name="widget_label">Modes and equalizer</string>
+    <string name="widget_description">Switch your headphones between Quiet, Aware and your custom mode, and step the bass, mid and treble. Make it one row tall for the modes alone.</string>
     <string name="widget_headphones">Headphones</string>
     <string name="widget_quiet">Quiet</string>
     <string name="widget_aware">Aware</string>
@@ -12,6 +12,19 @@
     <string name="widget_not_running">Tap to open the app</string>
     <string name="widget_simulated">Simulated device in use</string>
     <string name="widget_switching">Switching…</string>
+    <string name="widget_adjusting">Adjusting…</string>
+    <string name="widget_bass">Bass</string>
+    <string name="widget_mid">Mid</string>
+    <string name="widget_treble">Treble</string>
+    <string name="widget_unknown">–</string>
+    <string name="widget_down">−</string>
+    <string name="widget_up">+</string>
+    <string name="widget_bass_down">Bass down</string>
+    <string name="widget_bass_up">Bass up</string>
+    <string name="widget_mid_down">Mid down</string>
+    <string name="widget_mid_up">Mid up</string>
+    <string name="widget_treble_down">Treble down</string>
+    <string name="widget_treble_up">Treble up</string>
 
     <color name="widget_card">#F2FFFFFF</color>
     <color name="widget_text">#FF14171C</color>

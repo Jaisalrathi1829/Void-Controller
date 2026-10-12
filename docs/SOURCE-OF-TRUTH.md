@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Everything described here is committed and pushed. The commit that holds the code is `7bfd6e1` (see [§12](#12-git-state))
+- The commit that holds the code is `7bfd6e1` (see [§12](#12-git-state)). One thing made later on 2026-10-12 is **not yet committed**: the equalizer on the Android widget ([§17](#17-equalizer-on-the-android-widget-2026-10-12))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -172,6 +172,7 @@ while reporting its problems.
 - The **build of 2026-10-12** on a phone — every fix in §13
 - The Android home-screen widget, state by state, on a phone — the owner
   reports it working (§16); nothing was instrumented
+- The equalizer on the Android widget against the headphones (§17)
 - Custom-mode level and EQ from Android
 - Which output Android used for speech
 - Battery level on Android
@@ -305,7 +306,7 @@ platform layer.
 | Battery | PnP | Android's level; else `GET [2.2]` |
 | Speech out | WASAPI on the endpoint | `AudioTrack`, headphones' output preferred |
 | Alive off screen | Tray | Foreground service `AuroraService` |
-| Modes without opening the application | A second window (`widget.rs`), modes and equalizer | A home-screen widget (`ModeWidget.kt`, `android/widget.rs`), modes only |
+| Modes and equalizer without opening the application | A second window (`widget.rs`), sliders | A home-screen widget (`ModeWidget.kt`, `android/widget.rs`), a step down and up for each band |
 | Volume slider | Core Audio, default output | `AudioManager`, media stream, in its steps |
 | This machine's name | `GetComputerNameExW` | Bluetooth adapter name, else settings, else model |
 
@@ -497,7 +498,7 @@ cargo clippy --manifest-path app/src-tauri/Cargo.toml --lib --tests -- -D warnin
 
 | Suite | Result | When |
 | --- | --- | --- |
-| Rust app | 499 passed, 0 failed, 39 ignored | 2026-10-12 |
+| Rust app | 508 passed, 0 failed, 39 ignored | 2026-10-12 |
 | Frontend | 215 passed; `tsc` clean; `vite build` OK | 2026-10-12 |
 | Vendored crate / tools | 103 / 16 / 27 / 32 passed | 2026-10-11 |
 | Clippy | clean but for the two old lints allowed above | 2026-10-12 |
@@ -894,3 +895,102 @@ Everything below was written before the owner's report, and is unverified
 
 The phone package replaces the one listed in §15. It installs over the
 version already on the phone.
+
+---
+
+## 17. Equalizer on the Android widget (2026-10-12)
+
+Asked for by the owner after the widget of §16 was working on the phone:
+"add eq to the android widget too".
+
+**Not committed yet** at the time of writing.
+
+### What it is
+
+The same widget, now called "Modes and equalizer". Under the three modes,
+three columns — Bass, Mid, Treble — each with the level the headphones
+report and two buttons, − and +. It is placed two cells tall; made one cell
+tall it is the modes alone, exactly as in §16.
+
+| Decision | Why |
+| --- | --- |
+| Steps, not sliders | A home-screen widget cannot hold a slider: Android lets it have text, images and buttons |
+| A request is a band and a direction — never a level or an amount | The level it ends at is worked out in the native layer. `parse_request` reads `bass`/`mid`/`treble` and `up`/`down` and drops anything else |
+| The equalizer is read from the headphones before every step | The write sends all three bands. Sent from what the widget was last showing, a step on bass would put mid and treble back to whatever was last seen, undoing a change made elsewhere. Read first, the other two go back as they are at that moment (`step` in `android/widget.rs`, `stepped`) |
+| Nothing is sent for a step past −10 or +10, or from a reading outside that range | There is nothing proper to send. The line says "Already at the limit" |
+| The level shown is the reported one; a dash when there is none | As for the mode. New trait method `reported_equalizer`: the last reading, costing nothing, forgotten when the headphones go |
+| A step is not carried into an application that is not running | "One more" means something only beside the level it was tapped on, and a closed application's widget shows none. The tap opens the application and changes nothing |
+| One widget that changes with its size, not a second widget | Both forms are handed to Android, which draws whichever fits (`RemoteViews` by size, Android 12 and later; before that the widget's reported height decides). An existing one-cell widget is left exactly as it was |
+| The equalizer is re-read when five minutes old, only while a widget with it is placed | Nothing on the headphones changes it, but another device they are connected to can. Kotlin tells the native layer whether such a widget exists each time it is told the state (`showsEq`); with none, nothing is read |
+
+### A fault found on the way: taps were taken one every 2.5 seconds
+
+Testing six equalizer buttons in a row on the emulator, the log showed each
+tap arriving exactly 2.5 s after the one before, whatever the pace of the
+tapping. The widget's receiver was being held open (`goAsync`) for the 2.5 s
+it waits to see whether the native layer has taken a request, and Android
+hands a receiver one broadcast at a time. This was in the widget of §16 as
+committed and as the owner has it on the phone: there it would only show as
+a second mode tap, made straight after a first, being slow to act.
+
+The hold was there so the process would not be stopped while waiting. It was
+not needed: a request is only waited on when the application counts as
+alive, which it does only while on screen or kept running by the service,
+and neither is stopped. Removed. Measured after: nine taps in 0.45 s, each
+received within about 40 ms, all nine taken up in order.
+
+Also changed with it: whether a tap was heard is now recorded on the request
+itself rather than as "the last request taken", so several can wait their
+turn; and a tap made while the native layer is busy with the one before no
+longer counts as the application having gone.
+
+### Files
+
+| File | What changed |
+| --- | --- |
+| `src/android/widget.rs` | `Band`, `Request::Step`, `stepped`, the three levels in `WidgetState`, `step` and `freshen` on Android; `parse_request` takes a band and a direction |
+| `src/device/traits.rs`, `src/bose/real.rs` | `reported_equalizer` |
+| `src/watcher.rs` | Calls `freshen` after each look at the headphones |
+| `gen/android/.../ModeWidget.kt` | Rewritten around a request with a kind; the equalizer's buttons and levels; two forms by size; no receiver hold |
+| `gen/android/.../AuroraPlugin.kt` | `widgetNext` hands on a band and a direction; `widgetState` takes the levels and answers `showsEq` |
+| `gen/android/.../res/layout/widget_modes.xml`, `res/values/widget.xml`, `res/xml/widget_modes_info.xml` | The equalizer's rows and words; two cells tall by default |
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| A step moves one band by one and leaves the others; none past either end; none from a reading out of range; every step from every in-range level stays in range | `android::widget::tests` | pass |
+| A request is a band and a direction and nothing else — not "+1", not "10", not "reset", not bytes | same | pass |
+| Levels shown only for real, connected headphones that have reported them; never the simulated device's | same | 21 tests in the module, all pass |
+| Offered as "Modes and equalizer 4 × 2", placed, drawn with the equalizer | Emulator (Android 16, Pixel launcher), screenshots | As intended |
+| Made one cell tall: the modes alone. Made two again: the equalizer back | Emulator, dragging the resize handle | As intended |
+| All six buttons, application kept running in the background | Emulator, `adb logcat -s Aurora` | Each `asked for` and `taken up` under its own name; the application stayed off screen |
+| Quick taps | Emulator, nine taps in 0.45 s | All received within about 40 ms and taken up in order |
+| A step with the application's process ended | Emulator, `am crash` then a tap on bass + | The application opened; no step was taken up |
+| The whole suite | | 508 Rust, 215 frontend; clippy and the type check clean |
+
+### Not checked
+
+- **Anything against the headphones.** No level has been seen on the widget,
+  and no tap there has changed a band: the emulator has none, so every step
+  ended at "not connected". The read and the write under it are the ones
+  the application's equalizer uses, tested on the headphones in
+  [§15](#15-hardware-run-2026-10-12) on Windows.
+- How long one step takes on the phone, and so how a run of quick taps feels.
+- The five-minute re-read, and the read after the widget is placed.
+- How the two-cell widget sits on a Samsung home screen, and whether One UI
+  swaps the two forms as the widget is resized. (It is Android's own widget
+  host that does the swapping, so it should.)
+- The widget on Android 11 or earlier, where the form is chosen from the
+  height the launcher reports.
+
+### Build
+
+| | |
+| --- | --- |
+| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-12 23:25, 139,287,950 bytes, SHA-256 `a16cee7b6419e59cb9838afede129201117280dca8a9493559e7c6e78007d47f`. Checked to hold the new widget's words and the `arm64-v8a` libraries; not run by anyone |
+| Windows installer | Unchanged — the one of 18:09 listed in §15. Nothing in this section alters the Windows build |
+
+The phone package replaces the one listed in §16. It installs over the
+version already on the phone; a widget already on the home screen stays one
+cell tall until it is stretched.

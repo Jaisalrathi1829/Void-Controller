@@ -317,6 +317,9 @@ pub fn spawn(app: AppHandle) {
                 })
                 .await;
             }
+            // And its equalizer, read again if what it shows has grown old.
+            #[cfg(target_os = "android")]
+            crate::android::widget::freshen(&app).await;
             // Where the host has no battery level to give, use the one the
             // headphones last gave over the control link, if there is one.
             let host_battery_missing = sighting

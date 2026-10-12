@@ -84,21 +84,28 @@ screen.
 
 ### The home-screen widget
 
-A widget for the home screen with the three noise modes and nothing else:
-**Quiet**, **Aware**, and the custom mode under the headphones' own name for
-it ("Focus"). Long-press an empty part of the home screen → **Widgets** →
-**Bose QC Control Center** → **Noise modes**. It is four cells wide and one
-tall, and can be resized.
+A widget for the home screen with the three noise modes — **Quiet**,
+**Aware**, and the custom mode under the headphones' own name for it
+("Focus") — and under them the equalizer: bass, mid and treble, each with the
+level the headphones report and a step down and a step up. Long-press an
+empty part of the home screen → **Widgets** → **Bose QC Control Center** →
+**Modes and equalizer**.
+
+It is four cells wide and two tall to begin with. Made one cell tall it is
+the modes alone, and made taller again the equalizer comes back: which of the
+two is drawn follows the room it has (the equalizer needs about 150 dp of
+height and 220 dp of width). A widget placed before the equalizer was added
+stays one cell tall, and so stays as it was, until it is stretched.
 
 What a tap does depends on whether the application is being run at that
 moment:
 
-| The application is | The widget shows | A tap on a mode |
-| --- | --- | --- |
-| On screen, or off screen with **Keep running in the background** on | The headphones' name, "Connected" or "Not connected", and the reported mode highlighted | Switches the mode there and then. The application does not come up |
-| Off screen with **Keep running in the background** off | "Tap to open the app", no mode | Opens the application and asks it for that mode |
-| Closed | "Tap to open the app", no mode | Opens the application and asks it for that mode |
-| On its simulated device | "Simulated device in use", no mode | Nothing that shows: the simulation's modes are not the headphones' |
+| The application is | The widget shows | A tap on a mode | A tap on a step |
+| --- | --- | --- | --- |
+| On screen, or off screen with **Keep running in the background** on | The headphones' name, "Connected" or "Not connected", the reported mode highlighted, the reported levels | Switches the mode there and then. The application does not come up | Moves that band one decibel there and then |
+| Off screen with **Keep running in the background** off | "Tap to open the app", no mode, a dash for each level | Opens the application and asks it for that mode | Opens the application. Nothing is changed |
+| Closed | "Tap to open the app", no mode, a dash for each level | Opens the application and asks it for that mode | Opens the application. Nothing is changed |
+| On its simulated device | "Simulated device in use", no mode, a dash for each level | Nothing that shows: the simulation's modes are not the headphones' | Nothing |
 
 A tap on the widget's top line opens the application.
 
@@ -116,13 +123,36 @@ The rules it keeps are the application's:
   the moment the application leaves the screen.
 - A change made from the widget is announced like any other, and a change
   made from the headphones' button or the application shows on the widget.
+- A level on the widget is what the headphones last reported, and a dash
+  when they have reported none. A step is a direction, never an amount: the
+  native layer reads the equalizer from the headphones at that moment, moves
+  the one band by one decibel, sends the other two back exactly as it just
+  read them, and counts the change only when the headphones then report it.
+  So a step is always from what the headphones have, not from what the
+  widget happened to be showing, and several quick taps add up. A step that
+  would pass the end of the range (−10 to +10) sends nothing, and the line
+  says "Already at the limit".
+- A step is not carried into an application that is not running. A mode is —
+  "Quiet" means the same whenever it arrives — but "one more" only means
+  something beside the level it was tapped on, and with the application
+  closed the widget shows none.
+- Nothing on the headphones changes the equalizer, but another phone or
+  computer they are connected to can. While a widget with the equalizer on
+  it is on a home screen, the native layer reads the equalizer again when
+  what it has is five minutes old — one question over the link that is
+  already open. With no such widget it reads nothing on the widget's account.
 
-How it works: the widget (`ModeWidget.kt`) decides nothing. A tap leaves the
-mode's name for the native layer, which has one thread waiting for such
-requests (`android/widget.rs`) and puts each through the same verified switch
-as the application's own buttons. That the native layer is waiting is how the
-widget knows it is there. The widget's receiver is not exported, and a
-request is one of three names — anything else is dropped.
+How it works: the widget (`ModeWidget.kt`) decides nothing. A tap leaves a
+name for the native layer — a mode, or a band and a direction — which has one
+thread waiting for such requests (`android/widget.rs`) and puts each through
+the same verified change as the application's own controls. That the native
+layer is waiting is how the widget knows it is there. The widget's receiver
+is not exported, and a request is one of three modes or one of three bands up
+or down — anything else is dropped.
+
+Taps are taken one after another as fast as they come. (In the first version
+of the widget each tap held Android's delivery of the next for two and a half
+seconds; that was found and removed when the equalizer was added.)
 
 For the widget to work by itself, then: **Keep running in the background**
 on, and the application left open in the recent-apps list.
@@ -257,7 +287,7 @@ Before first use:
 - The first time voice feedback is used, the model is unpacked from the
   package (about 150 MB), which takes a few seconds.
 - For the [home-screen widget](#the-home-screen-widget): open the application
-  once, then add "Noise modes" from the home screen's widget list.
+  once, then add "Modes and equalizer" from the home screen's widget list.
 
 ## What has and has not been verified
 
@@ -276,7 +306,12 @@ Before first use:
 | Kokoro synthesis and playback (Test Voice) | Verified on the emulator: Android's audio log shows the application playing a speech track |
 | Refusing to speak through the phone when the headphones are absent and no other output is allowed | Verified on the emulator |
 | Background service | Verified on the emulator: running in the foreground, type `connectedDevice`, with its notification |
-| Home-screen widget: offered by the launcher, placed, drawn | Verified on the emulator: listed as "Noise modes 4 × 1", dragged to the home screen |
+| Home-screen widget: offered by the launcher, placed, drawn | Verified on the emulator: listed as "Modes and equalizer 4 × 2", dragged to the home screen |
+| Widget drawn with the equalizer at two cells tall, and as the modes alone at one | Verified on the emulator, by dragging its resize handle both ways |
+| Widget equalizer steps with the application kept running in the background | Verified on the emulator as far as the Bluetooth link: all six buttons, each `asked for` and `taken up` by name |
+| Quick taps on the widget | Verified on the emulator: nine taps in 0.45 s, each received within about 40 ms and all nine taken up in order. Before the fix they were received one every 2.5 s |
+| An equalizer step with the application's process gone | Verified on the emulator: the application was opened and no step was taken up |
+| The widget's equalizer **against the headphones**: levels shown, a step changing a band | **Not verified** — the emulator has no headphones. The read and the write it calls are the ones the application's own equalizer uses |
 | Widget tap with the application kept running in the background | Verified on the emulator as far as the Bluetooth link: `widget: aware asked for`, `widget: aware taken up` 1 ms later, the widget told the outcome 6 ms after that, the application still off screen |
 | Widget with the application off screen and not kept running | Verified on the emulator: "Tap to open the app", and a tap on a mode opened the application, which took the request up |
 | Widget tap with the application's process gone | Verified on the emulator: the process was ended, the tap started a new one, which opened the application; the request was taken up 0.8 s after the tap |

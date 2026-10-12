@@ -117,6 +117,10 @@ class WidgetStateArgs {
     /** The mode the headphones last reported: `quiet`, `aware` or `custom`. */
     var mode: String? = null
     var customName: String? = null
+    /** The equalizer the headphones last reported, in whole decibels. */
+    var bass: Int? = null
+    var mid: Int? = null
+    var treble: Int? = null
     /** A few words about the last attempt, if it did not simply succeed. */
     var note: String? = null
 }
@@ -259,8 +263,9 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
     // --- the home-screen widget ----------------------------------------------
 
     /**
-     * Waits for the next thing the widget wants: a mode by name, or simply to
-     * be told the state. Answers `none` when the wait runs out. The native
+     * Waits for the next thing the widget wants: a mode by name, one band of
+     * the equalizer one step up or down, or simply to be told the state.
+     * Answers `none` when the wait runs out. The native
      * layer asks this in a loop for as long as it lives, and that it is
      * asking is how the widget knows there is a native layer to ask.
      */
@@ -272,27 +277,35 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
             val result = JSObject()
             when {
                 request == null -> result.put("kind", "none")
-                request.mode == "refresh" -> result.put("kind", "refresh")
-                else -> {
-                    Log.i(TAG, "widget: ${request.mode} taken up")
-                    result.put("kind", "mode").put("mode", request.mode)
+                request.kind == "mode" -> {
+                    Log.i(TAG, "widget: ${request.what} taken up")
+                    result.put("kind", "mode").put("mode", request.what)
                 }
+                request.kind == "eq" -> {
+                    Log.i(TAG, "widget: ${request.what} ${request.step} taken up")
+                    result.put("kind", "eq").put("band", request.what).put("step", request.step)
+                }
+                else -> result.put("kind", "refresh")
             }
             invoke.resolve(result)
         }
     }
 
-    /** What the headphones now report, for the widget to show. */
+    /**
+     * What the headphones now report, for the widget to show. Answers whether
+     * a widget on a home screen has the equalizer on it.
+     */
     @Command
     fun widgetState(invoke: Invoke) {
         val args = invoke.parseArgs(WidgetStateArgs::class.java)
         main.post {
             try {
-                ModeWidget.report(
+                val showsEq = ModeWidget.report(
                     activity.applicationContext,
-                    args.status, args.name, args.mode, args.customName, args.note
+                    args.status, args.name, args.mode, args.customName,
+                    args.bass, args.mid, args.treble, args.note
                 )
-                invoke.resolve()
+                invoke.resolve(JSObject().put("showsEq", showsEq))
             } catch (e: Exception) {
                 invoke.reject(e.message ?: "the widget could not be updated")
             }

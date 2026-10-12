@@ -242,10 +242,17 @@ when the headphones confirm it, and the voice all live in the native layer,
 which exists only while the application proper is running.
 
 So the widget is kept to two things. A tap leaves a request — the name of a
-mode — where the native layer picks requests up (`WidgetBus` in
-`ModeWidget.kt`; one thread in `android/widget.rs` waits on it). And the
-widget shows what the native layer last told it the headphones report. It
-never marks the tapped mode as the current one.
+mode, or of an equalizer band and a direction — where the native layer picks
+requests up (`WidgetBus` in `ModeWidget.kt`; one thread in
+`android/widget.rs` waits on it). And the widget shows what the native layer
+last told it the headphones report. It never marks the tapped mode as the
+current one, and never moves a level by itself.
+
+The equalizer is stepped, not set, because a widget cannot hold a slider and
+because a step can be made honest: the native layer reads the headphones'
+equalizer when the request arrives, moves one band by one, and sends the
+other two back as just read. A widget that sent "bass +5" would be sending
+whatever it had last been told about mid and treble along with it.
 
 That the native layer is waiting for requests is also how the widget knows
 there is one. If nothing is — the application is closed, or is off screen

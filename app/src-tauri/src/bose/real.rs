@@ -1278,6 +1278,13 @@ impl BoseDevice for RealBoseDevice {
             .map(|c| noise_state(&target.config, c, link.slots.as_ref()))
     }
 
+    fn reported_equalizer(&self) -> Option<EqState> {
+        if !self.is_attached() || !self.observed.read().connected {
+            return None;
+        }
+        self.link_status.read().eq.as_ref().map(eq_state)
+    }
+
     fn known_custom_modes(&self) -> Vec<String> {
         if !self.is_attached() {
             return Vec::new();
