@@ -11,6 +11,10 @@ target/
 
 # Tauri
 app/src-tauri/target/
+
+# The latest installer and phone package, copied here by tools/collect-setups.ps1
+# so they are easy to find. Made from the source, and too large for the repository.
+/Setups/
 # Generated schemas only. gen/android is the Android project - source, with
 # ignore files of its own for what its build produces.
 app/src-tauri/gen/schemas/

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The home-screen widget, with the phone in its dark theme. -->
+<resources>
+    <color name="widget_card">#F2161A21</color>
+    <color name="widget_text">#FFF1F3F7</color>
+    <color name="widget_text_dim">#FF9AA3B2</color>
+    <color name="widget_button">#FF262C37</color>
+    <color name="widget_accent">#FF5B7CFF</color>
+    <color name="widget_on_accent">#FFFFFFFF</color>
+</resources>

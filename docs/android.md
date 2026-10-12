@@ -82,6 +82,51 @@ that is on. Swiping the application away from the recent-apps list stops it.
 With the switch off, announcements happen only while the application is on
 screen.
 
+### The home-screen widget
+
+A widget for the home screen with the three noise modes and nothing else:
+**Quiet**, **Aware**, and the custom mode under the headphones' own name for
+it ("Focus"). Long-press an empty part of the home screen → **Widgets** →
+**Bose QC Control Center** → **Noise modes**. It is four cells wide and one
+tall, and can be resized.
+
+What a tap does depends on whether the application is being run at that
+moment:
+
+| The application is | The widget shows | A tap on a mode |
+| --- | --- | --- |
+| On screen, or off screen with **Keep running in the background** on | The headphones' name, "Connected" or "Not connected", and the reported mode highlighted | Switches the mode there and then. The application does not come up |
+| Off screen with **Keep running in the background** off | "Tap to open the app", no mode | Opens the application and asks it for that mode |
+| Closed | "Tap to open the app", no mode | Opens the application and asks it for that mode |
+| On its simulated device | "Simulated device in use", no mode | Nothing that shows: the simulation's modes are not the headphones' |
+
+A tap on the widget's top line opens the application.
+
+The rules it keeps are the application's:
+
+- It highlights the mode the headphones **report**. After a tap the button
+  is outlined and the line reads "Switching…"; the highlight moves only when
+  the headphones confirm. If they do not, the line says how it went — "Not
+  confirmed", "Refused by the headphones", "Not available", "Could not reach
+  them" — and the highlight stays where they say it is.
+- It shows no mode it cannot vouch for. Android stops an application that is
+  off screen where it stands unless a service is keeping it going; from then
+  on nothing would notice the mode being changed from the headphones' own
+  button. So with the background switch off, the mode is taken off the widget
+  the moment the application leaves the screen.
+- A change made from the widget is announced like any other, and a change
+  made from the headphones' button or the application shows on the widget.
+
+How it works: the widget (`ModeWidget.kt`) decides nothing. A tap leaves the
+mode's name for the native layer, which has one thread waiting for such
+requests (`android/widget.rs`) and puts each through the same verified switch
+as the application's own buttons. That the native layer is waiting is how the
+widget knows it is there. The widget's receiver is not exported, and a
+request is one of three names — anything else is dropped.
+
+For the widget to work by itself, then: **Keep running in the background**
+on, and the application left open in the recent-apps list.
+
 ### The volume slider
 
 It is the phone's media volume — the one the volume keys change while music
@@ -161,8 +206,12 @@ first; nothing is fetched by the build script itself), and builds an APK for
 64-bit ARM phones:
 
 ```
-app\src-tauri\gen\android\app\build\outputs\apk\arm64\release\app-arm64-release.apk
+Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk
 ```
+
+That is a copy, put at the top of the project so that it is easy to find; the
+build's own output is
+`app\src-tauri\gen\android\app\build\outputs\apk\arm64\release\app-arm64-release.apk`.
 
 It is signed with the Android debug key, which is enough to install it on your
 own phone. Pass `-NoVoice` to build without the model.
@@ -196,7 +245,7 @@ Copy the APK to the phone and open it (Android will ask to allow installing
 from that source), or with USB debugging on:
 
 ```powershell
-adb install -r app\src-tauri\gen\android\app\build\outputs\apk\arm64\release\app-arm64-release.apk
+adb install -r Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk
 ```
 
 Before first use:
@@ -207,6 +256,8 @@ Before first use:
   connection from a phone, and whichever application opens it first has it.
 - The first time voice feedback is used, the model is unpacked from the
   package (about 150 MB), which takes a few seconds.
+- For the [home-screen widget](#the-home-screen-widget): open the application
+  once, then add "Noise modes" from the home screen's widget list.
 
 ## What has and has not been verified
 
@@ -225,6 +276,13 @@ Before first use:
 | Kokoro synthesis and playback (Test Voice) | Verified on the emulator: Android's audio log shows the application playing a speech track |
 | Refusing to speak through the phone when the headphones are absent and no other output is allowed | Verified on the emulator |
 | Background service | Verified on the emulator: running in the foreground, type `connectedDevice`, with its notification |
+| Home-screen widget: offered by the launcher, placed, drawn | Verified on the emulator: listed as "Noise modes 4 × 1", dragged to the home screen |
+| Widget tap with the application kept running in the background | Verified on the emulator as far as the Bluetooth link: `widget: aware asked for`, `widget: aware taken up` 1 ms later, the widget told the outcome 6 ms after that, the application still off screen |
+| Widget with the application off screen and not kept running | Verified on the emulator: "Tap to open the app", and a tap on a mode opened the application, which took the request up |
+| Widget tap with the application's process gone | Verified on the emulator: the process was ended, the tap started a new one, which opened the application; the request was taken up 0.8 s after the tap |
+| Widget on the simulated device | Verified on the emulator: "Simulated device in use", no mode |
+| The widget **switching a mode on the headphones**, and showing it highlighted | **Not verified** — the emulator has no headphones. The switch it calls is the one the application's buttons use |
+| The widget on a Samsung home screen (size, look, whether a tap may open the application from the background) | **Not verified** |
 | The phone build (`aarch64`) starting on a phone | Reported working by the owner (S24 Ultra, build of 2026-10-11). Not instrumented |
 | Bluetooth socket to the headphones; identifying the model; reading and changing modes | Reported working by the owner: modes, including the custom one, were switched and announced. Not instrumented |
 | Announcements in the background on a phone | Reported working by the owner |

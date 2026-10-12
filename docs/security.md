@@ -38,6 +38,17 @@ typed commands; there is nothing it can ask for that the main window cannot.
 The one command added for it, `show_main_window`, takes no arguments and
 brings this application's own window forward.
 
+The Android home-screen widget is not a window and loads no page. Its
+receiver is declared `exported="false"`, so only Android itself and this
+application can send it anything; the taps it receives are pending intents
+this application made, immutable, each naming one of three modes. What it
+passes to the native layer is that name and nothing else, read there into the
+same closed type the interface's mode requests are read into — a name that is
+not one of the three is dropped, and there is no form in which bytes could be
+sent. The switch then goes through the same verified command as any other.
+The two bridge commands added for it, like the rest of the bridge, can be
+called only from the native layer.
+
 The asset protocol is disabled in `tauri.conf.json`, and the corresponding
 `protocol-asset` crate feature was removed rather than enabling the protocol to
 match it.

@@ -24,6 +24,11 @@ class AuroraService : Service() {
     companion object {
         private const val CHANNEL = "background"
         private const val NOTIFICATION = 1
+
+        /** Whether the process is being kept going. The widget goes by it. */
+        @Volatile
+        var running = false
+            private set
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -53,6 +58,8 @@ class AuroraService : Service() {
             } else {
                 startForeground(NOTIFICATION, notification)
             }
+            running = true
+            ModeWidget.render(applicationContext)
         } catch (e: Exception) {
             // Without the Bluetooth permission Android refuses this kind of
             // service. There is nothing to keep alive for in that case.
@@ -63,8 +70,19 @@ class AuroraService : Service() {
         return START_NOT_STICKY
     }
 
+    override fun onDestroy() {
+        running = false
+        // Switched off while the application was off screen: from here on
+        // nothing is watching, and the widget should not look as if it were.
+        ModeWidget.render(applicationContext)
+        super.onDestroy()
+    }
+
     /** Swiped away from recents: the user has closed the application. */
     override fun onTaskRemoved(rootIntent: Intent?) {
+        // The widget is told while there is still a process to tell it, so
+        // that it does not go on showing a mode nothing is watching.
+        ModeWidget.appClosing(applicationContext)
         stopSelf()
         super.onTaskRemoved(rootIntent)
     }

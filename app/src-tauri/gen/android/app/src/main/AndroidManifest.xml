@@ -45,6 +45,21 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- The home-screen widget. Not exported: Android itself can still
+             reach it to draw and update it, and nothing else can send it a
+             request for a mode. -->
+        <receiver
+            android:name=".ModeWidget"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_modes_info" />
+        </receiver>
+
         <provider
           android:name="androidx.core.content.FileProvider"
           android:authorities="${applicationId}.fileprovider"

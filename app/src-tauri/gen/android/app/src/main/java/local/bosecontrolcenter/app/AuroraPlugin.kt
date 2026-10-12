@@ -104,6 +104,23 @@ class NoteArgs {
     var what: String = ""
 }
 
+@InvokeArg
+class WidgetNextArgs {
+    var waitMs: Long = 0
+}
+
+@InvokeArg
+class WidgetStateArgs {
+    /** `connected`, `disconnected` or `simulated`. */
+    var status: String = "disconnected"
+    var name: String? = null
+    /** The mode the headphones last reported: `quiet`, `aware` or `custom`. */
+    var mode: String? = null
+    var customName: String? = null
+    /** A few words about the last attempt, if it did not simply succeed. */
+    var note: String? = null
+}
+
 /**
  * Everything the native (Rust) layer needs from Android, and nothing else.
  *
@@ -236,6 +253,49 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
             val result = JSObject()
             if (name != null) result.put("name", name.trim())
             invoke.resolve(result)
+        }
+    }
+
+    // --- the home-screen widget ----------------------------------------------
+
+    /**
+     * Waits for the next thing the widget wants: a mode by name, or simply to
+     * be told the state. Answers `none` when the wait runs out. The native
+     * layer asks this in a loop for as long as it lives, and that it is
+     * asking is how the widget knows there is a native layer to ask.
+     */
+    @Command
+    fun widgetNext(invoke: Invoke) {
+        val args = invoke.parseArgs(WidgetNextArgs::class.java)
+        work.execute {
+            val request = WidgetBus.next(args.waitMs.coerceIn(0, 60_000))
+            val result = JSObject()
+            when {
+                request == null -> result.put("kind", "none")
+                request.mode == "refresh" -> result.put("kind", "refresh")
+                else -> {
+                    Log.i(TAG, "widget: ${request.mode} taken up")
+                    result.put("kind", "mode").put("mode", request.mode)
+                }
+            }
+            invoke.resolve(result)
+        }
+    }
+
+    /** What the headphones now report, for the widget to show. */
+    @Command
+    fun widgetState(invoke: Invoke) {
+        val args = invoke.parseArgs(WidgetStateArgs::class.java)
+        main.post {
+            try {
+                ModeWidget.report(
+                    activity.applicationContext,
+                    args.status, args.name, args.mode, args.customName, args.note
+                )
+                invoke.resolve()
+            } catch (e: Exception) {
+                invoke.reject(e.message ?: "the widget could not be updated")
+            }
         }
     }
 

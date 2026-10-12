@@ -94,6 +94,29 @@ window comes back — and close that.
 The pin in its header decides. Pinned, it stays above everything; unpinned,
 it is an ordinary window that others can cover.
 
+### The phone's widget says "Tap to open the app"
+
+The widget is drawn by Android but acts through the application, and the
+application is not running — or is off screen with **Keep running in the
+background** off, in which case Android has stopped it where it stood. A tap
+on a mode opens the application and asks it for that mode. To have the
+widget switch modes by itself, turn **Keep running in the background** on in
+Settings → General and leave the application in the recent-apps list.
+
+### The phone's widget highlights no mode
+
+It highlights only what the headphones have reported. "Not connected" means
+the phone does not have them connected; "Simulated device in use" means the
+application is on its simulated device, whose modes are not the headphones';
+and after a tap, nothing is highlighted until the headphones confirm the
+change. A line such as "Not confirmed" or "Could not reach them" says how
+the last tap went if it did not simply work.
+
+### "Noise modes" is not in the phone's list of widgets
+
+Open the application once after installing it. Android does not offer the
+widgets of an application that has never been started.
+
 ### No notification appeared
 
 Notifications are raised only for real headphones, and only on a change: the

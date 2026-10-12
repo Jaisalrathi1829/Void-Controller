@@ -251,6 +251,15 @@ fn spawn_mode_listener(app: AppHandle) {
                 if state.voice().observe_mode(spoken) {
                     // The window shows the mode too.
                     let _ = app.emit(DEVICE_CHANGED_EVENT, ());
+                    // And so does the home-screen widget.
+                    #[cfg(target_os = "android")]
+                    {
+                        let app = app.clone();
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                            crate::android::widget::mode_changed(&app);
+                        })
+                        .await;
+                    }
                 }
             }
         }
@@ -272,6 +281,15 @@ pub fn spawn(app: AppHandle) {
             // passing itself off as real.
             if state.current().source() != DeviceSource::Real {
                 watch = WatchState::default();
+                // The home-screen widget says so too, and offers no modes.
+                #[cfg(target_os = "android")]
+                {
+                    let app = app.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        crate::android::widget::seen(&app, None);
+                    })
+                    .await;
+                }
                 continue;
             }
 
@@ -287,6 +305,17 @@ pub fn spawn(app: AppHandle) {
             let mut sighting = sighting;
             if let Some(seen) = &sighting {
                 state.remember_device(seen);
+            }
+            // The home-screen widget shows whether they are connected, and
+            // is told when that — or anything else it shows — has changed.
+            #[cfg(target_os = "android")]
+            {
+                let app = app.clone();
+                let seen = sighting.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    crate::android::widget::seen(&app, seen.as_ref());
+                })
+                .await;
             }
             // Where the host has no battery level to give, use the one the
             // headphones last gave over the control link, if there is one.

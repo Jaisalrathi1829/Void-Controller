@@ -132,3 +132,9 @@ if ($cliFailed) {
 
 Get-ChildItem (Join-Path $Root 'app\src-tauri\gen\android\app\build\outputs\apk') -Recurse -Filter *.apk |
     ForEach-Object { Write-Host ("Built {0}  ({1:N0} MB)" -f $_.FullName, ($_.Length / 1MB)) }
+
+# The phone package goes to Setups\ at the top of the project, where it is easy to find.
+# The emulator's build is for testing on this machine and is not a setup.
+if ($Target -eq 'aarch64') {
+    & (Join-Path $PSScriptRoot 'collect-setups.ps1')
+}

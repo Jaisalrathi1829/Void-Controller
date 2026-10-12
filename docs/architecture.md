@@ -232,6 +232,28 @@ There is always a way back to the application: closing the main window with
 the widget up hides the main window, and closing the widget with the main
 window hidden and no tray icon brings the main window back.
 
+### The phone's widget decides nothing
+
+An Android home-screen widget is not part of the application's window: the
+launcher draws it from a description the application hands over, and a tap
+on it arrives as a message to a receiver, possibly in a process started for
+that message alone. The control link, the rule that a change counts only
+when the headphones confirm it, and the voice all live in the native layer,
+which exists only while the application proper is running.
+
+So the widget is kept to two things. A tap leaves a request — the name of a
+mode — where the native layer picks requests up (`WidgetBus` in
+`ModeWidget.kt`; one thread in `android/widget.rs` waits on it). And the
+widget shows what the native layer last told it the headphones report. It
+never marks the tapped mode as the current one.
+
+That the native layer is waiting for requests is also how the widget knows
+there is one. If nothing is — the application is closed, or is off screen
+without the service that keeps it running, where Android stops it mid-step —
+the widget shows no mode at all, says so, and a tap opens the application
+with the request attached. A widget that went on showing "Quiet" with
+nothing watching the headphones would be the application pretending.
+
 ### One instance
 
 Two copies of the application would fight over the headphones' single control

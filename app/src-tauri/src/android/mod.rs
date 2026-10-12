@@ -13,6 +13,7 @@
 //! | [`rfcomm`] | `bose::bmap::winsock` |
 //! | [`directory`] | `bluetooth::pnp` and `bluetooth::radio` |
 //! | [`sound`] | `audio::playback` |
+//! | [`widget`] | — the home-screen widget's requests and what it shows |
 //!
 //! The module is also compiled for tests on other systems, so that the parts
 //! that are plain logic — parsing an address, recognising the control
@@ -25,3 +26,4 @@ pub mod bridge;
 pub mod directory;
 pub mod rfcomm;
 pub mod sound;
+pub mod widget;

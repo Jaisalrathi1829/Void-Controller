@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-12.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Everything described here is committed and pushed. The commit that holds the code is `b1f2a3f` (see [§12](#12-git-state))
+- The commit that holds the code is `b1f2a3f` (see [§12](#12-git-state)). Two things made later on 2026-10-12 are **not yet committed**: the `Setups` folder tooling (`tools/collect-setups.ps1` and the build scripts that call it), and the Android home-screen widget ([§16](#16-home-screen-widget-on-android-2026-10-12))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -154,6 +154,7 @@ fresh connection. Outcomes on the wire to the UI: `applied`,
 | Kokoro synthesis and playback | Android audio log: an `AudioTrack` from the app, `USAGE_MEDIA / CONTENT_TYPE_SPEECH`, focus held ~2 s |
 | Refuses to speak through the phone when headphones are absent and the fallback is off | Status "Unavailable" with the reason |
 | Background service | `AuroraService isForeground=true`, type `connectedDevice`, notification shown; restored at next launch |
+| Home-screen widget, in every state that needs no headphones | Log lines and screenshots — [§16](#16-home-screen-widget-on-android-2026-10-12) |
 
 ### Android — reported by the owner from a Galaxy S24 Ultra (2026-10-12)
 
@@ -169,6 +170,8 @@ while reporting its problems.
 ### Not verified anywhere yet
 
 - The **build of 2026-10-12** on a phone — every fix in §13
+- The Android home-screen widget switching a mode on the headphones, and
+  anything about it on a Samsung home screen (§16)
 - Custom-mode level and EQ from Android
 - Which output Android used for speech
 - Battery level on Android
@@ -302,15 +305,16 @@ platform layer.
 | Battery | PnP | Android's level; else `GET [2.2]` |
 | Speech out | WASAPI on the endpoint | `AudioTrack`, headphones' output preferred |
 | Alive off screen | Tray | Foreground service `AuroraService` |
+| Modes without opening the application | A second window (`widget.rs`), modes and equalizer | A home-screen widget (`ModeWidget.kt`, `android/widget.rs`), modes only |
 | Volume slider | Core Audio, default output | `AudioManager`, media stream, in its steps |
 | This machine's name | `GetComputerNameExW` | Bluetooth adapter name, else settings, else model |
 
 Key files:
 
 - `app/src-tauri/src/android/` — `bridge.rs` (calls into Kotlin),
-  `rfcomm.rs`, `directory.rs`, `sound.rs`
+  `rfcomm.rs`, `directory.rs`, `sound.rs`, `widget.rs`
 - `app/src-tauri/gen/android/app/src/main/java/local/bosecontrolcenter/app/`
-  — `AuroraPlugin.kt`, `AuroraService.kt`, `MainActivity.kt`
+  — `AuroraPlugin.kt`, `AuroraService.kt`, `MainActivity.kt`, `ModeWidget.kt`
 - `app/src-tauri/capabilities/mobile.json` — grants the web view nothing of
   the bridge
 - `app/src-tauri/tauri.android.conf.json` — window visible on Android
@@ -406,7 +410,9 @@ npm run tauri:build:voice
 Never a bare `tauri build`: the result would lack the two speech DLLs the exe
 cannot start without (the build prints a warning if you do).
 
-Output: `app\src-tauri\target\release\bundle\nsis\Bose QC Control Center_0.1.0_x64-setup.exe`
+Output: `Setups\Bose QC Control Center_0.1.0_x64-setup.exe` — a copy of
+`app\src-tauri\target\release\bundle\nsis\Bose QC Control Center_0.1.0_x64-setup.exe`,
+made by `tools\collect-setups.ps1` at the end of the build.
 
 ### Android
 
@@ -424,8 +430,19 @@ powershell -ExecutionPolicy Bypass -File tools\build-android.ps1 -Target x86_64
 
 Outputs:
 
-- `app\src-tauri\gen\android\app\build\outputs\apk\arm64\release\app-arm64-release.apk`
-- Copy kept at `app\src-tauri\target\android\Bose-QC-Control-Center-0.1.0-android-arm64.apk` (133 MB)
+- `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk` (133 MB) — the
+  phone build, copied there at the end of the build
+- `app\src-tauri\gen\android\app\build\outputs\apk\<arm64|x86_64>\release\` —
+  where Gradle leaves each one. The emulator's build stays there
+
+### Where to find something to install
+
+`Setups\`, at the top of the project (added 2026-10-12, at the owner's
+request, so that nothing has to be dug out of the build trees). Every build
+of the installer or the phone package ends by copying its result there under
+a fixed name, replacing the last one, and rewriting `Setups\README.txt` with
+each file's build time, size and SHA-256. `npm run setups` does the copying
+on its own. The folder is ignored by git.
 
 Toolchain the script finds by itself: JDK `C:\Program Files\Android\Android
 Studio\jbr`; SDK `%LOCALAPPDATA%\Android\Sdk`; NDK `D:\Android\ndk\28.2.13676358`.
@@ -480,7 +497,7 @@ cargo clippy --manifest-path app/src-tauri/Cargo.toml --lib --tests -- -D warnin
 
 | Suite | Result | When |
 | --- | --- | --- |
-| Rust app | 487 passed, 0 failed, 39 ignored | 2026-10-12 |
+| Rust app | 499 passed, 0 failed, 39 ignored | 2026-10-12 |
 | Frontend | 215 passed; `tsc` clean; `vite build` OK | 2026-10-12 |
 | Vendored crate / tools | 103 / 16 / 27 / 32 passed | 2026-10-11 |
 | Clippy | clean but for the two old lints allowed above | 2026-10-12 |
@@ -779,3 +796,87 @@ Mode **Aware** · "Focus" at level **4** · EQ bass **+4**, mid **+1**, treble
 | Phone | `app\src-tauri\target\android\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-12 18:11, 139,191,458 bytes, SHA-256 `e086bae7949d4c937132eae88165062b6807dda02788f362ad6d3cde3e7c582b` |
 
 These replace the ones listed in §13.
+
+---
+
+## 16. Home-screen widget on Android (2026-10-12)
+
+Asked for by the owner: Android offers an "add widget" entry for
+applications that have one, this one had none, and a widget was wanted for
+the modes — "modes only".
+
+**Not committed yet** at the time of writing.
+
+### What it is
+
+One widget, "Noise modes", four cells by one: the headphones' name, a line of
+status, and three buttons — Quiet, Aware, and the custom mode under the
+headphones' name for it. No equalizer, no battery, no settings.
+
+| Decision | Why |
+| --- | --- |
+| The widget decides nothing; a tap is a mode's name left for the native layer | The link, the confirmation rule and the voice are in the native layer. A second path to the headphones from Kotlin would be a second set of rules |
+| Requests are taken by one thread that waits on Kotlin (`widgetNext`, up to 50 s a time) | Kotlin cannot call into the native layer in this application — the bridge runs one way. Waiting costs nothing; polling would |
+| That the native layer is waiting is the sign it is alive | A receiver started for a tap, in a process with no native layer, can tell at once and open the application instead |
+| The mode shown is the reported one; a tap only outlines the button | The same rule as the main window: asked for is not confirmed |
+| No mode shown when the application is closed, or off screen without the background service | Android stops such a process where it stands. Nothing would see the mode change, and the widget would be showing a guess |
+| No mode shown on the simulated device | Its modes are not the headphones'. On a home screen there is no room for a "simulated" badge on each button |
+| Receiver not exported; taps are immutable pending intents; a request is read into `NoiseModeRequest` | Nothing outside the application can ask, and nothing but one of three names can be asked for |
+| With no native layer, the tap opens the application and the request waits for it (20 s at most) | The alternative was a tap that does nothing |
+
+### Files
+
+| File | What |
+| --- | --- |
+| `gen/android/.../ModeWidget.kt` (new) | `WidgetBus` — the requests, and whether anything is taking them; `ModeWidget` — the provider: draws, and receives taps |
+| `gen/android/.../res/layout/widget_modes.xml`, `res/drawable/widget_*.xml`, `res/values/widget.xml`, `res/values-night/widget.xml`, `res/xml/widget_modes_info.xml` (new) | Layout, button and card shapes, strings and colours for light and dark, the declaration Android reads |
+| `gen/android/.../AndroidManifest.xml` | The receiver |
+| `gen/android/.../AuroraPlugin.kt` | Two bridge commands: `widgetNext`, `widgetState` |
+| `gen/android/.../AuroraService.kt` | Says whether it is running; tells the widget when the application is swiped away or the service stops |
+| `gen/android/.../MainActivity.kt` | Says when the window is on screen; takes the request a tap carried in |
+| `src/android/widget.rs` (new) | `state_from` (what the widget is told), `parse_request`, `note_for`, and on Android the request thread and `seen` / `mode_changed` |
+| `src/lib.rs`, `src/watcher.rs` | Start the thread; tell the widget after a command, a detected change, and each look at the headphones |
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| What the widget is told: reported mode only, none when disconnected, none on the simulated device, the custom mode's name, notes | `android::widget::tests` | 11 tests pass |
+| What it can ask for: three names, and nothing else — not "off", not an index, not bytes | same | pass |
+| The launcher offers it, and it can be placed | Emulator (Android 16, Pixel launcher) | "Noise modes 4 × 1", placed |
+| Application kept running in the background, tap on Aware | Emulator, `adb logcat -s Aurora` | `aware asked for` → `aware taken up` after 1 ms → widget told after 6 ms more; the application stayed off screen |
+| Application off screen, background switch off | Emulator | Widget reads "Tap to open the app"; a tap on a mode opened the application, which took the request up |
+| Application's process ended, then a tap | Emulator, `am crash` | A new process, `the application is not running; opening it`, the application on screen, the request taken up 0.8 s after the tap |
+| Application not running at all, tap | Emulator | Opened, request taken up at start |
+| Simulated device | Emulator | "Simulated device in use", no mode; a tap changes nothing shown |
+| Tap on the top line | Emulator | Opens the application |
+| The whole suite | | 499 Rust, 215 frontend; clippy clean |
+
+### Not checked
+
+- **Anything against the headphones.** The emulator has none, so no tap there
+  ended in a mode change, and the widget has never been seen with a mode
+  highlighted, with "Connected", with the headphones' name, with "Focus" on
+  its third button, or with "Switching…". The switch it calls is the one
+  measured in [§15](#15-hardware-run-2026-10-12); the drawing of those states
+  is untested.
+- A Samsung home screen: how the widget sits in One UI's grid, its look
+  there, and whether One UI lets a tap bring the application up when its
+  process has gone (the Pixel launcher on Android 16 does; if One UI does
+  not, the widget reads "Tap to open the app" and the next tap opens it).
+- A tap that opens the application and switches the mode in one go, on a
+  phone: at start-up the link to the headphones is not yet open when the
+  request is taken up.
+- How long Samsung leaves the application running in the background with the
+  switch on. If it is ended, the widget goes on showing what it last showed
+  until it is tapped.
+
+### Build
+
+| | |
+| --- | --- |
+| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-12 22:30, 139,249,130 bytes, SHA-256 `b1284e162d905a8cc2820b41cd0edd1a5414f3da998543995b96dd261dc67dac`. Checked to hold the widget's receiver and the `arm64-v8a` libraries; not run by anyone |
+| Windows installer | Unchanged — the one of 18:09 listed in §15. Nothing in this section alters the Windows build |
+
+The phone package replaces the one listed in §15. It installs over the
+version already on the phone.

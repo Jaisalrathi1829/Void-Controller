@@ -64,6 +64,12 @@ Build installers with `npm run tauri:build` rather than a bare `tauri build`:
 the script adds `tauri.bundle.conf.json`, which packages the two speech-runtime
 DLLs the executable cannot start without.
 
+Every build ends by copying what it made to **`Setups\`** at the top of the
+project — the Windows installer and the Android phone package, each under one
+name that the next build replaces, with a `README.txt` saying when each was
+built. That folder is the place to look for something to install; it is not
+part of the repository. `npm run setups` does the copying by itself.
+
 ### Desktop widget (optional)
 
 A small window of its own with the three noise modes and the three equalizer
@@ -82,6 +88,23 @@ accept one control connection from a computer — so the application must be
 running for it to be there. Everything on it shows what the headphones
 report, and a change counts only when they confirm it, exactly as in the main
 window.
+
+### Home-screen widget (Android)
+
+The phone build has a widget for the home screen with the three noise modes
+and nothing else: **Quiet**, **Aware**, and the custom mode under the name
+the headphones give it. Long-press the home screen → **Widgets** → **Bose QC
+Control Center** → **Noise modes**.
+
+- With **Keep running in the background** on (Settings → General), a tap
+  switches the mode there and then, without the application coming up.
+- With it off, or with the application closed, the widget says "Tap to open
+  the app", and a tap on a mode opens the application and asks it for that
+  mode.
+
+It highlights the mode the headphones report, never the one that was tapped,
+and highlights nothing when the application is not there to vouch for it.
+Details: [docs/android.md](docs/android.md#the-home-screen-widget).
 
 ### Voice feedback (optional)
 
@@ -212,6 +235,7 @@ tools/
   bose-btsnoop-parse/ Offline parser for Android Bluetooth HCI snoop logs
   install-voice-model.ps1  One-time download of the Kokoro voice model
   build-android.ps1        Builds the Android APK, voice model included
+  collect-setups.ps1       Copies the latest installer and APK to Setups\
 docs/                 Architecture, capability matrix, protocol notes
 ```
 

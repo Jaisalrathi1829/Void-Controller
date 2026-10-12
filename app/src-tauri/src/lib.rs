@@ -412,7 +412,7 @@ async fn get_snapshot(state: tauri::State<'_, AppState>) -> UiResult<DeviceSnaps
 /// did not answer, there is nothing new here and nothing is said. Without
 /// this the announcement waits for the next full refresh, which can be most
 /// of a second behind.
-fn observe_reported_mode(state: &AppState, device: &dyn BoseDevice) {
+pub(crate) fn observe_reported_mode(state: &AppState, device: &dyn BoseDevice) {
     if device.source() != DeviceSource::Real {
         return;
     }
@@ -677,6 +677,9 @@ async fn execute_command(
     let outcome = run_command(&state, command).await;
     if changes_something {
         let _ = app.emit(watcher::DEVICE_CHANGED_EVENT, ());
+        // The home-screen widget shows the mode too.
+        #[cfg(target_os = "android")]
+        android::widget::mode_changed(&app);
     }
     outcome
 }
@@ -841,6 +844,8 @@ async fn set_noise_control_mode(
     observe_reported_mode(&state, device.as_ref());
     // And what any other window should now show.
     let _ = app.emit(watcher::DEVICE_CHANGED_EVENT, ());
+    #[cfg(target_os = "android")]
+    android::widget::mode_changed(&app);
     Ok(outcome?)
 }
 
@@ -1112,6 +1117,10 @@ pub fn run() {
             #[cfg(mobile)]
             let _ = &settings;
 
+            // The home-screen widget's requests, from here on.
+            #[cfg(target_os = "android")]
+            android::widget::spawn(handle.clone());
+
             watcher::spawn(handle);
             Ok(())
         })
@@ -1189,6 +1198,8 @@ pub fn run() {
         .run(|app, event| {
             // Stop speaking and release the model before the process goes.
             if let tauri::RunEvent::Exit = event {
+                #[cfg(target_os = "android")]
+                android::widget::stop();
                 if let Some(state) = app.try_state::<AppState>() {
                     state.voice().shutdown();
                 }

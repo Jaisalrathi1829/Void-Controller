@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The home-screen widget, on a light home screen. -->
+<resources>
+    <string name="widget_label">Noise modes</string>
+    <string name="widget_description">Switch your headphones between Quiet, Aware and your custom mode.</string>
+    <string name="widget_headphones">Headphones</string>
+    <string name="widget_quiet">Quiet</string>
+    <string name="widget_aware">Aware</string>
+    <string name="widget_custom">Custom</string>
+    <string name="widget_connected">Connected</string>
+    <string name="widget_not_connected">Not connected</string>
+    <string name="widget_not_running">Tap to open the app</string>
+    <string name="widget_simulated">Simulated device in use</string>
+    <string name="widget_switching">Switching…</string>
+
+    <color name="widget_card">#F2FFFFFF</color>
+    <color name="widget_text">#FF14171C</color>
+    <color name="widget_text_dim">#FF6B7280</color>
+    <color name="widget_button">#FFE9ECF2</color>
+    <color name="widget_accent">#FF3B5BFF</color>
+    <color name="widget_on_accent">#FFFFFFFF</color>
+</resources>
