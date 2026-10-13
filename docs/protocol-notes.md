@@ -546,7 +546,8 @@ device each time. Noise control and Aware mode are `VERIFIED` on this unit.
 
 `VERIFIED` above is the project's record. Inside the running application the
 status is rebuilt from what that session has itself observed: noise control is
-`EXPERIMENTAL` once the endpoint is validated and the mode has been read, and
+`READY` (called `EXPERIMENTAL` until 2026-10-13) once the endpoint is validated
+and the mode has been read, and
 becomes `VERIFIED` when the headphones have confirmed a switch in each
 direction during that session.
 
@@ -911,3 +912,182 @@ reason: reading the mode back every 50 ms after a switch instead of every
 250 ms. The new mode is there at the first read-back either way. The shorter
 interval was kept, since it costs nothing and would matter if a first look
 ever came too early.
+
+---
+
+## Experiment 11 — the name, multipoint and the paired devices, read (2026-10-13)
+
+**Asked for by the owner:** a switch for the headphones' multi-device
+connection, a list of what they are connected to, and a way to rename them.
+None of the three had ever been asked of the headphones by this application.
+Upstream describes a name for this model at `[1.2]` and has no multipoint and
+no device list for it.
+
+Four requests, all `GET`, from Windows with the desktop application closed
+(`hw_diag_device_settings`). Nothing was set.
+
+```
+TX  01 02 01 00                          GET [1.2]
+RX  01 02 03 07 00 41 75 72 6F 72 61     STATUS: 00, then "Aurora"
+
+TX  01 0A 01 00                          GET [1.10]
+RX  01 0A 03 01 07                       STATUS: 07
+
+TX  04 04 01 00                          GET [4.4]
+RX  04 04 03 0D 03 <6 bytes> <6 bytes>   STATUS: 03, then two addresses
+
+TX  04 05 01 06 <6 bytes>                GET [4.5], one address
+RX  04 05 03 .. <the same 6> 01 02 03 "Jaisal's S24 Ultra"
+TX  04 05 01 06 <6 bytes>
+RX  04 05 03 .. <the same 6> 03 01 03 "NEMESIS"
+```
+
+(The addresses are the owner's phone's and computer's. They are not recorded
+here, and the test prints them with their middle masked.)
+
+What that establishes:
+
+| Address | Reply | Read as |
+| --- | --- | --- |
+| `[1.2]` | one byte, `00`, then UTF-8 | The headphones' own name. The first byte has only been seen as `00` and is not interpreted; a reply that starts otherwise is not read |
+| `[1.10]` | one byte | Multipoint. `07` here, with multipoint on — see Experiment 12 for off |
+| `[4.4]` | one byte, then six per device | The paired devices' addresses. The first byte was `03` with two devices listed and both connected; it has not been identified and is not used |
+| `[4.5]` + address | the address, three bytes, then UTF-8 | One device. The first of the three bytes was `03` for the computer asking and `01` for the phone: bit 0 connected, bit 1 "this is you". An older model's documentation (QC35, `based-connect`) gives the same two values and `00` for paired-and-not-connected. The other two bytes (`02 03`, `01 03`) have not been identified |
+
+**Not established.** What a paired device that is not connected looks like
+on this model: both devices in the list were connected. `00` is read as that
+on the older model's word, and a status byte that is none of `00`, `01`, `03`
+is refused. Whether the list holds every paired device or only recent ones.
+
+## Experiment 12 — switching multipoint, and renaming (2026-10-13)
+
+With the owner's agreement, since both change the headphones.
+
+### Multipoint
+
+`hw_diag_multipoint_toggle`, with the phone and the computer both connected:
+
+```
+TX  01 0A 02 01 00        SETGET [1.10], 0
+RX  01 0A 03 01 06        STATUS: 06                       36 ms
+TX  01 0A 01 00           read back
+    — the device closed the control channel —
+```
+
+1. **`06` is off and `07` is on.** It is the first bit that changes. Upstream
+   reads the second, for other models; on this one that is set either way,
+   and upstream's reading would call both states "on". Only `06` and `07` are
+   read here.
+2. **The answer to the request is the new state.** `SETGET` is answered with
+   a `STATUS` carrying it, as it is for the equalizer.
+3. **Switching it off dropped the computer that had asked.** The headphones
+   kept the phone and closed the computer's connection at once, before a
+   read-back could be made, and did not come back by themselves: the owner
+   disconnected the phone and connected the computer by hand. Which device
+   they keep was seen once and is not understood — the computer had asked,
+   and was the one with status `03`.
+4. Back on, from the reconnected computer (`hw_set_multipoint_on`):
+   `SETGET [1.10] 1` → `STATUS 07`, and three reads over the next second all
+   `07`. The phone reconnected by itself afterwards.
+
+So a switch to "off" is confirmed by what the headphones say in their answer
+and, if they then close the connection, by nothing after it. That is what
+the application does (`set_multipoint` in `unit.rs`): it reads back if it
+can, and if the link has gone it stands on the answer and records that the
+connection was closed. A closed connection with no answer before it confirms
+nothing.
+
+### Renaming
+
+`hw_diag_rename_and_back`, then `hw_b10_rename_round_trip` through the
+application's own code:
+
+```
+TX  01 02 01 00                                    read: "Aurora"
+TX  01 02 02 08 41 75 72 6F 72 61 20 32            SETGET [1.2], "Aurora 2"
+RX  01 02 03 09 00 41 75 72 6F 72 61 20 32         STATUS: 00, "Aurora 2"     ~75 ms
+TX  01 02 01 00                                    read back
+RX  01 02 03 09 00 41 75 72 6F 72 61 20 32         "Aurora 2"
+        … and the same back to "Aurora" …
+```
+
+The name is sent as it is, with nothing before it; the reply puts the `00`
+in front. The link stayed up, and four reads over two seconds all gave the
+new name. Windows went on calling the headphones "Aurora" throughout — it
+would have whatever they had been renamed to.
+
+**Not established.** The longest name the headphones take: 31 bytes is
+upstream's figure and the application's limit, and no longer one was tried.
+What other characters they refuse. How soon a phone shows a new name.
+
+### What the application sends, in full
+
+`GET [1.2]`, `GET [1.10]`, `GET [4.4]`, `GET [4.5]` with an address the
+headphones have just listed; `SETGET [1.2]` with a checked name; `SETGET
+[1.10]` with 0 or 1. As of these two experiments nothing in function block 4
+was written. Connecting to and disconnecting from a paired device were added
+later the same day, unproven: Experiment 13. No device is ever removed.
+
+### State the headphones were left in
+
+Called "Aurora". Multipoint on. Connected to the phone and the computer.
+
+---
+
+## Experiment 13 — connecting and disconnecting a paired device (2026-10-13) — NOT RUN
+
+**Asked for by the owner:** a switch beside each device the headphones are
+paired with, on while they are connected to it, so that turning it off
+disconnects them from that device.
+
+**Nothing in this section has been observed on the headphones.** The
+experiment is written — `hw_diag_paired_disconnect_and_reconnect` — and was
+not run: it disconnects the owner's phone from the headphones for some
+seconds, and it was stopped before it started for want of their say-so for
+that. What follows is what the application sends and why, so that it can be
+checked against the experiment when it is run.
+
+The two requests are an older model's, as an open-source client for it
+documents them (QC35, `based-connect`):
+
+```
+START [4.2], six address bytes          disconnect that device
+   04 02 05 06 <6 bytes>
+START [4.1], a zero, six address bytes  connect to that device
+   04 01 05 07 00 <6 bytes>
+```
+
+Each is answered there with `PROCESSING` from the same address. This model
+has the same function block and answers its `[4.4]` and `[4.5]` in the shape
+that client describes (Experiment 11), which is the reason for thinking it
+takes these two as well. It is a reason, not an observation.
+
+What the application does with them (`set_paired_connection` in `unit.rs`):
+
+1. Reads the list, and looks on it for the device that was asked for. The
+   interface names a device by an id — its address hashed with the
+   installation's salt — and a device that is not on the list sends nothing.
+2. Reads that device's state. If it is already as asked, sends nothing.
+3. Sends the one request, once.
+4. Reads the device's state again, for up to fifteen seconds for a
+   connection and four for a disconnection, and calls the change applied only
+   if the headphones then report it. An `ERROR` in answer is reported as
+   refused. Anything else is reported as sent and not confirmed.
+5. Asked to disconnect the device that is asking: the headphones taking the
+   request and then closing this connection is the disconnection.
+
+So if this model does not take the requests, the worst that is expected is
+an `ERROR` and a switch that stays where it was. Function 3 of the block,
+which removes a device from the headphones, is not sent by anything.
+
+To run the experiment: the desktop application closed, the headphones
+connected to the computer and to a second device.
+
+```powershell
+cargo test --lib hw_diag_paired_disconnect_and_reconnect -- --ignored --nocapture --test-threads=1
+```
+
+It prints what the headphones answer to each request, the device's status
+byte every half second after it — which would also show, for the first time
+on this model, what a paired device that is not connected looks like — and
+fails loudly if the device was left disconnected.

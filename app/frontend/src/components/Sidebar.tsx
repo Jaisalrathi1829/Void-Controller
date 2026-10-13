@@ -1,5 +1,4 @@
 import {
-  Activity,
   LayoutDashboard,
   Settings,
   SlidersHorizontal,
@@ -20,13 +19,12 @@ const nav: { id: PageId; label: string; short: string; icon: React.ElementType }
   { id: "noise", label: "Noise Control", short: "Noise", icon: Waves },
   { id: "equalizer", label: "Equalizer", short: "EQ", icon: SlidersHorizontal },
   { id: "profiles", label: "Profiles", short: "Profiles", icon: Volume2 },
-  { id: "diagnostics", label: "Diagnostics", short: "Diag", icon: Activity },
   { id: "settings", label: "Settings", short: "Settings", icon: Settings },
 ];
 
 /**
- * The same seven destinations as the sidebar, along the bottom edge. Shown
- * only where the window is too narrow for a sidebar — a phone.
+ * The same destinations as the sidebar, along the bottom edge. Shown only
+ * where the window is too narrow for a sidebar — a phone.
  */
 export function BottomNav({
   page,

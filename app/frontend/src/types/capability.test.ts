@@ -70,7 +70,7 @@ describe('capability transitions', () => {
   });
 
   it('stamps lastEvaluated on transition', () => {
-    const next = capabilityTransition(record(), 'experimental', 'partial evidence');
+    const next = capabilityTransition(record(), 'ready', 'partial evidence');
     expect(next.lastEvaluated).toBeTruthy();
     expect(() => new Date(next.lastEvaluated!).toISOString()).not.toThrow();
   });
@@ -80,14 +80,14 @@ describe('actionability semantics', () => {
   it('treats only verified as actionable without caveat', () => {
     expect(isActionable(record({ status: 'verified' }))).toBe(true);
     expect(isActionable(record({ status: 'supported' }))).toBe(false);
-    expect(isActionable(record({ status: 'experimental' }))).toBe(false);
+    expect(isActionable(record({ status: 'ready' }))).toBe(false);
     expect(isActionable(record({ status: 'unknown' }))).toBe(false);
     expect(isActionable(record({ status: 'unsupported' }))).toBe(false);
   });
 
-  it('requires a caveat for supported and experimental', () => {
+  it('requires a caveat for supported and ready', () => {
     expect(requiresUnverifiedWarning(record({ status: 'supported' }))).toBe(true);
-    expect(requiresUnverifiedWarning(record({ status: 'experimental' }))).toBe(true);
+    expect(requiresUnverifiedWarning(record({ status: 'ready' }))).toBe(true);
     expect(requiresUnverifiedWarning(record({ status: 'verified' }))).toBe(false);
   });
 });

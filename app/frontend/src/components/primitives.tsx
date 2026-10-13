@@ -6,13 +6,14 @@ import {
   Bluetooth,
   Check,
   CircleHelp,
-  FlaskConical,
+  CircleDot,
   Loader2,
   MinusCircle,
   Zap,
 } from "lucide-react";
 import { motion, useMotionValue, useSpring } from "motion/react";
 import { cn } from "./ui/utils";
+import { hostPlatform } from "@/services/ipc";
 import { capabilityMeta, type Capability, type ConnectionState } from "../store";
 
 /* ---------------------------------------------------------------
@@ -82,7 +83,7 @@ const capIcon: Record<Capability, ReactNode> = {
   verified: <Check className="size-3" />,
   supported: <Check className="size-3" />,
   unknown: <CircleHelp className="size-3" />,
-  experimental: <FlaskConical className="size-3" />,
+  ready: <CircleDot className="size-3" />,
   unsupported: <MinusCircle className="size-3" />,
 };
 
@@ -185,7 +186,11 @@ export function BatteryIndicator({
     return (
       <span
         className="inline-flex items-center gap-1.5 text-muted-foreground"
-        title="This device has not reported a battery level to Windows."
+        title={
+          hostPlatform() === "android"
+            ? "The headphones have not reported a battery level."
+            : "This device has not reported a battery level to Windows."
+        }
       >
         <BatteryWarning className={size === "lg" ? "size-5" : "size-4"} />
         {showLabel && (

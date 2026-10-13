@@ -90,9 +90,52 @@ impl AppState {
             return;
         }
         let _ = self.settings.update(|s| {
+            // A different pair of headphones has not told this application
+            // what it is called, whatever the last pair said.
+            if !same_device {
+                s.reported_device_name = None;
+            }
             s.preferred_device_id = Some(seen.instance_id.clone());
             s.preferred_device_name = Some(seen.name.clone());
         });
+    }
+
+    /// Has the headphones just seen go by the name they gave themselves, if
+    /// this application has read one from them, rather than by the system's.
+    ///
+    /// The system's is the one it learned when they were paired or last
+    /// connected. After a rename it can stay the old one for some time —
+    /// Windows keeps it until they are paired again — and an application
+    /// that had just renamed them would go on announcing the old name.
+    pub fn go_by_own_name(&self, seen: &mut bose::real::Sighting) {
+        let stored = self.settings.get();
+        if stored.preferred_device_id.as_deref() != Some(seen.instance_id.as_str()) {
+            return;
+        }
+        if let Some(own) = stored.reported_device_name.filter(|name| !name.trim().is_empty()) {
+            seen.name = own;
+        }
+    }
+
+    /// Remembers what the remembered headphones call themselves, as just
+    /// read from them. `None` — not read, or not connected — changes nothing.
+    /// Returns whether the name is new.
+    pub fn remember_own_name(&self, own: Option<String>) -> bool {
+        let Some(own) = own.filter(|name| !name.trim().is_empty()) else {
+            return false;
+        };
+        let stored = self.settings.get();
+        if stored.preferred_device_id.is_none()
+            || stored.reported_device_name.as_deref() == Some(own.as_str())
+        {
+            return false;
+        }
+        self.settings
+            .update(|s| {
+                s.reported_device_name = Some(own.clone());
+                s.preferred_device_name = Some(own.clone());
+            })
+            .is_ok()
     }
 
     /// The remembered headphones' instance id, if they are still paired.
@@ -397,6 +440,11 @@ async fn get_snapshot(state: tauri::State<'_, AppState>) -> UiResult<DeviceSnaps
     // The custom modes the headphones listed, so that saying one's name does
     // not have to wait for it to be synthesized the first time.
     state.voice().expect_modes(&dev.known_custom_modes());
+    // What the headphones call themselves, kept for the times the name is
+    // needed and they have not yet been asked: a connection being announced.
+    if dev.source() == DeviceSource::Real {
+        state.remember_own_name(dev.reported_name());
+    }
     let snapshot = attach_system(snapshot);
     // And what this machine is called, for announcing a connection to it.
     if let Some(host) = &snapshot.host_name {
@@ -699,6 +747,19 @@ async fn run_command(state: &AppState, command: DeviceCommand) -> UiResult<Comma
             outcome?
         }
         DeviceCommand::SetEqualizer { settings } => dev.set_equalizer(settings).await?,
+        DeviceCommand::SetMultipoint { enabled } => dev.set_multipoint(enabled).await?,
+        DeviceCommand::SetPairedDeviceConnection { device, connected } => {
+            dev.set_paired_connection(&device, connected).await?
+        }
+        DeviceCommand::SetDeviceName { name } => {
+            let outcome = dev.set_device_name(&name).await;
+            // Whatever they now call themselves is what they go by here,
+            // from this moment: the system will take longer to catch up.
+            if dev.source() == DeviceSource::Real {
+                state.remember_own_name(dev.reported_name());
+            }
+            outcome?
+        }
 
         DeviceCommand::RefreshSnapshot
         | DeviceCommand::ReadBattery
@@ -1272,6 +1333,67 @@ mod tests {
         assert!(state.attached.load(Ordering::SeqCst));
         state.detach();
         assert!(!state.attached.load(Ordering::SeqCst));
+    }
+
+    fn sighting(id: &str, name: &str) -> bose::real::Sighting {
+        bose::real::Sighting {
+            instance_id: id.into(),
+            name: name.into(),
+            connected: true,
+            battery: None,
+        }
+    }
+
+    /// After a rename the system goes on calling the headphones what it
+    /// called them. What they said themselves is the name that is used.
+    #[test]
+    fn renamed_headphones_go_by_the_name_they_gave_not_the_systems() {
+        let store = Arc::new(SettingsStore::in_memory(StoredSettings::default()));
+        let state = state(DeviceSource::Mock, store);
+        state.remember_device(&sighting("DEV_A", "Aurora"));
+
+        // Nothing read from them yet: the system's name stands.
+        let mut seen = sighting("DEV_A", "Aurora");
+        state.go_by_own_name(&mut seen);
+        assert_eq!(seen.name, "Aurora");
+
+        // They report a new name; the system has not caught up.
+        assert!(state.remember_own_name(Some("Nova".into())));
+        assert!(!state.remember_own_name(Some("Nova".into())), "nothing new the second time");
+        let mut seen = sighting("DEV_A", "Aurora");
+        state.go_by_own_name(&mut seen);
+        assert_eq!(seen.name, "Nova");
+        state.remember_device(&seen);
+        assert_eq!(state.settings().get().preferred_device_name.as_deref(), Some("Nova"));
+    }
+
+    #[test]
+    fn a_name_that_was_not_read_changes_nothing() {
+        let store = Arc::new(SettingsStore::in_memory(StoredSettings::default()));
+        let state = state(DeviceSource::Mock, store);
+        // No headphones remembered yet: there is nobody for a name to belong to.
+        assert!(!state.remember_own_name(Some("Nova".into())));
+        state.remember_device(&sighting("DEV_A", "Aurora"));
+        assert!(!state.remember_own_name(None));
+        assert!(!state.remember_own_name(Some("   ".into())));
+        assert_eq!(state.settings().get().reported_device_name, None);
+    }
+
+    /// One pair's name is not carried over to another pair.
+    #[test]
+    fn a_different_pair_of_headphones_does_not_inherit_the_name() {
+        let store = Arc::new(SettingsStore::in_memory(StoredSettings::default()));
+        let state = state(DeviceSource::Mock, store);
+        state.remember_device(&sighting("DEV_A", "Aurora"));
+        state.remember_own_name(Some("Nova".into()));
+
+        let mut other = sighting("DEV_B", "Bose QC Ultra");
+        state.go_by_own_name(&mut other);
+        assert_eq!(other.name, "Bose QC Ultra");
+        state.remember_device(&other);
+        let stored = state.settings().get();
+        assert_eq!(stored.reported_device_name, None);
+        assert_eq!(stored.preferred_device_name.as_deref(), Some("Bose QC Ultra"));
     }
 
     /// The headphones are remembered by an identifier that stays native; the

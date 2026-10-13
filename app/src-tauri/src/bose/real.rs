@@ -11,7 +11,7 @@
 //! Noise control is the one vendor-protocol feature driven here: switching
 //! between Quiet, Aware and a custom mode the user has set up, and adjusting
 //! that custom mode's noise-cancellation level. Each is reported as
-//! EXPERIMENTAL until the headphones have confirmed it, and a change is only
+//! READY until the headphones have confirmed it, and a change is only
 //! ever reported as applied when the device's own read-back says so.
 //! The three-band hardware equalizer is read and written the same way.
 //! Everything else behind the vendor protocol — multipoint, creating or
@@ -23,8 +23,10 @@ use crate::device::capability::{
 };
 use crate::device::command::CommandOutcome;
 use crate::device::state::{
-    BatteryReading, BatterySource, ConnectionState, DeviceIdentity, DeviceSnapshot, DeviceSource,
-    EqSettings, EqState, NoiseControlMode, NoiseControlState, StateSource, Transport,
+    check_device_name, is_paired_device_id, BatteryReading, BatterySource, ConnectionState,
+    DeviceIdentity,
+    DeviceSnapshot, DeviceSource, EqSettings, EqState, MultipointState, NoiseControlMode,
+    NoiseControlState, PairedDeviceState, StateSource, Transport,
 };
 use crate::device::traits::BoseDevice;
 use crate::device::{now_rfc3339, DeviceError, DeviceResult};
@@ -32,6 +34,7 @@ use async_trait::async_trait;
 use control::custom::{flip_level, usable_slots, MAX_RAW_LEVEL};
 use control::link::{Confirmed, EqReading, SlotTable, TransitionProof};
 use control::noise::{describe_index, preset_for_index};
+use control::unit::{ConnectionChange, MultipointChange, NameChange};
 use control::{
     BmapLink, EqChange, EqLevels, LevelChange, LinkError, LinkErrorKind, LinkStatus, LinkTiming,
     ModeChange, PlatformConnector, Preset, Slot, Target, Verdict,
@@ -56,6 +59,12 @@ const MODE_LIST_FRESH: Duration = Duration::from_secs(10);
 /// How soon the list is asked for again when it did not give what was needed:
 /// no list at all, or none that has the mode the headphones are in.
 const MODE_LIST_RETRY: Duration = Duration::from_secs(3);
+
+/// How old the headphones' name, their multipoint setting and their list of
+/// paired devices are allowed to grow before a routine refresh asks again.
+/// All three can be changed from another phone or computer; none of them is
+/// on screen anywhere but the Device page.
+const UNIT_FRESH: Duration = Duration::from_secs(10);
 
 /// Whether a routine refresh should ask for the mode list.
 ///
@@ -419,6 +428,24 @@ impl RealBoseDevice {
 
     /// The snapshot of a backend that is not attached: disconnected, with
     /// nothing read from anywhere and nothing claimed.
+    /// Where a change is to be sent: the control target of headphones that
+    /// are attached, found and connected at this moment. The outer error is
+    /// why nothing can be sent at all; the inner one is why there is no
+    /// control connection for this model.
+    fn control_target_now(&self) -> DeviceResult<Result<ControlTarget, String>> {
+        if !self.is_attached() {
+            return Err(DeviceError::NotConnected);
+        }
+        if !self.refresh()? {
+            return Err(DeviceError::Unreachable);
+        }
+        let obs = self.observed.read().clone();
+        if !obs.connected {
+            return Err(DeviceError::NotConnected);
+        }
+        Ok(control_target(&obs))
+    }
+
     fn detached_snapshot() -> DeviceSnapshot {
         DeviceSnapshot {
             capabilities: CapabilitySet::all_unknown(
@@ -491,9 +518,10 @@ impl RealBoseDevice {
     }
 
     fn build_capabilities(&self, obs: &Observed, link: &LinkStatus) -> CapabilitySet {
-        let mut caps = CapabilitySet::all_unknown(
-            "Not yet investigated on this device. Run Diagnostics to interrogate it.",
-        );
+        // The system this is running on, as its own records are called in
+        // the reasons given below. A phone is not told about Windows.
+        const HOST: &str = if cfg!(target_os = "android") { "Android" } else { "Windows" };
+        let mut caps = CapabilitySet::all_unknown("Not yet established on this device.");
 
         if obs.instance_id.is_none() {
             return caps;
@@ -506,7 +534,7 @@ impl RealBoseDevice {
             let proof = HardwareProof::observed_passively(
                 CapabilityKey::Battery,
                 format!(
-                    "Windows PnP battery property returned a level for this device{}",
+                    "{HOST} returned a battery level for this device{}",
                     obs.battery
                         .map(|b| format!(" (currently {b}%)"))
                         .unwrap_or_default()
@@ -518,16 +546,18 @@ impl RealBoseDevice {
         } else if obs.connected {
             let _ = caps.get_mut(CapabilityKey::Battery).mark_supported(
                 Mechanism::WindowsPnp,
-                "The device is connected but has not populated the Windows battery property. \
-                 It may report battery only while audio is streaming, or not at all.",
+                format!(
+                    "The device is connected but has not given {HOST} a battery level. It may \
+                     report battery only while audio is streaming, or not at all."
+                ),
             );
         }
 
-        // Device identity is readable straight from Windows for any paired
+        // Device identity is readable straight from the host for any paired
         // device, and we have just read it.
         let proof = HardwareProof::observed_passively(
             CapabilityKey::DeviceSettings,
-            "device identity read from Windows PnP",
+            format!("device identity read from {HOST}'s record of paired devices"),
         );
         let _ = caps
             .get_mut(CapabilityKey::DeviceSettings)
@@ -537,17 +567,11 @@ impl RealBoseDevice {
         // Upstream documents several of them for this model; "documented" is
         // not "shown to work here", so nothing is claimed.
         for key in [
-            CapabilityKey::Multipoint,
             CapabilityKey::AutoOff,
             CapabilityKey::VoicePrompts,
             CapabilityKey::Sidetone,
-            CapabilityKey::DeviceRename,
         ] {
-            *caps.get_mut(key) = Capability::unknown(
-                key,
-                "Not driven by this build. The control protocol is used for noise control \
-                 and the equalizer only.",
-            );
+            *caps.get_mut(key) = Capability::unknown(key, "Not driven by this build.");
         }
 
         apply_control_capabilities(&mut caps, obs, link);
@@ -558,9 +582,15 @@ impl RealBoseDevice {
         let instance_id = obs.instance_id.as_ref()?;
         let target = control_target(obs).ok();
         Some(DeviceIdentity {
-            name: obs
+            // What the headphones call themselves, where they have said; the
+            // host system's name for them otherwise. The two differ for a
+            // while after a rename, and the headphones' is the newer.
+            name: link
                 .name
-                .clone()
+                .as_ref()
+                .filter(|_| obs.connected)
+                .map(|reading| reading.name.clone())
+                .or_else(|| obs.name.clone())
                 .unwrap_or_else(|| "Bose device".to_string()),
             id: crate::util::stable_id(instance_id),
             // The raw instance id is kept out of the snapshot handed to the UI
@@ -710,16 +740,205 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
             for key in PRESET_KEYS {
                 let _ = caps
                     .get_mut(key)
-                    .mark_experimental(Mechanism::RfcommVendor, evidence.clone());
+                    .mark_ready(Mechanism::RfcommVendor, evidence.clone());
             }
         }
     }
 
     apply_custom_capability(caps, config, link, &where_from);
     apply_eq_capability(caps, link, &where_from);
+    apply_unit_capabilities(caps, link, &where_from);
 }
 
-/// The equalizer capability. EXPERIMENTAL once the headphones have reported
+/// Multipoint and renaming. Each is READY once the headphones have reported
+/// the state in the shape that was observed, and VERIFIED once they have
+/// confirmed a change to it.
+fn apply_unit_capabilities(caps: &mut CapabilitySet, link: &LinkStatus, where_from: &str) {
+    let on_off = |on: bool| if on { "on" } else { "off" };
+
+    let key = CapabilityKey::Multipoint;
+    match (&link.multipoint_problem, &link.multipoint) {
+        (Some(problem), _) => {
+            *caps.get_mut(key) = Capability::unknown(
+                key,
+                format!(
+                    "Multipoint could not be read from the headphones as it was observed on \
+                     the tested unit, so it is left alone. {problem}"
+                ),
+            );
+        }
+        (None, None) => {
+            *caps.get_mut(key) =
+                Capability::unknown(key, "Multipoint has not been read from the headphones yet.");
+        }
+        (None, Some(reading)) => match &link.multipoint_change {
+            Some(change) => {
+                let after = on_off(change.enabled);
+                if let Some(proof) = HardwareProof::observed_at(
+                    key,
+                    on_off(!change.enabled),
+                    after,
+                    after,
+                    change.at.clone(),
+                ) {
+                    let _ = caps
+                        .get_mut(key)
+                        .verify_with_hardware(&proof, Mechanism::RfcommVendor);
+                }
+            }
+            None => {
+                let _ = caps.get_mut(key).mark_ready(
+                    Mechanism::RfcommVendor,
+                    format!(
+                        "The headphones report multipoint as {} ({where_from}). Switching it is \
+                         checked against what the headphones then report; no switch has been \
+                         confirmed this session yet.",
+                        on_off(reading.enabled)
+                    ),
+                );
+            }
+        },
+    }
+
+    // Connecting to and disconnecting from a paired device. READY once the
+    // headphones have listed their devices; VERIFIED once they have confirmed
+    // one being connected or dropped.
+    let key = CapabilityKey::PairedDevices;
+    match (&link.paired_problem, &link.paired) {
+        (Some(problem), _) => {
+            *caps.get_mut(key) = Capability::unknown(
+                key,
+                format!(
+                    "The headphones' list of paired devices could not be read as it was \
+                     observed on the tested unit, so none of them is connected or \
+                     disconnected from here. {problem}"
+                ),
+            );
+        }
+        (None, None) => {
+            *caps.get_mut(key) = Capability::unknown(
+                key,
+                "The headphones have not listed the devices they are paired with yet.",
+            );
+        }
+        (None, Some(reading)) => match &link.paired_change {
+            Some(change) => {
+                let state = |on: bool| if on { "connected" } else { "not connected" };
+                let after = state(change.connected);
+                if let Some(proof) = HardwareProof::observed_at(
+                    key,
+                    state(!change.connected),
+                    after,
+                    after,
+                    change.at.clone(),
+                ) {
+                    let _ = caps
+                        .get_mut(key)
+                        .verify_with_hardware(&proof, Mechanism::RfcommVendor);
+                }
+            }
+            None => {
+                let connected = reading.devices.iter().filter(|d| d.connected).count();
+                let _ = caps.get_mut(key).mark_ready(
+                    Mechanism::RfcommVendor,
+                    format!(
+                        "The headphones list {} paired device(s), {connected} connected \
+                         ({where_from}). Connecting or disconnecting one is checked against \
+                         what the headphones then report about it; none has been confirmed \
+                         this session yet.",
+                        reading.devices.len()
+                    ),
+                );
+            }
+        },
+    }
+
+    let key = CapabilityKey::DeviceRename;
+    match (&link.name_problem, &link.name) {
+        (Some(problem), _) => {
+            *caps.get_mut(key) = Capability::unknown(
+                key,
+                format!(
+                    "The headphones' name could not be read as it was observed on the tested \
+                     unit, so they are not renamed. {problem}"
+                ),
+            );
+        }
+        (None, None) => {
+            *caps.get_mut(key) =
+                Capability::unknown(key, "The headphones' name has not been read from them yet.");
+        }
+        (None, Some(reading)) => match &link.name_change {
+            Some(change) => {
+                if let Some(proof) = HardwareProof::observed_at(
+                    key,
+                    &change.before,
+                    &change.after,
+                    &change.after,
+                    change.at.clone(),
+                ) {
+                    let _ = caps
+                        .get_mut(key)
+                        .verify_with_hardware(&proof, Mechanism::RfcommVendor);
+                }
+            }
+            None => {
+                let _ = caps.get_mut(key).mark_ready(
+                    Mechanism::RfcommVendor,
+                    format!(
+                        "The headphones call themselves {:?} ({where_from}). A new name is \
+                         written to them and checked by reading it back; none has been \
+                         confirmed this session yet.",
+                        reading.name
+                    ),
+                );
+            }
+        },
+    }
+}
+
+/// What to tell the user about a rename. Only a read-back of the new name is
+/// success.
+fn name_outcome(change: &NameChange) -> CommandOutcome {
+    let still = || {
+        format!(
+            "They last called themselves {:?}.",
+            change.after.as_deref().unwrap_or(&change.before)
+        )
+    };
+    match &change.verdict {
+        Verdict::Verified | Verdict::AlreadyActive => CommandOutcome::applied(),
+        Verdict::Unverified { reason } => CommandOutcome::sent_unverified(reason.clone()),
+        Verdict::Rejected { reason } => CommandOutcome::Rejected {
+            reason: format!("The headphones refused the name ({reason}). {}", still()),
+        },
+    }
+}
+
+/// What to tell the user about a paired device being connected or dropped.
+/// Names no device beyond what the headphones call it.
+fn connection_outcome(change: &ConnectionChange) -> CommandOutcome {
+    match &change.verdict {
+        Verdict::Verified | Verdict::AlreadyActive => CommandOutcome::applied(),
+        Verdict::Unverified { reason } => CommandOutcome::sent_unverified(reason.clone()),
+        Verdict::Rejected { reason } => CommandOutcome::Rejected {
+            reason: format!("The headphones refused the request ({reason})."),
+        },
+    }
+}
+
+/// What to tell the user about a switch of multipoint.
+fn multipoint_outcome(change: &MultipointChange) -> CommandOutcome {
+    match &change.verdict {
+        Verdict::Verified | Verdict::AlreadyActive => CommandOutcome::applied(),
+        Verdict::Unverified { reason } => CommandOutcome::sent_unverified(reason.clone()),
+        Verdict::Rejected { reason } => CommandOutcome::Rejected {
+            reason: format!("The headphones refused the change ({reason})."),
+        },
+    }
+}
+
+/// The equalizer capability. READY once the headphones have reported
 /// their equalizer in the documented shape; VERIFIED once they have confirmed
 /// a change to it.
 fn apply_eq_capability(caps: &mut CapabilitySet, link: &LinkStatus, where_from: &str) {
@@ -759,7 +978,7 @@ fn apply_eq_capability(caps: &mut CapabilitySet, link: &LinkStatus, where_from: 
             }
         }
         None => {
-            let _ = caps.get_mut(key).mark_experimental(
+            let _ = caps.get_mut(key).mark_ready(
                 Mechanism::RfcommVendor,
                 format!(
                     "The headphones report their equalizer as {} ({where_from}). A change is \
@@ -911,7 +1130,7 @@ fn apply_custom_capability(
             );
             let _ = caps
                 .get_mut(key)
-                .mark_experimental(Mechanism::RfcommVendor, evidence);
+                .mark_ready(Mechanism::RfcommVendor, evidence);
         }
     }
 }
@@ -1117,6 +1336,14 @@ impl BoseDevice for RealBoseDevice {
                         if host_battery_missing {
                             let _ = link.read_battery(false);
                         }
+
+                        // What they are called, whether they will hold two
+                        // connections, and what they are connected to: once,
+                        // and again when that has grown old. Each failure is
+                        // remembered by the link as that feature's reason.
+                        if link.unit_age().map_or(true, |age| age >= UNIT_FRESH) {
+                            let _ = link.read_unit(false);
+                        }
                         Ok::<u8, LinkError>(index)
                     })
                     .await?;
@@ -1160,6 +1387,31 @@ impl BoseDevice for RealBoseDevice {
             // Only ever what the headphones reported, with when.
             equalizer: match (&target, &link.eq) {
                 (Some(_), Some(reading)) if obs.connected => Some(eq_state(reading)),
+                _ => None,
+            },
+            multipoint: match (&target, &link.multipoint) {
+                (Some(_), Some(reading)) if obs.connected => Some(MultipointState {
+                    enabled: reading.enabled,
+                    source: StateSource::VendorProtocol,
+                    read_at: reading.at.clone(),
+                }),
+                _ => None,
+            },
+            // Names and whether each is connected. The addresses the
+            // headphones know them by were dropped where they were read.
+            paired_devices: match (&target, &link.paired) {
+                (Some(_), Some(reading)) if obs.connected => Some(
+                    reading
+                        .devices
+                        .iter()
+                        .map(|device| PairedDeviceState {
+                            id: device.key.clone(),
+                            name: device.name.clone(),
+                            connected: device.connected,
+                            this_device: device.this_device,
+                        })
+                        .collect(),
+                ),
                 _ => None,
             },
             system_audio: None,
@@ -1276,6 +1528,13 @@ impl BoseDevice for RealBoseDevice {
         link.confirmed
             .as_ref()
             .map(|c| noise_state(&target.config, c, link.slots.as_ref()))
+    }
+
+    fn reported_name(&self) -> Option<String> {
+        if !self.is_attached() || !self.observed.read().connected {
+            return None;
+        }
+        self.link_status.read().name.as_ref().map(|r| r.name.clone())
     }
 
     fn reported_equalizer(&self) -> Option<EqState> {
@@ -1510,6 +1769,59 @@ impl BoseDevice for RealBoseDevice {
             .await?
             .map_err(device_error)?;
         Ok(eq_outcome(&change))
+    }
+
+    async fn set_multipoint(&self, enabled: bool) -> DeviceResult<CommandOutcome> {
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        // Not switched unless the headphones have first reported it in the
+        // shape that was observed: the link reads it again before writing,
+        // and refuses if it cannot.
+        let change = self
+            .with_link(target, move |link| link.set_multipoint(enabled))
+            .await?
+            .map_err(device_error)?;
+        Ok(multipoint_outcome(&change))
+    }
+
+    async fn set_paired_connection(
+        &self,
+        device: &str,
+        connected: bool,
+    ) -> DeviceResult<CommandOutcome> {
+        if !is_paired_device_id(device) {
+            return Err(DeviceError::InvalidInput(
+                "that is not one of the headphones' paired devices".to_string(),
+            ));
+        }
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        // The id is matched against the headphones' own list, read afresh,
+        // before anything is asked of them. One that is not on it — a device
+        // unpaired since, or an id that never was one — sends nothing.
+        let key = device.to_string();
+        let change = self
+            .with_link(target, move |link| link.set_paired_connection(&key, connected))
+            .await?
+            .map_err(device_error)?;
+        Ok(connection_outcome(&change))
+    }
+
+    async fn set_device_name(&self, name: &str) -> DeviceResult<CommandOutcome> {
+        let name = check_device_name(name).map_err(DeviceError::InvalidInput)?;
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        let change = self
+            .with_link(target, move |link| link.set_name(&name))
+            .await?
+            .map_err(device_error)?;
+        Ok(name_outcome(&change))
     }
 }
 
@@ -1819,20 +2131,20 @@ mod tests {
 
     /// Reading the mode successfully makes the control usable — with a caveat.
     #[test]
-    fn a_validated_link_makes_noise_control_experimental_not_verified() {
+    fn a_validated_link_makes_noise_control_ready_not_verified() {
         let caps = caps(&aurora(), &open_link(0));
         for key in [CapabilityKey::NoiseControl, CapabilityKey::AwareMode] {
             let cap = caps.get(key);
-            assert_eq!(cap.status, CapabilityStatus::Experimental, "{key:?}");
+            assert_eq!(cap.status, CapabilityStatus::Ready, "{key:?}");
             assert!(!cap.hardware_verified, "{key:?}");
             assert_eq!(cap.mechanism, Mechanism::RfcommVendor);
             assert!(cap.evidence.contains("not yet"), "{}", cap.evidence);
         }
     }
 
-    /// One confirmed direction is half the evidence, and half is EXPERIMENTAL.
+    /// One confirmed direction is half the evidence, and half is READY.
     #[test]
-    fn one_confirmed_direction_is_still_experimental() {
+    fn one_confirmed_direction_is_still_ready() {
         for link in [
             LinkStatus {
                 to_aware: transition(0, 1, "2026-10-10T09:01:00Z"),
@@ -1846,7 +2158,7 @@ mod tests {
             let caps = caps(&aurora(), &link);
             for key in [CapabilityKey::NoiseControl, CapabilityKey::AwareMode] {
                 let cap = caps.get(key);
-                assert_eq!(cap.status, CapabilityStatus::Experimental, "{key:?}");
+                assert_eq!(cap.status, CapabilityStatus::Ready, "{key:?}");
                 assert!(!cap.hardware_verified);
                 assert!(cap.evidence.contains("confirmed at 2026-10-10T09:01:00Z"));
             }
@@ -1981,15 +2293,122 @@ mod tests {
         assert!(cap.evidence.contains("has not been read"), "{}", cap.evidence);
     }
 
+    // --- multipoint and renaming --------------------------------------------
+
+    fn name_reading(name: &str) -> Option<control::link::NameReading> {
+        Some(control::link::NameReading {
+            name: name.into(),
+            at: "2026-10-13T07:00:00Z".into(),
+        })
+    }
+    fn multipoint_reading(enabled: bool) -> Option<control::link::MultipointReading> {
+        Some(control::link::MultipointReading {
+            enabled,
+            at: "2026-10-13T07:00:00Z".into(),
+        })
+    }
+
     #[test]
-    fn a_reported_equalizer_is_experimental_and_quoted() {
+    fn multipoint_and_the_name_are_unknown_until_the_headphones_have_reported_them() {
+        let caps = caps(&aurora(), &open_link(0));
+        for key in [CapabilityKey::Multipoint, CapabilityKey::DeviceRename] {
+            let cap = caps.get(key);
+            assert_eq!(cap.status, CapabilityStatus::Unknown, "{key:?}");
+            assert!(cap.evidence.contains("not been read"), "{}", cap.evidence);
+        }
+    }
+
+    #[test]
+    fn reported_multipoint_and_name_are_ready_and_quoted() {
+        let link = LinkStatus {
+            multipoint: multipoint_reading(true),
+            name: name_reading("Aurora"),
+            ..open_link(0)
+        };
+        let caps = caps(&aurora(), &link);
+        let multipoint = caps.get(CapabilityKey::Multipoint);
+        assert_eq!(multipoint.status, CapabilityStatus::Ready);
+        assert!(!multipoint.hardware_verified);
+        assert!(multipoint.evidence.contains("multipoint as on"), "{}", multipoint.evidence);
+        let rename = caps.get(CapabilityKey::DeviceRename);
+        assert_eq!(rename.status, CapabilityStatus::Ready);
+        assert!(!rename.hardware_verified);
+        assert!(rename.evidence.contains("\"Aurora\""), "{}", rename.evidence);
+    }
+
+    #[test]
+    fn a_confirmed_switch_and_a_confirmed_rename_verify_them() {
+        let link = LinkStatus {
+            multipoint: multipoint_reading(false),
+            multipoint_change: Some(control::link::MultipointProof {
+                enabled: false,
+                at: "2026-10-13T07:05:00Z".into(),
+            }),
+            name: name_reading("Nova"),
+            name_change: Some(control::link::NameProof {
+                before: "Aurora".into(),
+                after: "Nova".into(),
+                at: "2026-10-13T07:06:00Z".into(),
+            }),
+            ..open_link(0)
+        };
+        let caps = caps(&aurora(), &link);
+        let multipoint = caps.get(CapabilityKey::Multipoint);
+        assert_eq!(multipoint.status, CapabilityStatus::Verified);
+        assert!(multipoint.hardware_verified);
+        assert!(multipoint.evidence.contains("2026-10-13T07:05:00Z"), "{}", multipoint.evidence);
+        let rename = caps.get(CapabilityKey::DeviceRename);
+        assert_eq!(rename.status, CapabilityStatus::Verified);
+        assert!(rename.hardware_verified);
+        assert!(rename.evidence.contains("Nova"), "{}", rename.evidence);
+    }
+
+    /// Headphones with no multipoint, or a name in some other shape, are not
+    /// switched or renamed, and the reason given is theirs.
+    #[test]
+    fn what_the_headphones_would_not_report_is_left_alone() {
+        let link = LinkStatus {
+            multipoint_problem: Some("Device error 2: FuncNotSupp".into()),
+            name_problem: Some("the name reply began with 0x01".into()),
+            ..open_link(0)
+        };
+        let caps = caps(&aurora(), &link);
+        let multipoint = caps.get(CapabilityKey::Multipoint);
+        assert_eq!(multipoint.status, CapabilityStatus::Unknown);
+        assert!(multipoint.evidence.contains("FuncNotSupp"), "{}", multipoint.evidence);
+        let rename = caps.get(CapabilityKey::DeviceRename);
+        assert_eq!(rename.status, CapabilityStatus::Unknown);
+        assert!(rename.evidence.contains("0x01"), "{}", rename.evidence);
+    }
+
+    /// The name shown is the headphones' own where they have given it, and
+    /// the system's otherwise.
+    #[test]
+    fn the_headphones_own_name_is_shown_before_the_systems() {
+        let renamed = LinkStatus {
+            name: name_reading("Nova"),
+            ..open_link(0)
+        };
+        let identity = RealBoseDevice::identity_from(&aurora(), &renamed).unwrap();
+        assert_eq!(identity.name, "Nova", "the system still says Aurora");
+
+        let unread = RealBoseDevice::identity_from(&aurora(), &open_link(0)).unwrap();
+        assert_eq!(unread.name, "Aurora");
+
+        // Headphones that are not connected have not just said anything.
+        let away = Observed { connected: false, ..aurora() };
+        assert_eq!(RealBoseDevice::identity_from(&away, &renamed).unwrap().name, "Aurora");
+    }
+
+    #[test]
+    fn a_reported_equalizer_is_ready_and_quoted() {
         let link = LinkStatus {
             eq: eq_reading(6, 5, -1),
             ..open_link(0)
         };
         let caps = caps(&aurora(), &link);
         let cap = caps.get(CapabilityKey::Equalizer);
-        assert_eq!(cap.status, CapabilityStatus::Experimental);
+        assert_eq!(cap.status, CapabilityStatus::Ready);
         assert!(!cap.hardware_verified);
         assert!(cap.evidence.contains("bass +6, mid +5, treble -1"), "{}", cap.evidence);
     }
@@ -2026,7 +2445,7 @@ mod tests {
         // Noise control does not depend on it.
         assert_eq!(
             caps.get(CapabilityKey::NoiseControl).status,
-            CapabilityStatus::Experimental
+            CapabilityStatus::Ready
         );
     }
 
@@ -2081,14 +2500,14 @@ mod tests {
     }
 
     #[test]
-    fn a_listed_custom_mode_is_experimental_and_named() {
+    fn a_listed_custom_mode_is_ready_and_named() {
         let link = LinkStatus {
             slots: slots(6),
             ..open_link(0)
         };
         let caps = caps(&aurora(), &link);
         let cap = caps.get(CapabilityKey::CustomNoiseControl);
-        assert_eq!(cap.status, CapabilityStatus::Experimental);
+        assert_eq!(cap.status, CapabilityStatus::Ready);
         assert!(!cap.hardware_verified);
         assert!(cap.evidence.contains("\"Focus\""), "{}", cap.evidence);
         // Raw 6 on the device's scale is strength 4 on the slider's.
@@ -2118,11 +2537,11 @@ mod tests {
         assert!(cap.evidence.contains("does not create one"), "{}", cap.evidence);
     }
 
-    /// Each half on its own is still EXPERIMENTAL: a confirmed switch says
+    /// Each half on its own is still READY: a confirmed switch says
     /// nothing about the level, and a confirmed level change says nothing
     /// about getting into the mode.
     #[test]
-    fn one_confirmed_half_of_the_custom_mode_is_still_experimental() {
+    fn one_confirmed_half_of_the_custom_mode_is_still_ready() {
         for link in [
             LinkStatus {
                 slots: slots(6),
@@ -2137,7 +2556,7 @@ mod tests {
         ] {
             let caps = caps(&aurora(), &link);
             let cap = caps.get(CapabilityKey::CustomNoiseControl);
-            assert_eq!(cap.status, CapabilityStatus::Experimental);
+            assert_eq!(cap.status, CapabilityStatus::Ready);
             assert!(!cap.hardware_verified);
             assert!(cap.evidence.contains("confirmed at 2026-10-10T09:03:00Z"));
             assert!(cap.evidence.contains("not yet"));
@@ -2165,7 +2584,7 @@ mod tests {
         // And it does not rub off on the presets, which have their own rule.
         assert_eq!(
             caps.get(CapabilityKey::NoiseControl).status,
-            CapabilityStatus::Experimental
+            CapabilityStatus::Ready
         );
     }
 
@@ -2182,7 +2601,7 @@ mod tests {
         // Quiet/Aware do not depend on the mode list.
         assert_eq!(
             caps.get(CapabilityKey::NoiseControl).status,
-            CapabilityStatus::Experimental
+            CapabilityStatus::Ready
         );
     }
 
@@ -2601,7 +3020,7 @@ mod hardware_tests {
 
         assert!(identity.firmware_version.is_some(), "firmware read from the device");
         // Reading is not proof that switching works.
-        assert_eq!(cap.status, CapabilityStatus::Experimental);
+        assert_eq!(cap.status, CapabilityStatus::Ready);
         assert!(!cap.hardware_verified);
         assert!(
             wire.iter().filter(|l| is_tx(l)).all(|l| is_read(l)),
@@ -2776,7 +3195,7 @@ mod hardware_tests {
             assert_eq!(mode_of(&snap), target);
 
             let expected = if step == 0 {
-                CapabilityStatus::Experimental
+                CapabilityStatus::Ready
             } else {
                 CapabilityStatus::Verified
             };
@@ -2819,7 +3238,7 @@ mod hardware_tests {
         let snap = connected_snapshot(&dev).await;
         assert_eq!(
             status_of(&snap, CapabilityKey::NoiseControl),
-            CapabilityStatus::Experimental
+            CapabilityStatus::Ready
         );
     }
 
@@ -2937,7 +3356,7 @@ mod hardware_tests {
             wire.iter().filter(|l| is_tx(l)).all(|l| is_read(l)),
             "a read-only snapshot transmitted something other than a read"
         );
-        assert_eq!(cap.status, CapabilityStatus::Experimental);
+        assert_eq!(cap.status, CapabilityStatus::Ready);
         assert!(!cap.hardware_verified);
     }
 
@@ -2982,6 +3401,136 @@ mod hardware_tests {
         println!("\n  Equalizer: {} - {}", cap.status.label(), cap.evidence);
         assert_eq!(cap.status, CapabilityStatus::Verified);
         assert!(cap.hardware_verified);
+    }
+
+    /// Read-only. The snapshot carries what the headphones call themselves,
+    /// whether multipoint is on, and what they are paired with — by name,
+    /// with nothing that identifies the other devices.
+    #[tokio::test]
+    #[ignore = "requires the physical headphones"]
+    async fn hw_b9_snapshot_reports_name_multipoint_and_paired_devices() {
+        let dev = RealBoseDevice::default();
+        let snap = connected_snapshot(&dev).await;
+        let identity = snap.identity.clone().expect("an identity");
+        println!("\n  name             : {:?}", identity.name);
+        println!("  from the headset : {:?}", dev.reported_name());
+        println!("  multipoint       : {:?}", snap.multipoint);
+        for device in snap.paired_devices.clone().unwrap_or_default() {
+            println!(
+                "  paired           : {:?}  connected {}  this computer {}",
+                device.name, device.connected, device.this_device
+            );
+        }
+        for key in [CapabilityKey::Multipoint, CapabilityKey::DeviceRename] {
+            let cap = snap.capabilities.get(key);
+            println!("  {key:?}: {} - {}", cap.status.label(), cap.evidence);
+            assert_eq!(cap.status, CapabilityStatus::Ready, "{key:?}");
+            assert!(!cap.hardware_verified);
+        }
+        println!("  wire:");
+        let wire = print_wire(&dev);
+
+        assert_eq!(dev.reported_name().as_deref(), Some(identity.name.as_str()));
+        assert!(snap.multipoint.is_some(), "multipoint was read");
+        let paired = snap.paired_devices.expect("the paired devices were read");
+        assert_eq!(
+            paired.iter().filter(|d| d.this_device).count(),
+            1,
+            "exactly one of them is this computer"
+        );
+        assert!(paired.iter().all(|d| !d.this_device || d.connected));
+        assert!(
+            wire.iter().filter(|l| is_tx(l)).all(|l| is_read(l)),
+            "a read-only snapshot transmitted something other than a read"
+        );
+        // What was exchanged about the other devices is not in the log.
+        assert!(
+            !wire.iter().any(|l| l.contains("TX    04 05") || l.contains("RX    04 05")),
+            "the paired devices' details reached the wire log"
+        );
+        let json = serde_json::to_string(&snap.capabilities).unwrap()
+            + &serde_json::to_string(&paired).unwrap();
+        assert!(!json.contains("address"), "{json}");
+    }
+
+    /// Renames the headphones and renames them back, each confirmed against
+    /// what they then call themselves. The restore is attempted whether or
+    /// not the change in between was confirmed.
+    #[tokio::test]
+    #[ignore = "requires the physical headphones; RENAMES them and renames them back"]
+    async fn hw_b10_rename_round_trip() {
+        let dev = RealBoseDevice::default();
+        let snap = connected_snapshot(&dev).await;
+        let original = dev.reported_name().expect("the headphones gave their name");
+        assert_eq!(snap.identity.expect("an identity").name, original);
+        println!("\n  original name: {original:?}");
+        dev.take_wire_log();
+
+        let trial = format!("{original} 2");
+        println!("\n  step 1: -> {trial:?}");
+        let there = dev.set_device_name(&trial).await;
+        println!("    outcome: {there:?}");
+        let wire_there = print_wire(&dev);
+        let snap = connected_snapshot(&dev).await;
+        let after_there = dev.reported_name();
+        let shown_there = snap.identity.clone().map(|i| i.name);
+        let cap = snap.capabilities.get(CapabilityKey::DeviceRename).clone();
+        println!("    headphones now call themselves: {after_there:?}; shown as {shown_there:?}");
+        dev.take_wire_log();
+
+        println!("\n  step 2: back to {original:?}");
+        let back = dev.set_device_name(&original).await;
+        println!("    outcome: {back:?}");
+        print_wire(&dev);
+        let after_back = {
+            connected_snapshot(&dev).await;
+            dev.reported_name()
+        };
+        println!("    headphones now call themselves: {after_back:?}");
+
+        assert!(there.expect("the rename failed outright").is_confirmed());
+        assert_eq!(after_there.as_deref(), Some(trial.as_str()));
+        assert_eq!(shown_there.as_deref(), Some(trial.as_str()), "the new name is the one shown");
+        let writes = wire_there
+            .iter()
+            .filter(|l| l.starts_with("TX") && l.contains(" 01 02 02 "))
+            .count();
+        assert_eq!(writes, 1, "the name is written once");
+        assert!(back.expect("the restore failed outright").is_confirmed());
+        assert_eq!(after_back.as_deref(), Some(original.as_str()), "the original name is back");
+
+        println!("\n  DeviceRename: {} - {}", cap.status.label(), cap.evidence);
+        assert_eq!(cap.status, CapabilityStatus::Verified);
+        assert!(cap.hardware_verified);
+    }
+
+    /// Asks for multipoint to be the way it already is. Nothing is written:
+    /// the headphones are read, found to be so already, and left alone.
+    ///
+    /// The switch itself is not exercised here. Asked from this computer with
+    /// a phone connected too, switching it off made the headphones drop this
+    /// computer on the spot (`hw_diag_multipoint_toggle`), and it could then
+    /// only be put back by reconnecting them by hand.
+    #[tokio::test]
+    #[ignore = "requires the physical headphones"]
+    async fn hw_b11_multipoint_as_it_is_sends_nothing() {
+        let dev = RealBoseDevice::default();
+        let snap = connected_snapshot(&dev).await;
+        let now = snap.multipoint.expect("multipoint was read").enabled;
+        println!("\n  multipoint is {}", if now { "on" } else { "off" });
+        dev.take_wire_log();
+
+        let outcome = dev.set_multipoint(now).await;
+        println!("  asked for the same: {outcome:?}");
+        let wire = print_wire(&dev);
+
+        assert!(outcome.expect("failed outright").is_confirmed());
+        assert!(
+            wire.iter().filter(|l| is_tx(l)).all(|l| is_read(l)),
+            "something was written for a state the headphones were already in"
+        );
+        let after = connected_snapshot(&dev).await.multipoint.expect("read again").enabled;
+        assert_eq!(after, now);
     }
 
     /// The opposite precondition from every test above: run this one with the

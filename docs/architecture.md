@@ -53,7 +53,12 @@ has private fields and three constructors:
   where the device volunteered a value.
 
 The mock backend cannot construct one at all, which is why it reports
-`Experimental` and never `Verified`.
+`Ready` and never `Verified`.
+
+(`Ready` was called `Experimental` until 2026-10-13. What it means did not
+change: the device answers for the feature and every change is read back, and
+no change has been confirmed yet in this run. The old word read as a warning
+about features that had each been proven on the headphones.)
 
 ### Commands return outcomes, not unit
 
@@ -260,6 +265,21 @@ without the service that keeps it running, where Android stops it mid-step —
 the widget shows no mode at all, says so, and a tap opens the application
 with the request attached. A widget that went on showing "Quiet" with
 nothing watching the headphones would be the application pretending.
+
+### The headphones' name is theirs
+
+The system keeps a name for a paired device, learned when it was paired or
+last connected. The headphones keep their own, and that is the one that can
+be changed. After a rename the two differ — Windows goes on with the old one
+until the headphones are paired again — so an application that showed the
+system's name would rename the headphones and go on calling them what they
+were called.
+
+So where the headphones have been asked, their answer is the name: on the
+Device page, in announcements, on the phone's widget. It is remembered in the
+settings beside the device it belongs to (`reported_device_name`), because a
+connection is announced before the control link has had time to ask. A
+different pair of headphones does not inherit it.
 
 ### One instance
 

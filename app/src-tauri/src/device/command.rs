@@ -7,7 +7,7 @@
 //!
 //! Every command is validated here before any backend sees it.
 
-use super::state::{EqSettings, NoiseControlMode};
+use super::state::{check_device_name, is_paired_device_id, EqSettings, NoiseControlMode};
 use super::{DeviceError, DeviceResult};
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +55,25 @@ pub enum DeviceCommand {
     SetEqualizer {
         settings: EqSettings,
     },
+    /// Whether the headphones stay connected to two devices at once.
+    #[serde(rename_all = "camelCase")]
+    SetMultipoint {
+        enabled: bool,
+    },
+    /// What the headphones are called. Text, checked before anything sees
+    /// it: see [`check_device_name`].
+    #[serde(rename_all = "camelCase")]
+    SetDeviceName {
+        name: String,
+    },
+    /// Connect the headphones to one of the devices they are paired with, or
+    /// disconnect them from it. The device is named by the id the snapshot
+    /// gave for it — never by an address, which the interface does not have.
+    #[serde(rename_all = "camelCase")]
+    SetPairedDeviceConnection {
+        device: String,
+        connected: bool,
+    },
 }
 
 impl DeviceCommand {
@@ -91,8 +110,18 @@ impl DeviceCommand {
                     )));
                 }
             }
-            // Reads, connection changes, media keys and mute carry no
-            // parameters that can be out of range.
+            Self::SetDeviceName { name } => {
+                check_device_name(name).map_err(DeviceError::InvalidInput)?;
+            }
+            Self::SetPairedDeviceConnection { device, .. } => {
+                if !is_paired_device_id(device) {
+                    return Err(DeviceError::InvalidInput(
+                        "that is not one of the headphones' paired devices".to_string(),
+                    ));
+                }
+            }
+            // Reads, connection changes, media keys, mute and the multipoint
+            // switch carry no parameters that can be out of range.
             _ => {}
         }
         Ok(())
@@ -108,6 +137,9 @@ impl DeviceCommand {
                 | Self::SetNoiseControl { .. }
                 | Self::SetNoiseControlLevel { .. }
                 | Self::SetEqualizer { .. }
+                | Self::SetMultipoint { .. }
+                | Self::SetDeviceName { .. }
+                | Self::SetPairedDeviceConnection { .. }
                 | Self::MediaPlayPause
                 | Self::MediaNext
                 | Self::MediaPrevious
@@ -137,6 +169,9 @@ impl DeviceCommand {
             Self::SetNoiseControl { .. } => "set_noise_control",
             Self::SetNoiseControlLevel { .. } => "set_noise_control_level",
             Self::SetEqualizer { .. } => "set_equalizer",
+            Self::SetMultipoint { .. } => "set_multipoint",
+            Self::SetDeviceName { .. } => "set_device_name",
+            Self::SetPairedDeviceConnection { .. } => "set_paired_device_connection",
         }
     }
 }
@@ -196,6 +231,71 @@ impl CommandOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interface can name a paired device only by the id it was given.
+    /// Anything shaped like an address, or like anything else, stops here.
+    #[test]
+    fn a_paired_device_is_named_by_its_id_and_nothing_else() {
+        let ask = |device: &str| DeviceCommand::SetPairedDeviceConnection {
+            device: device.into(),
+            connected: false,
+        };
+        assert!(ask("0123456789abcdef0123").validate().is_ok());
+        for bad in [
+            "",
+            "E4:58:BC:F9:F0:2E",
+            "e458bcf9f02e",
+            "0123456789ABCDEF0123",
+            "0123456789abcdef01234",
+            "0123456789abcdef012",
+            "0123456789abcdef012g",
+            "04 02 05 06 34 11 22",
+        ] {
+            assert!(ask(bad).validate().is_err(), "{bad:?}");
+        }
+        let cmd: DeviceCommand = serde_json::from_str(
+            r#"{"kind":"setPairedDeviceConnection","device":"0123456789abcdef0123","connected":true}"#,
+        )
+        .unwrap();
+        assert!(cmd.is_mutating());
+        assert_eq!(cmd.name(), "set_paired_device_connection");
+    }
+
+    #[test]
+    fn a_device_name_is_checked_before_anything_sees_it() {
+        let name = |name: &str| DeviceCommand::SetDeviceName { name: name.into() };
+        assert!(name("Aurora").validate().is_ok());
+        assert!(name("  Aurora  ").validate().is_ok(), "trimmed where it is used");
+        assert!(name("").validate().is_err());
+        assert!(name("   ").validate().is_err());
+        assert!(name(&"x".repeat(31)).validate().is_ok());
+        assert!(name(&"x".repeat(32)).validate().is_err());
+        assert!(name("two\nlines").validate().is_err());
+    }
+
+    #[test]
+    fn the_new_commands_change_the_device_and_log_no_payload() {
+        let rename = DeviceCommand::SetDeviceName { name: "Private name".into() };
+        let multipoint = DeviceCommand::SetMultipoint { enabled: false };
+        assert!(rename.is_mutating() && multipoint.is_mutating());
+        assert_eq!(rename.name(), "set_device_name");
+        assert_eq!(multipoint.name(), "set_multipoint");
+        assert!(!rename.name().contains("Private"));
+    }
+
+    /// What the interface sends, as it sends it.
+    #[test]
+    fn the_new_commands_are_read_from_the_interfaces_json() {
+        let multipoint: DeviceCommand =
+            serde_json::from_str(r#"{"kind":"setMultipoint","enabled":false}"#).unwrap();
+        assert_eq!(multipoint, DeviceCommand::SetMultipoint { enabled: false });
+        let rename: DeviceCommand =
+            serde_json::from_str(r#"{"kind":"setDeviceName","name":"Nova"}"#).unwrap();
+        assert_eq!(rename, DeviceCommand::SetDeviceName { name: "Nova".into() });
+        // A switch is on or off; it cannot carry anything else.
+        assert!(serde_json::from_str::<DeviceCommand>(r#"{"kind":"setMultipoint","enabled":2}"#).is_err());
+        assert!(serde_json::from_str::<DeviceCommand>(r#"{"kind":"setDeviceName","name":[1,2]}"#).is_err());
+    }
 
     #[test]
     fn volume_above_100_is_rejected() {

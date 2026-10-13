@@ -134,7 +134,7 @@ describe('which phone or computer the headphones are connected to', () => {
   it('is on the Device page too', async () => {
     render(
       <AppProvider>
-        <DevicePage onNavigate={() => {}} />
+        <DevicePage />
       </AppProvider>,
     );
     await waitFor(() => expect(ipcMock.getSnapshot).toHaveBeenCalled());

@@ -20,7 +20,7 @@ services, no accounts, no telemetry, no network requests.
 > Build what can be proven. Simulate only what is explicitly simulated. Never pretend.
 
 Every hardware-facing feature carries a capability status — `unknown`,
-`supported`, `verified`, `experimental` or `unsupported` — and the UI renders
+`supported`, `ready`, `verified` or `unsupported` — and the UI renders
 itself from that model. A control is never shown as functional because a
 component exists to draw it.
 
@@ -88,6 +88,27 @@ accept one control connection from a computer — so the application must be
 running for it to be there. Everything on it shows what the headphones
 report, and a change counts only when they confirm it, exactly as in the main
 window.
+
+### Multi-device connection and renaming
+
+On the Device page, for both the desktop and the phone:
+
+- **Multi-device connection** — whether the headphones stay connected to two
+  devices at once. Switching it off is asked about first: the headphones then
+  keep one connection and drop the other, and they choose which. On the
+  tested pair it was the device that had asked that was dropped.
+- **Devices** — under it, each device the headphones are paired with, by
+  name, with a switch that is on while they are connected to it. Switching
+  one off asks the headphones to disconnect from that device; switching it on
+  asks them to connect. **This one has not yet been run against the
+  headphones** (see [protocol-notes.md](docs/protocol-notes.md), Experiment
+  13): the switch moves only when the headphones report the device
+  differently, so it cannot show a change that did not happen, but whether
+  this model takes the request at all is not known.
+- **Device name** — the name shown is the one the headphones themselves
+  report, whatever they are called, and the pencil beside it renames them (up
+  to 31 bytes). The new name is shown once they report it back. Other devices
+  pick it up when they next connect.
 
 ### Home-screen widget (Android)
 
@@ -272,8 +293,8 @@ and a level from 0 to 10; the request types accept nothing else, and "custom"
 carries no slot number.
 
 Bluetooth addresses never leave the native layer. Anything user-visible or
-exportable carries a per-installation salted hash instead, so a shared
-diagnostics report cannot be traced back to specific hardware.
+exportable carries a per-installation salted hash instead, so a screenshot or
+a shared log cannot be traced back to specific hardware.
 
 See [docs/security.md](docs/security.md).
 

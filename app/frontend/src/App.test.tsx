@@ -24,7 +24,7 @@ describe('which screen is on show', () => {
   });
 
   it('is the page itself while the headphones are connected', () => {
-    for (const page of ['dashboard', 'noise', 'equalizer', 'profiles', 'diagnostics'] as PageId[]) {
+    for (const page of ['dashboard', 'noise', 'equalizer', 'profiles'] as PageId[]) {
       expect(screenKey(page, 'connected')).toBe(page);
     }
   });

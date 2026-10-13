@@ -37,7 +37,7 @@ function snapshot(opts: {
 } = {}): DeviceSnapshot {
   const {
     mode = 'quiet',
-    noise = 'experimental',
+    noise = 'ready',
     custom = 'unknown',
     level = null,
     label = null,
@@ -85,7 +85,7 @@ function snapshot(opts: {
 }
 
 /** The headphones in their custom mode, "Focus", at the given strength. */
-const inFocus = (level: number | null = 4, custom: CapabilityStatus = 'experimental') =>
+const inFocus = (level: number | null = 4, custom: CapabilityStatus = 'ready') =>
   snapshot({ mode: 'custom', custom, level, label: 'Focus' });
 
 function Harness() {
@@ -142,19 +142,21 @@ describe('noise control on real headphones', () => {
     }
   });
 
-  it('says the control is experimental and why', async () => {
-    ipcMock.getSnapshot.mockResolvedValue(snapshot({ noise: 'experimental' }));
+  it('offers a ready control as it is, with no caveat under it', async () => {
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ noise: 'ready' }));
     await renderPage();
 
-    expect(screen.getByText(/^Experimental\./)).toBeInTheDocument();
-    expect(screen.getByText(/evidence for experimental/)).toBeInTheDocument();
+    expect(tab('Aware')).toBeEnabled();
+    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0);
+    // The reasoning behind the status is for Diagnostics, not for this page.
+    expect(screen.queryByText(/evidence for ready/)).not.toBeInTheDocument();
   });
 
-  it('drops the experimental caveat once verified', async () => {
+  it('shows a verified control the same way', async () => {
     ipcMock.getSnapshot.mockResolvedValue(snapshot({ noise: 'verified' }));
     await renderPage();
 
-    expect(screen.queryByText(/^Experimental\./)).not.toBeInTheDocument();
+    expect(screen.queryByText(/evidence for verified/)).not.toBeInTheDocument();
     expect(tab('Aware')).toBeEnabled();
   });
 
@@ -285,7 +287,7 @@ describe('the custom mode', () => {
   });
 
   it('is offered once the headphones list a custom mode', async () => {
-    ipcMock.getSnapshot.mockResolvedValue(snapshot({ custom: 'experimental' }));
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ custom: 'ready' }));
     await renderPage();
 
     expect(tab('Custom')).toBeEnabled();
@@ -293,7 +295,7 @@ describe('the custom mode', () => {
   });
 
   it('is requested by name, with no slot', async () => {
-    ipcMock.getSnapshot.mockResolvedValue(snapshot({ custom: 'experimental' }));
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ custom: 'ready' }));
     ipcMock.setNoiseControlMode.mockResolvedValue(applied);
     await renderPage();
 
@@ -322,11 +324,11 @@ describe('the custom mode', () => {
     expect(within(panel).getByText('Focus')).toBeInTheDocument();
     expect(within(panel).getByText(/saved to that mode on your headphones/)).toBeInTheDocument();
     expect(slider().value).toBe('4');
-    expect(within(panel).getByText(/custom evidence for experimental/)).toBeInTheDocument();
+    expect(within(panel).queryByText(/custom evidence for ready/)).not.toBeInTheDocument();
   });
 
   it('has no slider in Quiet or Aware', async () => {
-    ipcMock.getSnapshot.mockResolvedValue(snapshot({ mode: 'quiet', custom: 'experimental' }));
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ mode: 'quiet', custom: 'ready' }));
     await renderPage();
 
     expect(screen.queryByTestId('custom-panel')).not.toBeInTheDocument();
@@ -431,7 +433,7 @@ describe('simulated labelling', () => {
       snapshot({
         source: 'mock',
         mode: 'custom',
-        custom: 'experimental',
+        custom: 'ready',
         level: 6,
         label: 'Simulated custom',
       }),

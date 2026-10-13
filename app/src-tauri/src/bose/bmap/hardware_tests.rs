@@ -443,3 +443,600 @@ fn hw_diag_battery() {
     let level = status.expect("the headphones answered").aggregate;
     assert!(level <= 100);
 }
+
+/// Asks the headphones four things this application has not asked them
+/// before: their own name (`GET [1.2]`), whether they will hold two
+/// connections at once (`GET [1.10]`), which devices they are paired with
+/// (`GET [4.4]`), and for each of those what it is called and whether it is
+/// connected (`GET [4.5]` with its address). All are requests for state:
+/// nothing is set, connected, disconnected or removed.
+///
+/// The addresses that come back belong to the owner's phone and computers.
+/// They are printed with their middle masked, and nothing here is kept.
+#[test]
+#[ignore = "requires the physical headphones; diagnostic output only"]
+fn hw_diag_device_settings() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::protocol::{parse_all_responses, Operator};
+    use bmap::transport::Transport;
+
+    let hp = find_headphones();
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+
+    // Six address bytes with the middle four hidden.
+    let masked = |bytes: &[u8]| -> String {
+        bytes
+            .chunks(6)
+            .map(|mac| match mac {
+                [first, _, _, _, _, last] => format!("{first:02X}:**:**:**:**:{last:02X}"),
+                other => hex(other),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    println!("\n  Windows calls them: {:?}", hp.name);
+
+    for (what, packet) in [
+        ("GET [1.2]  name      ", vec![0x01, 0x02, 0x01, 0x00]),
+        ("GET [1.10] multipoint", vec![0x01, 0x0A, 0x01, 0x00]),
+    ] {
+        match transport.send_recv(&packet) {
+            Ok(bytes) => {
+                println!("  {what} -> {}", hex(&bytes));
+                for frame in parse_all_responses(&bytes) {
+                    println!(
+                        "      [{}.{}] {:?}  {:?}",
+                        frame.fblock,
+                        frame.func,
+                        frame.op,
+                        String::from_utf8_lossy(&frame.payload)
+                    );
+                }
+            }
+            Err(e) => println!("  {what} failed: {e}"),
+        }
+    }
+
+    let list = transport.send_recv(&[0x04, 0x04, 0x01, 0x00]);
+    let mut addresses: Vec<[u8; 6]> = Vec::new();
+    match &list {
+        Ok(bytes) => {
+            for frame in parse_all_responses(bytes) {
+                if (frame.fblock, frame.func, frame.op) != (4, 4, Operator::Status) {
+                    println!("  GET [4.4]  list       -> other frame: {}", frame.fmt());
+                    continue;
+                }
+                let (head, rest) = frame.payload.split_at(frame.payload.len().min(1));
+                println!(
+                    "  GET [4.4]  list       -> {} payload byte(s): first {} then {}",
+                    frame.payload.len(),
+                    hex(head),
+                    masked(rest)
+                );
+                for mac in rest.chunks_exact(6) {
+                    addresses.push(mac.try_into().expect("six bytes"));
+                }
+            }
+        }
+        Err(e) => println!("  GET [4.4]  list       failed: {e}"),
+    }
+
+    for mac in &addresses {
+        let mut packet = vec![0x04, 0x05, 0x01, 0x06];
+        packet.extend_from_slice(mac);
+        match transport.send_recv(&packet) {
+            Ok(bytes) => {
+                for frame in parse_all_responses(&bytes) {
+                    if (frame.fblock, frame.func) != (4, 5) {
+                        println!("  GET [4.5]  info       -> other frame: {}", frame.fmt());
+                        continue;
+                    }
+                    let p = &frame.payload;
+                    let (mac_part, after) = p.split_at(p.len().min(6));
+                    // What follows the address, byte by byte, and as text
+                    // from each plausible start, so the layout can be read
+                    // off rather than assumed.
+                    println!(
+                        "  GET [4.5]  info {}  {:?}  {} byte(s) after the address: {}",
+                        masked(mac_part),
+                        frame.op,
+                        after.len(),
+                        hex(&after[..after.len().min(4)])
+                    );
+                    for skip in 1..=3usize {
+                        if after.len() > skip {
+                            println!(
+                                "      text after {skip} byte(s): {:?}",
+                                String::from_utf8_lossy(&after[skip..])
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("  GET [4.5]  info {} failed: {e}", masked(mac)),
+        }
+    }
+
+    // The wire log is not printed: it holds the addresses in full.
+    transport.take_wire_log();
+}
+
+/// Finds out what switching multipoint off and on again looks like on the
+/// wire, and what it does to the connections. **This one writes**: it sends
+/// `SETGET [1.10]` with 0, watches, then sends it with 1 — or the other way
+/// round if multipoint was off to begin with — so the headphones end as they
+/// began. Run only with the owner's agreement: with multipoint off the
+/// headphones keep one connection, and it may not be this computer's.
+///
+/// If the link is lost when multipoint goes off, the test keeps trying to
+/// reopen it for a while to put the setting back, and says loudly if it
+/// could not.
+#[test]
+#[ignore = "requires the physical headphones; changes multipoint and changes it back"]
+fn hw_diag_multipoint_toggle() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::protocol::{parse_all_responses, Operator};
+    use bmap::transport::Transport;
+    use std::time::{Duration, Instant};
+
+    let hp = find_headphones();
+    let open = || {
+        WinsockConnector::new(hp.address)
+            .connect(Route::SerialPortService)
+            .map(|opened| {
+                let t = StreamTransport::new(opened.stream, Timing::standard());
+                t.drain_greeting();
+                t
+            })
+    };
+    let mut transport = open().unwrap_or_else(|f| panic!("could not open: {}", f.message));
+
+    // The one byte `GET [1.10]` answers with, or why not.
+    let state = |t: &StreamTransport<_>| -> Result<Vec<u8>, String> {
+        let bytes = t.send_recv(&[0x01, 0x0A, 0x01, 0x00]).map_err(|e| e.to_string())?;
+        parse_all_responses(&bytes)
+            .into_iter()
+            .find(|f| (f.fblock, f.func) == (1, 10))
+            .map(|f| {
+                if f.op == Operator::Status {
+                    Ok(f.payload)
+                } else {
+                    Err(f.fmt())
+                }
+            })
+            .unwrap_or_else(|| Err(format!("no [1.10] frame in {}", hex(&bytes))))
+    };
+    // Each paired device's status byte and name, addresses left out.
+    let devices = |t: &StreamTransport<_>| -> String {
+        let Ok(bytes) = t.send_recv(&[0x04, 0x04, 0x01, 0x00]) else {
+            return "list failed".into();
+        };
+        let Some(list) = parse_all_responses(&bytes)
+            .into_iter()
+            .find(|f| (f.fblock, f.func, f.op) == (4, 4, Operator::Status))
+        else {
+            return format!("no list in {}", hex(&bytes));
+        };
+        let mut out = format!("first byte {:02X};", list.payload.first().copied().unwrap_or(0));
+        for mac in list.payload.get(1..).unwrap_or(&[]).chunks_exact(6) {
+            let mut packet = vec![0x04, 0x05, 0x01, 0x06];
+            packet.extend_from_slice(mac);
+            match t.send_recv(&packet) {
+                Ok(bytes) => {
+                    for f in parse_all_responses(&bytes) {
+                        if (f.fblock, f.func, f.op) == (4, 5, Operator::Status) && f.payload.len() >= 9 {
+                            out.push_str(&format!(
+                                " [{} {:?}]",
+                                hex(&f.payload[6..9]),
+                                String::from_utf8_lossy(&f.payload[9..])
+                            ));
+                        } else {
+                            out.push_str(&format!(" [{}]", f.fmt().len()));
+                        }
+                    }
+                }
+                Err(e) => out.push_str(&format!(" [failed: {e}]")),
+            }
+        }
+        out
+    };
+
+    let began = state(&transport).expect("multipoint could be read before anything was sent");
+    println!("\n  before: [1.10] = {}   devices: {}", hex(&began), devices(&transport));
+    let was_on = began.first().is_some_and(|b| b & 0x02 != 0);
+    println!("  multipoint was {}", if was_on { "ON" } else { "OFF" });
+
+    let set = |t: &StreamTransport<_>, on: bool| {
+        let packet = [0x01, 0x0A, 0x02, 0x01, u8::from(on)];
+        let asked = Instant::now();
+        match t.send_recv(&packet) {
+            Ok(bytes) => {
+                println!("  SETGET [1.10] {} -> {}  ({:?})", u8::from(on), hex(&bytes), asked.elapsed());
+                for f in parse_all_responses(&bytes) {
+                    println!("      [{}.{}] {:?} {}", f.fblock, f.func, f.op, hex(&f.payload));
+                }
+            }
+            Err(e) => println!("  SETGET [1.10] {} failed: {e}", u8::from(on)),
+        }
+    };
+
+    // Away from where it began.
+    set(&transport, !was_on);
+    let mut lost = false;
+    for wait in [0u64, 200, 500, 1000, 2000, 3000] {
+        std::thread::sleep(Duration::from_millis(wait));
+        match state(&transport) {
+            Ok(now) => println!("    +{wait:>4} ms  [1.10] = {}   devices: {}", hex(&now), devices(&transport)),
+            Err(e) => {
+                println!("    +{wait:>4} ms  could not read: {e}");
+                lost = true;
+                break;
+            }
+        }
+    }
+
+    if lost {
+        println!("  the link was lost; trying to reopen it to put multipoint back");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut reopened = None;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_secs(3));
+            if let Ok(t) = open() {
+                reopened = Some(t);
+                break;
+            }
+        }
+        transport = reopened.expect(
+            "MULTIPOINT WAS LEFT CHANGED: the link could not be reopened. Reconnect the \
+             headphones to this computer and run this test again to restore it",
+        );
+        println!("  reopened");
+    }
+
+    // And back.
+    set(&transport, was_on);
+    for wait in [0u64, 200, 500, 1000, 2000, 3000, 5000] {
+        std::thread::sleep(Duration::from_millis(wait));
+        match state(&transport) {
+            Ok(now) => println!("    +{wait:>4} ms  [1.10] = {}   devices: {}", hex(&now), devices(&transport)),
+            Err(e) => println!("    +{wait:>4} ms  could not read: {e}"),
+        }
+    }
+
+    let ended = state(&transport).expect("multipoint could be read at the end");
+    println!("  after: [1.10] = {}", hex(&ended));
+    transport.take_wire_log();
+    assert_eq!(
+        ended.first().map(|b| b & 0x02 != 0),
+        Some(was_on),
+        "MULTIPOINT WAS LEFT CHANGED from how it was found"
+    );
+}
+
+/// Switches multipoint on and says what the headphones then report. For
+/// putting it back after `hw_diag_multipoint_toggle` has lost the link with
+/// it off. **Writes**: one `SETGET [1.10]` with 1.
+#[test]
+#[ignore = "requires the physical headphones; switches multipoint on"]
+fn hw_set_multipoint_on() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::protocol::parse_all_responses;
+    use bmap::transport::Transport;
+
+    let hp = find_headphones();
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+
+    let read = || {
+        transport
+            .send_recv(&[0x01, 0x0A, 0x01, 0x00])
+            .map(|bytes| {
+                parse_all_responses(&bytes)
+                    .into_iter()
+                    .find(|f| (f.fblock, f.func) == (1, 10))
+                    .map(|f| f.payload)
+                    .unwrap_or_default()
+            })
+            .map_err(|e| e.to_string())
+    };
+    println!("\n  before: [1.10] = {:?}", read().map(|p| hex(&p)));
+    let reply = transport.send_recv(&[0x01, 0x0A, 0x02, 0x01, 0x01]);
+    println!("  SETGET [1.10] 1 -> {:?}", reply.as_ref().map(|b| hex(b)).map_err(|e| e.to_string()));
+    for wait in [0u64, 300, 1000] {
+        std::thread::sleep(std::time::Duration::from_millis(wait));
+        println!("    +{wait:>4} ms  [1.10] = {:?}", read().map(|p| hex(&p)));
+    }
+    let now = read().expect("multipoint could be read back");
+    transport.take_wire_log();
+    assert_eq!(now.first().map(|b| b & 0x01), Some(1), "multipoint is on");
+}
+
+/// Finds out what renaming the headphones looks like on the wire. **This one
+/// writes**: `SETGET [1.2]` with a test name, then with the name they had, so
+/// they end called what they were called. Run only with the owner's
+/// agreement.
+#[test]
+#[ignore = "requires the physical headphones; renames them and renames them back"]
+fn hw_diag_rename_and_back() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::protocol::{parse_all_responses, Operator};
+    use bmap::transport::Transport;
+    use std::time::{Duration, Instant};
+
+    let hp = find_headphones();
+    let open = || {
+        WinsockConnector::new(hp.address)
+            .connect(Route::SerialPortService)
+            .map(|opened| {
+                let t = StreamTransport::new(opened.stream, Timing::standard());
+                t.drain_greeting();
+                t
+            })
+    };
+    let mut transport = open().unwrap_or_else(|f| panic!("could not open: {}", f.message));
+
+    let read = |t: &StreamTransport<_>| -> Result<Vec<u8>, String> {
+        let bytes = t.send_recv(&[0x01, 0x02, 0x01, 0x00]).map_err(|e| e.to_string())?;
+        parse_all_responses(&bytes)
+            .into_iter()
+            .find(|f| (f.fblock, f.func) == (1, 2))
+            .map(|f| if f.op == Operator::Status { Ok(f.payload) } else { Err(f.fmt()) })
+            .unwrap_or_else(|| Err(format!("no [1.2] frame in {}", hex(&bytes))))
+    };
+    let show = |payload: &[u8]| {
+        format!(
+            "flag {:02X}, {:?}",
+            payload.first().copied().unwrap_or(0xFF),
+            String::from_utf8_lossy(payload.get(1..).unwrap_or(&[]))
+        )
+    };
+    let set = |t: &StreamTransport<_>, name: &str| -> bool {
+        let mut packet = vec![0x01, 0x02, 0x02, name.len() as u8];
+        packet.extend_from_slice(name.as_bytes());
+        let asked = Instant::now();
+        match t.send_recv(&packet) {
+            Ok(bytes) => {
+                println!("  SETGET [1.2] {name:?} -> {}  ({:?})", hex(&bytes), asked.elapsed());
+                for f in parse_all_responses(&bytes) {
+                    println!("      [{}.{}] {:?} {}", f.fblock, f.func, f.op, hex(&f.payload));
+                }
+                true
+            }
+            Err(e) => {
+                println!("  SETGET [1.2] {name:?} failed: {e}");
+                false
+            }
+        }
+    };
+
+    let began = read(&transport).expect("the name could be read before anything was sent");
+    let original = String::from_utf8(began.get(1..).unwrap_or(&[]).to_vec()).expect("a UTF-8 name");
+    println!("\n  before: {}   (Windows calls them {:?})", show(&began), hp.name);
+    assert!(!original.is_empty(), "the headphones reported a name");
+
+    let trial = "Aurora Test";
+    set(&transport, trial);
+    let mut lost = false;
+    for wait in [0u64, 200, 800, 2000] {
+        std::thread::sleep(Duration::from_millis(wait));
+        match read(&transport) {
+            Ok(now) => println!("    +{wait:>4} ms  {}", show(&now)),
+            Err(e) => {
+                println!("    +{wait:>4} ms  could not read: {e}");
+                lost = true;
+                break;
+            }
+        }
+    }
+    if lost {
+        println!("  the link was lost; trying to reopen it to put the name back");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut reopened = None;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_secs(3));
+            if let Ok(t) = open() {
+                reopened = Some(t);
+                break;
+            }
+        }
+        transport = reopened.unwrap_or_else(|| {
+            panic!("THE NAME WAS LEFT CHANGED: the link could not be reopened. The headphones were called {original:?}")
+        });
+    }
+
+    set(&transport, &original);
+    for wait in [0u64, 200, 800] {
+        std::thread::sleep(Duration::from_millis(wait));
+        match read(&transport) {
+            Ok(now) => println!("    +{wait:>4} ms  {}", show(&now)),
+            Err(e) => println!("    +{wait:>4} ms  could not read: {e}"),
+        }
+    }
+
+    let ended = read(&transport).expect("the name could be read at the end");
+    println!("  after: {}", show(&ended));
+    transport.take_wire_log();
+    assert_eq!(ended, began, "THE NAME WAS LEFT CHANGED from {original:?}");
+}
+
+/// Finds out what asking the headphones to drop one of the devices they are
+/// connected to, and to connect it again, looks like on the wire. **This one
+/// writes**: `START [4.2]` with the address of a connected device that is not
+/// this computer, and then `START [4.1]` with the same address, so that the
+/// device ends connected as it began. Run only with the owner's agreement:
+/// for the seconds in between, that device — their phone — is disconnected
+/// from the headphones.
+///
+/// The frames are an older model's (QC35, `based-connect`): disconnect is the
+/// six address bytes, connect is a zero and then the six. Whether this model
+/// takes them is what is being found out. Addresses are printed masked.
+#[test]
+#[ignore = "requires the physical headphones; disconnects another device and reconnects it"]
+fn hw_diag_paired_disconnect_and_reconnect() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::protocol::{parse_all_responses, Operator};
+    use bmap::transport::Transport;
+    use std::time::{Duration, Instant};
+
+    let hp = find_headphones();
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+
+    // The list's first byte and its addresses.
+    let list = |t: &StreamTransport<_>| -> (Option<u8>, Vec<[u8; 6]>) {
+        let Ok(bytes) = t.send_recv(&[0x04, 0x04, 0x01, 0x00]) else {
+            return (None, Vec::new());
+        };
+        parse_all_responses(&bytes)
+            .into_iter()
+            .find(|f| (f.fblock, f.func, f.op) == (4, 4, Operator::Status))
+            .map(|f| {
+                let macs = f
+                    .payload
+                    .get(1..)
+                    .unwrap_or(&[])
+                    .chunks_exact(6)
+                    .map(|m| m.try_into().expect("six bytes"))
+                    .collect();
+                (f.payload.first().copied(), macs)
+            })
+            .unwrap_or((None, Vec::new()))
+    };
+    // One device's three bytes after its address, and its name.
+    let info = |t: &StreamTransport<_>, mac: &[u8; 6]| -> Result<(Vec<u8>, String), String> {
+        let mut packet = vec![0x04, 0x05, 0x01, 0x06];
+        packet.extend_from_slice(mac);
+        let bytes = t.send_recv(&packet).map_err(|e| e.to_string())?;
+        parse_all_responses(&bytes)
+            .into_iter()
+            .find(|f| (f.fblock, f.func) == (4, 5))
+            .map(|f| {
+                if f.op == Operator::Status && f.payload.len() >= 9 {
+                    Ok((
+                        f.payload[6..9].to_vec(),
+                        String::from_utf8_lossy(&f.payload[9..]).into_owned(),
+                    ))
+                } else {
+                    Err(f.fmt().chars().take(40).collect())
+                }
+            })
+            .unwrap_or_else(|| Err("no [4.5] frame".into()))
+    };
+    // Every frame that comes back for a request, without its payload where
+    // the payload may hold an address.
+    let show = |bytes: &[u8]| {
+        for f in parse_all_responses(bytes) {
+            let safe = f.payload.len() < 6;
+            println!(
+                "      [{}.{}] {:?}  {} payload byte(s){}",
+                f.fblock,
+                f.func,
+                f.op,
+                f.payload.len(),
+                if safe { format!(": {}", hex(&f.payload)) } else { String::new() }
+            );
+        }
+    };
+
+    let (first, macs) = list(&transport);
+    println!("\n  list: first byte {first:02X?}, {} device(s)", macs.len());
+    let mut target = None;
+    for mac in &macs {
+        match info(&transport, mac) {
+            Ok((status, name)) => {
+                println!("    {name:?}: {}", hex(&status));
+                if status[0] == 0x01 && target.is_none() {
+                    target = Some((*mac, name));
+                }
+            }
+            Err(e) => println!("    (could not be read: {e})"),
+        }
+    }
+    let Some((mac, name)) = target else {
+        println!("  nothing is connected besides this computer; nothing to try");
+        return;
+    };
+
+    println!("\n  asking the headphones to disconnect {name:?}");
+    let mut packet = vec![0x04, 0x02, 0x05, 0x06];
+    packet.extend_from_slice(&mac);
+    let asked = Instant::now();
+    match transport.send_recv_drain(&packet) {
+        Ok(bytes) => {
+            println!("    answered after {:?}:", asked.elapsed());
+            show(&bytes);
+        }
+        Err(e) => println!("    START [4.2] failed: {e}"),
+    }
+    let mut dropped = false;
+    for _ in 0..12 {
+        std::thread::sleep(Duration::from_millis(500));
+        match info(&transport, &mac) {
+            Ok((status, _)) => {
+                println!("    +{:>5} ms  {}", asked.elapsed().as_millis(), hex(&status));
+                if status[0] & 0x01 == 0 {
+                    dropped = true;
+                    break;
+                }
+            }
+            Err(e) => println!("    +{:>5} ms  could not read: {e}", asked.elapsed().as_millis()),
+        }
+    }
+    let (first, macs_now) = list(&transport);
+    println!(
+        "    list now: first byte {first:02X?}, {} device(s); the device is {} it",
+        macs_now.len(),
+        if macs_now.contains(&mac) { "still on" } else { "no longer on" }
+    );
+    println!("    disconnected: {dropped}");
+
+    println!("\n  asking the headphones to connect {name:?} again");
+    let mut packet = vec![0x04, 0x01, 0x05, 0x07, 0x00];
+    packet.extend_from_slice(&mac);
+    let asked = Instant::now();
+    match transport.send_recv_drain(&packet) {
+        Ok(bytes) => {
+            println!("    answered after {:?}:", asked.elapsed());
+            show(&bytes);
+        }
+        Err(e) => println!("    START [4.1] failed: {e}"),
+    }
+    let mut back = false;
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(500));
+        match info(&transport, &mac) {
+            Ok((status, _)) => {
+                if status[0] & 0x01 != 0 {
+                    println!("    +{:>5} ms  {}", asked.elapsed().as_millis(), hex(&status));
+                    back = true;
+                    break;
+                }
+            }
+            Err(e) => println!("    +{:>5} ms  could not read: {e}", asked.elapsed().as_millis()),
+        }
+    }
+    let (first, macs_end) = list(&transport);
+    println!("    list at the end: first byte {first:02X?}, {} device(s)", macs_end.len());
+    transport.take_wire_log();
+    assert!(
+        back || !dropped,
+        "{name:?} WAS LEFT DISCONNECTED from the headphones: reconnect it from its own Bluetooth settings"
+    );
+    println!("    connected again: {back}");
+}

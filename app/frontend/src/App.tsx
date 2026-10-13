@@ -11,7 +11,6 @@ import { DevicePage } from "./components/pages/DevicePage";
 import { NoisePage } from "./components/pages/NoisePage";
 import { EqualizerPage } from "./components/pages/EqualizerPage";
 import { ProfilesPage } from "./components/pages/ProfilesPage";
-import { DiagnosticsPage } from "./components/pages/DiagnosticsPage";
 import { SettingsPage } from "./components/pages/SettingsPage";
 
 /**
@@ -45,11 +44,10 @@ function Content({ page, onNavigate }: { page: PageId; onNavigate: (p: PageId) =
 
   switch (page) {
     case "dashboard": return <DashboardPage onNavigate={onNavigate} />;
-    case "device": return <DevicePage onNavigate={onNavigate} />;
+    case "device": return <DevicePage />;
     case "noise": return <NoisePage />;
     case "equalizer": return <EqualizerPage />;
     case "profiles": return <ProfilesPage />;
-    case "diagnostics": return <DiagnosticsPage />;
     case "settings": return <SettingsPage />;
   }
 }

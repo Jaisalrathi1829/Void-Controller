@@ -62,6 +62,50 @@ reports:
 - `GET [0.3]` answered `40 75 0D`: product 0x4075, the id Windows gives.
 - `GET [2.2]` answered `0A FF FF 00`: 10 percent, with Windows showing 10.
 
+### What was taken out
+
+Changed on 2026-10-13, at the owner's request — on the phone first, and
+later the same day on the desktop too, so that the two are one application.
+
+- **No Diagnostics page.** It was a developer's view — how each capability
+  was established, and an event log. The page is gone, with the Device
+  page's button to it and the logging section of Settings.
+- **No software equalizer.** That panel was for a Windows audio pipeline that
+  was never built: its sliders moved and changed nothing. The Equalizer page
+  is the headphones' own three bands and nothing beside them.
+- **Nothing says Windows on a phone.** The Device page, and the reasons given
+  for a capability's state, name the phone or Android where the desktop names
+  Windows.
+- **Nothing says "Experimental".** That status is now called "Ready", on the
+  desktop too: see [capability-matrix.md](capability-matrix.md).
+
+### Multi-device connection and renaming
+
+On the Device page, the same as on the desktop:
+
+- **Multi-device connection** — a switch for multipoint. Switching it off is
+  asked about first.
+- **Devices** — each device the headphones are paired with, by name, with
+  this phone marked and a switch that is on while the headphones are
+  connected to it. The addresses the headphones know those devices by are
+  not shown and do not leave the native layer. Moving a switch asks the
+  headphones to connect to that device or disconnect from it; disconnecting
+  this phone itself is asked about first, since the application then loses
+  the headphones. **Not yet run against the headphones** — see the table
+  below.
+
+The Device page opens with the device information: the card that used to
+head it — the headphones' picture, their name again, and Reconnect and
+Disconnect — was taken off on 2026-10-13 at the owner's request, as repeating
+what the rows under it say. A Reconnect button appears on the Connection row
+when the headphones are not connected. The desktop's page is the same.
+- **Device name** — the name the headphones report, with a pencil to rename
+  them.
+
+The name used everywhere — the dashboard, announcements, the widget — is the
+one the headphones give, read over the control link. It is whatever they are
+called: nothing in the application knows the name "Aurora".
+
 ### Finding the headphones
 
 Android gives applications neither a vendor id nor a product id for a paired
@@ -326,6 +370,10 @@ Before first use:
 | The volume slider moving the *headphones'* volume | **Not verified** — true only if they are the phone's media output, which the emulator cannot be |
 | "Connected to" showing the phone's name; the spoken "connected to …" | **Not verified** on a phone. The name lookup itself runs on the emulator |
 | The build of 2026-10-12 (everything on this page marked as fixed) on a phone | **Not verified** |
+| No Diagnostics, no software equalizer, no "Experimental" (either platform); no "Windows" in the phone's interface | Verified in a browser at phone width with an Android user agent, and by tests (`mobile.test.tsx`) |
+| Multi-device switch and connected-device list; renaming | Verified **on the headphones from Windows** through the same code (protocol-notes, Experiments 11 and 12), and the page itself in a browser against the simulated device. **Not verified on a phone** |
+| A device's own switch: connecting to it, disconnecting from it | **Not verified anywhere on the headphones.** Unit-tested, and tried in a browser against the simulated device. The experiment is written (`hw_diag_paired_disconnect_and_reconnect`) and has not been run |
+| The Device page without its header card | Verified in a browser at phone width, and by tests |
 
 ## What the first run on a phone turned up
 

@@ -87,6 +87,57 @@ export interface EqState extends EqSettings {
   readAt: string;
 }
 
+/** Whether the headphones will stay connected to two devices at once. */
+export interface MultipointState {
+  enabled: boolean;
+  source: 'vendor-protocol' | 'simulated';
+  readAt: string;
+}
+
+/**
+ * A device the headphones are paired with: a phone, a computer. By name only
+ * — the address the headphones know it by never leaves the native layer.
+ */
+export interface PairedDevice {
+  /**
+   * Stands for the device when it is to be connected or disconnected. Not its
+   * address: the native layer matches it against the headphones' own list.
+   */
+  id: string;
+  /** What the headphones call it. Empty if they have no name for it. */
+  name: string;
+  connected: boolean;
+  /** The phone or computer this application is running on. */
+  thisDevice: boolean;
+}
+
+/** The longest name the headphones are given, in bytes of UTF-8. */
+export const MAX_DEVICE_NAME_BYTES = 31;
+
+/**
+ * A name as it may be given to the headphones: what is left after trimming,
+ * or why not. The native layer applies the same rule, and its answer is the
+ * one that counts; this is so the reason can be shown while typing.
+ */
+export function checkDeviceName(
+  name: string,
+): { ok: true; name: string } | { ok: false; reason: string } {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return { ok: false, reason: 'A name cannot be empty.' };
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) {
+    return { ok: false, reason: 'A name cannot contain line breaks or control characters.' };
+  }
+  const bytes = new TextEncoder().encode(trimmed).length;
+  if (bytes > MAX_DEVICE_NAME_BYTES) {
+    return {
+      ok: false,
+      reason: `That name is too long: ${bytes} bytes, and the most is ${MAX_DEVICE_NAME_BYTES}.`,
+    };
+  }
+  return { ok: true, name: trimmed };
+}
+
 /**
  * The host system's own volume — a Windows audio endpoint, or Android's media
  * volume. Distinct from any Bose-internal volume.
@@ -120,6 +171,10 @@ export interface DeviceSnapshot {
   battery: BatteryReading | null;
   noiseControl: NoiseControlState | null;
   equalizer: EqState | null;
+  /** Whether multipoint is on, as the headphones last said. */
+  multipoint?: MultipointState | null;
+  /** What the headphones are paired with, and which of those are connected. */
+  pairedDevices?: PairedDevice[] | null;
   systemAudio: SystemAudioState | null;
   /**
    * What the phone or computer running this application is called — the

@@ -37,7 +37,10 @@ export type DeviceCommand =
   | { kind: 'mediaPrevious' }
   | { kind: 'setNoiseControl'; mode: 'quiet' | 'aware' | 'custom' | 'off' }
   | { kind: 'setNoiseControlLevel'; level: number }
-  | { kind: 'setEqualizer'; settings: { bass: number; mid: number; treble: number } };
+  | { kind: 'setEqualizer'; settings: { bass: number; mid: number; treble: number } }
+  | { kind: 'setMultipoint'; enabled: boolean }
+  | { kind: 'setDeviceName'; name: string }
+  | { kind: 'setPairedDeviceConnection'; device: string; connected: boolean };
 
 export interface IpcError {
   message: string;

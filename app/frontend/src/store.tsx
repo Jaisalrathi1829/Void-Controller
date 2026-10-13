@@ -10,7 +10,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import * as ipc from "@/services/ipc";
-import type { CommandOutcome, DeviceSnapshot } from "@/types/device";
+import type { CommandOutcome, DeviceSnapshot, PairedDevice } from "@/types/device";
 import type { CapabilityStatus } from "@/types/capability";
 
 /* ============================================================
@@ -68,6 +68,10 @@ export interface FeatureCapabilities {
   awareMode: Capability;
   eq: Capability;
   customAnc: Capability;
+  multipoint: Capability;
+  rename: Capability;
+  /** Connecting and disconnecting the devices the headphones are paired with. */
+  connections: Capability;
 }
 
 export type ThemePref = "system" | "light" | "dark";
@@ -148,10 +152,22 @@ interface AppState {
    */
   connectedTo: string | null;
 
+  /** Whether multipoint is on, as the headphones last said. Null if they have not. */
+  multipoint: boolean | null;
+  /** Switches multipoint. Off, the headphones keep one connection. */
+  setMultipoint: (on: boolean) => void;
+  /** What the headphones are paired with. Null if they have not said. */
+  pairedDevices: PairedDevice[] | null;
+  /** Renames the headphones. Resolves to whether they confirmed the name. */
+  renameDevice: (name: string) => Promise<boolean>;
+  /**
+   * Connects the headphones to one of their paired devices, or disconnects
+   * them from it. Resolves when the attempt is over, however it went.
+   */
+  setDeviceConnected: (device: PairedDevice, on: boolean) => Promise<void>;
+
   hardwareEq: EqValues;
   setHardwareEq: (e: EqValues) => void;
-  softwareEq: EqValues;
-  setSoftwareEq: (e: EqValues) => void;
 
   profiles: Profile[];
   addProfile: (p: Profile) => void;
@@ -160,9 +176,6 @@ interface AppState {
   applyProfile: (p: Profile) => void;
 
   events: DiagEvent[];
-  capturing: boolean;
-  toggleCapture: () => void;
-  clearEvents: () => void;
 
   theme: ThemePref;
   setTheme: (t: ThemePref) => void;
@@ -176,8 +189,6 @@ interface AppState {
   testVoice: () => void;
   stopSpeaking: () => void;
   recheckVoice: () => void;
-  logLevel: string;
-  setLogLevel: (s: string) => void;
 
   connect: () => void;
   reconnect: () => void;
@@ -232,6 +243,9 @@ function mapCapabilities(snapshot: DeviceSnapshot | null): FeatureCapabilities {
       awareMode: unknown,
       eq: unknown,
       customAnc: unknown,
+      multipoint: unknown,
+      rename: unknown,
+      connections: unknown,
     };
   }
   const c = snapshot.capabilities;
@@ -242,6 +256,9 @@ function mapCapabilities(snapshot: DeviceSnapshot | null): FeatureCapabilities {
     awareMode: c.awareMode.status,
     eq: c.equalizer.status,
     customAnc: c.customNoiseControl.status,
+    multipoint: c.multipoint.status,
+    rename: c.deviceRename.status,
+    connections: c.pairedDevices.status,
   };
 }
 
@@ -268,11 +285,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [events, setEvents] = useState<DiagEvent[]>([]);
-  const [capturing, setCapturing] = useState(false);
-  const capturingRef = useRef(false);
 
   const [windBlock, setWindBlockRaw] = useState(false);
-  const [softwareEq, setSoftwareEqRaw] = useState<EqValues>({ bass: 0, mid: 0, treble: 0 });
 
   const [profiles, setProfiles] = useState<Profile[]>(loadProfiles);
   const [theme, setThemeRaw] = useState<ThemePref>(loadTheme);
@@ -281,7 +295,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<ipc.AppSettings>(() =>
     ipc.unavailableSettings("Loading…"),
   );
-  const [logLevel, setLogLevel] = useState("Info");
 
   const nativeAvailable = ipc.hasNativeLayer();
 
@@ -689,6 +702,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     snapshot?.source === "real" && snapshot.connection === "connected"
       ? (snapshot.hostName ?? null)
       : null;
+  const multipoint = snapshot?.multipoint?.enabled ?? null;
+  const pairedDevices = snapshot?.pairedDevices ?? null;
 
   /* ---- actions ---- */
   const setNoise = useCallback(
@@ -701,6 +716,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setHardwareEq = useCallback(
     (e: EqValues) => {
       void run({ kind: "setEqualizer", settings: e }, { label: "Equalizer", eventType: "EQ" });
+    },
+    [run],
+  );
+
+  const setMultipoint = useCallback(
+    (on: boolean) => {
+      void run(
+        { kind: "setMultipoint", enabled: on },
+        { label: `Multi-device connection ${on ? "on" : "off"}`, eventType: "MULTIPOINT" },
+      ).then((outcome) => {
+        // Off, the headphones keep one connection, and they choose which.
+        // On the tested pair it was not the device that had asked.
+        if (outcome?.kind === "applied" && !on) {
+          const here = ipc.hostPlatform() === "android" ? "phone" : "computer";
+          toast.info("The headphones now keep one connection.", {
+            description: `If it is not this ${here}'s, they have disconnected from it. Reconnect them from Bluetooth settings to use them here.`,
+          });
+        }
+      });
+    },
+    [run],
+  );
+
+  const setDeviceConnected = useCallback(
+    async (device: PairedDevice, on: boolean) => {
+      const name = device.name || "the device";
+      const outcome = await run(
+        { kind: "setPairedDeviceConnection", device: device.id, connected: on },
+        { label: `${on ? "Connect" : "Disconnect"} ${name}`, eventType: "CONNECTION" },
+      );
+      // Dropped from the device in the hand, the headphones are no longer
+      // this application's to talk to.
+      if (outcome?.kind === "applied" && !on && device.thisDevice) {
+        const here = ipc.hostPlatform() === "android" ? "phone" : "computer";
+        toast.info(`The headphones have disconnected from this ${here}.`, {
+          description: "Connect them again from Bluetooth settings to use them here.",
+        });
+      }
+    },
+    [run],
+  );
+
+  const renameDevice = useCallback(
+    async (name: string) => {
+      const outcome = await run(
+        { kind: "setDeviceName", name },
+        { label: "Rename", eventType: "RENAME" },
+      );
+      return outcome?.kind === "applied";
     },
     [run],
   );
@@ -754,18 +818,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
     },
     [pushEvent],
-  );
-
-  // Software EQ would need a Windows DSP/APO pipeline, which does not exist.
-  const setSoftwareEq = useCallback(
-    (e: EqValues) => {
-      setSoftwareEqRaw(e);
-      toast.warning("Software EQ is not implemented.", {
-        description:
-          "This would require a Windows audio processing pipeline. Values are stored locally only and do not affect audio.",
-      });
-    },
-    [],
   );
 
   const setConnection = useCallback(
@@ -841,21 +893,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [run, requestNoise, pushEvent, profiles, persistProfiles],
   );
 
-  const toggleCapture = useCallback(() => {
-    setCapturing((c) => {
-      const next = !c;
-      capturingRef.current = next;
-      pushEvent({
-        type: "SESSION",
-        description: next
-          ? "Event capture started (application events only — no device event stream exists yet)"
-          : "Event capture stopped",
-        status: next ? "success" : "warning",
-      });
-      return next;
-    });
-  }, [pushEvent]);
-
   const value: AppState = useMemo(
     () => ({
       connection,
@@ -887,10 +924,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       audioEndpointName,
       volumeKnown,
       connectedTo,
+      multipoint,
+      setMultipoint,
+      pairedDevices,
+      renameDevice,
+      setDeviceConnected,
       hardwareEq,
       setHardwareEq,
-      softwareEq,
-      setSoftwareEq,
       profiles,
       addProfile: (p) => {
         persistProfiles([...profiles, p]);
@@ -905,9 +945,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       deleteProfile: (id) => persistProfiles(profiles.filter((i) => i.id !== id)),
       applyProfile: (p) => void applyProfile(p),
       events,
-      capturing,
-      toggleCapture,
-      clearEvents: () => setEvents([]),
       theme,
       setTheme,
       settings,
@@ -917,8 +954,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       testVoice,
       stopSpeaking,
       recheckVoice,
-      logLevel,
-      setLogLevel,
       connect,
       reconnect,
       disconnect,
@@ -931,9 +966,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       noise, setNoise, noiseReadAt, deviceNotice, deviceError, allowBluetooth,
       ancLevel, setAncLevel, noiseLabel, windBlock, setWindBlock,
       volume, setVolume, muted, setMuted, audioEndpointName, volumeKnown, connectedTo,
-      hardwareEq, setHardwareEq, softwareEq, setSoftwareEq,
-      profiles, persistProfiles, applyProfile, events, capturing, toggleCapture,
-      theme, setTheme, settings, toggleSetting, logLevel, reconnect, disconnect, refresh, busy,
+      multipoint, setMultipoint, pairedDevices, renameDevice, setDeviceConnected,
+      hardwareEq, setHardwareEq,
+      profiles, persistProfiles, applyProfile, events,
+      theme, setTheme, settings, toggleSetting, reconnect, disconnect, refresh, busy,
       voice, setVoiceOption, testVoice, stopSpeaking, recheckVoice,
     ],
   );
@@ -972,10 +1008,10 @@ export const capabilityMeta: Record<
     tone: "neutral",
     note: "Not yet established whether this is accessible on this device.",
   },
-  experimental: {
-    label: "Experimental",
-    tone: "warning",
-    note: "Evidence suggests this may work, but verification is incomplete.",
+  ready: {
+    label: "Ready",
+    tone: "info",
+    note: "Your headphones report this, and every change is checked by reading it back from them.",
   },
   unsupported: {
     label: "Unsupported",

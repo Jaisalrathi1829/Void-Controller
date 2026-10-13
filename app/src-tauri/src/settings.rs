@@ -34,6 +34,11 @@ pub struct StoredSettings {
     /// the native layer; the UI is only ever given the name.
     pub preferred_device_id: Option<String>,
     pub preferred_device_name: Option<String>,
+    /// What those headphones last said they are called, read from them over
+    /// the control link. Where there is one it is the name this application
+    /// goes by: the system keeps its own, which stays the old one for some
+    /// time after the headphones are renamed.
+    pub reported_device_name: Option<String>,
 
     /// Speak announcements at all.
     pub voice_enabled: bool,
@@ -79,6 +84,7 @@ impl Default for StoredSettings {
             notify_low_battery: false,
             preferred_device_id: None,
             preferred_device_name: None,
+            reported_device_name: None,
             // Speaking aloud is not something to start doing uninvited. Once
             // it is switched on, every kind of announcement is on with it.
             voice_enabled: false,

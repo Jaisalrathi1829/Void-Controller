@@ -303,11 +303,51 @@ Get-PnpDevice -Class Bluetooth | ForEach-Object { (Get-PnpDeviceProperty -Instan
 
 If Windows has no value, neither can this application.
 
-### Noise control says "Experimental"
+### Noise control says "Ready", not "Verified"
 
-Expected at the start of every session. The badge reflects what this session
-has seen: it turns to "Verified" once the headphones have confirmed a switch
-to Aware and a switch to Quiet. Use the control once each way.
+Expected at the start of every session. "Ready" means the headphones are
+answering and every change is checked against what they report; the badge
+turns to "Verified" once they have confirmed a switch to Aware and a switch
+to Quiet in this session. Use the control once each way. (Before 2026-10-13
+this badge read "Experimental".)
+
+### I turned off multi-device connection and the headphones disconnected
+
+With it off the headphones keep one connection and drop the other, and they
+choose which — it can be the phone or computer you switched it off from. The
+switch was made; the application says so before it loses them. To get them
+back, connect them from that device's Bluetooth settings (which drops the
+other device, since they now hold only one). To have both again, turn
+**Multi-device connection** back on from the Device page once connected.
+
+### A device's switch under "Devices" does nothing, or says it was refused
+
+Connecting and disconnecting a paired device from here has not been proven
+on the headphones (protocol-notes, Experiment 13). The request is one an
+older Bose model takes. If these headphones do not, the application says the
+request was refused or could not be confirmed, and the switch stays where
+the headphones say it is — nothing is shown as changed that was not. Connect
+and disconnect from the other device's own Bluetooth settings instead.
+
+### I switched this phone off under "Devices" and lost the headphones
+
+That is what it does: the headphones disconnect from this phone, and the
+application can no longer reach them to switch it back. Connect them again
+from the phone's Bluetooth settings.
+
+### The multi-device switch is greyed out
+
+It can only be used while the headphones are connected to this device and
+have reported whether it is on. The line under it gives the reason when they
+have not — for a model that has no multipoint, that is what it will say.
+
+### The headphones still show the old name somewhere
+
+A rename is made on the headphones, and each phone or computer keeps its own
+copy of the name from when it last asked. Android asks again when the
+headphones next connect. Windows keeps the old name until the headphones are
+removed and paired again. This application shows the name the headphones
+themselves report, so it changes at once.
 
 ### Noise control is disabled
 
@@ -362,8 +402,17 @@ Also expected. These headphones keep the level inside the custom mode itself,
 so setting it here changes that saved mode. Nothing else about the mode — its
 name, wind block — is touched.
 
-### Hardware EQ is disabled
+### The equalizer is disabled
 
 It is enabled once the headphones have reported their equalizer. If they are
 connected and it stays disabled, the reason is shown under the sliders.
-"Software EQ" on the same page is a separate thing and is not implemented.
+(The "Software EQ" panel that used to sit beside it was never implemented
+and was taken out on 2026-10-13.)
+
+### Where did Diagnostics go?
+
+It was removed on 2026-10-13, from the phone and the desktop: the page, the
+"Run Diagnostics" button on the Device page, and the logging section of
+Settings. Why a control is unavailable is still said under that control.
+For a look at what crosses the link, the hardware tests print it
+(`cargo test --lib hw_ -- --ignored --nocapture`).

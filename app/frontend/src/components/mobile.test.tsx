@@ -29,6 +29,9 @@ import { BottomNav } from './Sidebar';
 import { Range } from './primitives';
 import { SettingsPage } from './pages/SettingsPage';
 import { VoiceFeedbackPanel } from './pages/VoiceFeedbackPanel';
+import { EqualizerPage } from './pages/EqualizerPage';
+import { DevicePage } from './pages/DevicePage';
+import { pageTitles } from '../pages';
 
 const DESKTOP_UA = window.navigator.userAgent;
 const ANDROID_UA =
@@ -279,12 +282,74 @@ describe('a missing voice model on Android', () => {
   });
 });
 
+// Taken out of the phone build first, and then of the desktop one at the
+// owner's request, so that the two are the same application.
+describe.each([
+  ['a phone', ANDROID_UA],
+  ['a desktop', DESKTOP_UA],
+])('what the application no longer has, on %s', (_where, agent) => {
+  async function renderPage(page: React.ReactNode) {
+    useAgent(agent);
+    render(<AppProvider>{page}</AppProvider>);
+    await waitFor(() => expect(ipcMock.getSnapshot).toHaveBeenCalled());
+    await act(async () => {});
+  }
+
+  it('has no Diagnostics page to go to', () => {
+    expect(Object.keys(pageTitles)).not.toContain('diagnostics');
+
+    useAgent(agent);
+    render(<BottomNav page="noise" onNavigate={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Diagnostics' })).not.toBeInTheDocument();
+    for (const name of ['Dashboard', 'Device', 'Noise Control', 'Equalizer', 'Profiles', 'Settings']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+  });
+
+  it('has no way to Diagnostics from the Device page, and no card at its top', async () => {
+    await renderPage(<DevicePage />);
+    expect(screen.queryByRole('button', { name: /Diagnostics/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
+    expect(screen.getByText('Device Information')).toBeInTheDocument();
+  });
+
+  it('has no diagnostics settings', async () => {
+    await renderPage(<SettingsPage />);
+    expect(screen.queryByText('Logging level')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Export Logs' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear Logs' })).not.toBeInTheDocument();
+  });
+
+  it('shows the equalizer as the headphones’ own, with no software panel beside it', async () => {
+    await renderPage(<EqualizerPage />);
+    expect(screen.queryByText('Software EQ')).not.toBeInTheDocument();
+    expect(screen.queryByText('Windows Audio')).not.toBeInTheDocument();
+    expect(screen.getByText('Bass')).toBeInTheDocument();
+    expect(pageTitles.equalizer.subtitle).not.toMatch(/software/i);
+  });
+});
+
+describe('a phone', () => {
+  it('never says Windows on the Device or Equalizer pages', async () => {
+    useAgent(ANDROID_UA);
+    render(
+      <AppProvider>
+        <DevicePage />
+        <EqualizerPage />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(ipcMock.getSnapshot).toHaveBeenCalled());
+    await act(async () => {});
+    expect(document.body.textContent).not.toMatch(/Windows/);
+  });
+});
+
 describe('bottom navigation', () => {
   it('offers every section and says which one is open', async () => {
     const onNavigate = vi.fn();
     render(<BottomNav page="noise" onNavigate={onNavigate} />);
 
-    const names = ['Dashboard', 'Device', 'Noise Control', 'Equalizer', 'Profiles', 'Diagnostics', 'Settings'];
+    const names = ['Dashboard', 'Device', 'Noise Control', 'Equalizer', 'Profiles', 'Settings'];
     for (const name of names) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
     }

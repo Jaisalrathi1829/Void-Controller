@@ -14,7 +14,7 @@ export const CAPABILITY_STATUSES = [
   'unknown',
   'supported',
   'verified',
-  'experimental',
+  'ready',
   'unsupported',
 ] as const;
 
@@ -30,8 +30,10 @@ export type CapabilityStatus = (typeof CAPABILITY_STATUSES)[number];
  * - `verified`     The actual physical device was tested and the feature was
  *                  confirmed to work. Only ever set by a hardware verification
  *                  run — never by a code path that merely sent a command.
- * - `experimental` Evidence suggests functionality may work, but verification
- *                  is incomplete.
+ * - `ready`        The device itself answers for the feature and reports its
+ *                  state, and every change is checked by reading it back.
+ *                  No change has been confirmed yet since the application
+ *                  started; the first one that is makes it `verified`.
  * - `unsupported`  The required functionality cannot currently be accessed
  *                  safely through available interfaces.
  */
@@ -40,16 +42,17 @@ export const CAPABILITY_MEANING: Record<CapabilityStatus, string> = {
   supported:
     'A valid interface appears to expose this, but it has not been confirmed on your physical headphones.',
   verified: 'Confirmed working against your physical headphones.',
-  experimental: 'Evidence suggests this may work, but verification is incomplete.',
+  ready:
+    'Your headphones report this, and every change is checked by reading it back from them.',
   unsupported: 'Cannot currently be accessed safely through available interfaces.',
 };
 
-/** Short label used in dense UI (diagnostics tables, tray tooltips). */
+/** Short label, for where there is no room for more. */
 export const CAPABILITY_LABEL: Record<CapabilityStatus, string> = {
   unknown: 'UNKNOWN',
   supported: 'SUPPORTED',
   verified: 'VERIFIED',
-  experimental: 'EXPERIMENTAL',
+  ready: 'READY',
   unsupported: 'UNSUPPORTED',
 };
 
@@ -71,11 +74,12 @@ export const CAPABILITY_KEYS = [
   'voicePrompts',
   'sidetone',
   'deviceRename',
+  'pairedDevices',
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
 
-/** How a capability is (or would be) reached. Shown in diagnostics. */
+/** How a capability is (or would be) reached. */
 export type CapabilityMechanism =
   | 'windows-audio'
   | 'android-audio'
@@ -126,7 +130,7 @@ export function isPresentable(record: CapabilityRecord): boolean {
  * These states permit interaction but must never claim success blindly.
  */
 export function requiresUnverifiedWarning(record: CapabilityRecord): boolean {
-  return record.status === 'supported' || record.status === 'experimental';
+  return record.status === 'supported' || record.status === 'ready';
 }
 
 export class CapabilityTransitionError extends Error {

@@ -53,6 +53,34 @@ The change then goes through the same verified command as any other.
 The two bridge commands added for it, like the rest of the bridge, can be
 called only from the native layer.
 
+Two commands were added on 2026-10-13, typed like the rest: `setMultipoint`
+carries a boolean and `setDeviceName` a string, which is trimmed and refused
+before any backend sees it if it is empty, longer than 31 bytes of UTF-8, or
+holds a control character. The same rule is applied again where the name is
+turned into a frame.
+
+The headphones list the devices they are paired with by Bluetooth address.
+Those addresses are other people's — a phone, a computer — and are handled in
+one module (`bose/bmap/unit.rs`): each is used once, to ask the headphones
+what that device is called and whether it is connected, and is then dropped.
+What leaves the module is a name, two booleans and an id. The frames of that
+exchange are also kept out of the link's wire log, which is the one place
+bytes are otherwise recorded.
+
+The id is what lets one of those devices be picked out again, to connect it
+or disconnect it, without the interface ever holding its address: the address
+hashed with this installation's salt, twenty hexadecimal digits. A request
+names a device by that id and by nothing else — the command is refused before
+any backend sees it unless it has that shape, so an address or a run of bytes
+does not get as far as being looked at — and the native layer then reads the
+headphones' own list afresh and looks for a device whose id matches. One that
+is not on the list sends nothing. The id cannot be turned back into an
+address, and is different on every installation.
+
+Of the three things the protocol can do to a paired device — connect,
+disconnect, remove — the application has requests for the first two, sent
+only when a switch is moved by hand. It has none for removing one.
+
 The asset protocol is disabled in `tauri.conf.json`, and the corresponding
 `protocol-asset` crate feature was removed rather than enabling the protocol to
 match it.

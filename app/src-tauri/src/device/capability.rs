@@ -26,8 +26,10 @@ pub enum CapabilityStatus {
     /// The actual physical device was tested and the feature was confirmed to
     /// work. Only reachable via [`Capability::verify_with_hardware`].
     Verified,
-    /// Evidence suggests functionality may work, but verification is incomplete.
-    Experimental,
+    /// The device itself answers for the feature and reports its state, and
+    /// every change is checked by reading it back — but no change has been
+    /// confirmed yet in this run. The first one that is makes it `Verified`.
+    Ready,
     /// The functionality cannot currently be accessed safely through available
     /// interfaces.
     Unsupported,
@@ -39,7 +41,7 @@ impl CapabilityStatus {
             Self::Unknown => "UNKNOWN",
             Self::Supported => "SUPPORTED",
             Self::Verified => "VERIFIED",
-            Self::Experimental => "EXPERIMENTAL",
+            Self::Ready => "READY",
             Self::Unsupported => "UNSUPPORTED",
         }
     }
@@ -51,7 +53,7 @@ impl CapabilityStatus {
 
     /// Whether interaction is permitted but must carry an "unverified" caveat.
     pub fn requires_caveat(self) -> bool {
-        matches!(self, Self::Supported | Self::Experimental)
+        matches!(self, Self::Supported | Self::Ready)
     }
 }
 
@@ -73,10 +75,13 @@ pub enum CapabilityKey {
     VoicePrompts,
     Sidetone,
     DeviceRename,
+    /// Connecting the device to, and disconnecting it from, the hosts it is
+    /// paired with.
+    PairedDevices,
 }
 
 impl CapabilityKey {
-    pub const ALL: [CapabilityKey; 14] = [
+    pub const ALL: [CapabilityKey; 15] = [
         Self::Battery,
         Self::Volume,
         Self::Playback,
@@ -91,6 +96,7 @@ impl CapabilityKey {
         Self::VoicePrompts,
         Self::Sidetone,
         Self::DeviceRename,
+        Self::PairedDevices,
     ];
 }
 
@@ -188,15 +194,16 @@ impl Capability {
         Ok(())
     }
 
-    /// Record partial evidence that the feature may work.
-    pub fn mark_experimental(
+    /// Record that the device answers for the feature and reports its state,
+    /// with no change confirmed yet.
+    pub fn mark_ready(
         &mut self,
         mechanism: Mechanism,
         evidence: impl Into<String>,
     ) -> Result<(), CapabilityError> {
         let evidence = evidence.into();
         self.guard(&evidence)?;
-        self.apply(CapabilityStatus::Experimental, mechanism, evidence);
+        self.apply(CapabilityStatus::Ready, mechanism, evidence);
         Ok(())
     }
 
@@ -477,7 +484,7 @@ mod tests {
         // that the interface exists but was never confirmed on this device.
         assert!(!CapabilityStatus::Supported.is_actionable());
         assert!(CapabilityStatus::Supported.requires_caveat());
-        assert!(CapabilityStatus::Experimental.requires_caveat());
+        assert!(CapabilityStatus::Ready.requires_caveat());
         assert!(!CapabilityStatus::Unknown.is_actionable());
         assert!(!CapabilityStatus::Unsupported.is_actionable());
     }

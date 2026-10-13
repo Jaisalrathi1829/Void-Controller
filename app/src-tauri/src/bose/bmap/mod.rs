@@ -29,6 +29,7 @@ pub mod eq;
 pub mod link;
 pub mod noise;
 pub mod stream;
+pub mod unit;
 
 #[cfg(windows)]
 pub mod winsock;

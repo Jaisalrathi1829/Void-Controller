@@ -9,7 +9,7 @@
 //!     be verified the application still shows the last *confirmed* state;
 //!   * which transitions have actually been confirmed by the hardware in this
 //!     run — the evidence the capability engine needs before it will call
-//!     noise control anything better than experimental.
+//!     noise control verified rather than merely ready.
 
 use super::custom::{self, LevelChange, Slot};
 use super::eq::{self, EqChange, EqLevels};
@@ -18,6 +18,7 @@ use super::noise::{
     self, is_link_failure, preset_for_index, ModeChange, Preset, Target, VerifyPolicy,
 };
 use super::stream::{StreamTransport, Timing, WireEvent};
+use super::unit::{self, ConnectionChange, MultipointChange, NameChange, PairedDevice};
 use bmap::device::DeviceConfig;
 use bmap::error::BmapError;
 use bmap::BmapConnection;
@@ -75,6 +76,55 @@ pub struct BatteryReport {
     pub percent: u8,
     pub at: String,
 }
+
+/// What the headphones called themselves, when they last said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameReading {
+    pub name: String,
+    pub at: String,
+}
+
+/// A rename the headphones confirmed by reporting the new name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameProof {
+    pub before: String,
+    pub after: String,
+    pub at: String,
+}
+
+/// Whether multipoint was on, when the headphones last said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultipointReading {
+    pub enabled: bool,
+    pub at: String,
+}
+
+/// A switch of multipoint the headphones confirmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultipointProof {
+    /// What it was switched to.
+    pub enabled: bool,
+    pub at: String,
+}
+
+/// A paired device the headphones confirmed connecting to or dropping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedProof {
+    /// What it was changed to: connected, or not.
+    pub connected: bool,
+    pub at: String,
+}
+
+/// The devices the headphones were paired with, when they last said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedReading {
+    pub devices: Vec<PairedDevice>,
+    pub at: String,
+}
+
+/// How long a name, multipoint setting or list of paired devices that could
+/// not be read is left before it is asked for again.
+const UNIT_PROBLEM_RETRY: Duration = Duration::from_secs(60);
 
 /// An equalizer change the device confirmed by reporting the new gains.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +220,26 @@ pub struct LinkStatus {
     /// The battery level as last reported by the device over this link.
     /// Asked for only when the host system has no level of its own to give.
     pub battery: Option<BatteryReport>,
+    /// What the headphones call themselves, as they last said.
+    pub name: Option<NameReading>,
+    /// Set when the name could not be read as observed. While it is set, the
+    /// headphones are not renamed.
+    pub name_problem: Option<String>,
+    /// A confirmed rename.
+    pub name_change: Option<NameProof>,
+    /// Whether multipoint is on, as the headphones last said.
+    pub multipoint: Option<MultipointReading>,
+    /// Set when multipoint could not be read as observed, or the headphones
+    /// have none. While it is set, it is not switched.
+    pub multipoint_problem: Option<String>,
+    /// A confirmed switch of multipoint.
+    pub multipoint_change: Option<MultipointProof>,
+    /// The paired devices, as the headphones last listed them.
+    pub paired: Option<PairedReading>,
+    /// Set when the list could not be read as observed.
+    pub paired_problem: Option<String>,
+    /// A confirmed connection to, or disconnection from, a paired device.
+    pub paired_change: Option<PairedProof>,
 }
 
 struct Session<S: super::stream::ByteStream> {
@@ -184,6 +254,9 @@ pub struct LinkTiming {
     pub verify: VerifyPolicy,
     /// Read-back policy for a custom mode's level.
     pub level_verify: VerifyPolicy,
+    /// How long a paired device is given to connect, and to disconnect.
+    pub connect_verify: VerifyPolicy,
+    pub disconnect_verify: VerifyPolicy,
     pub backoff: Duration,
     pub pause: fn(Duration),
 }
@@ -194,6 +267,8 @@ impl LinkTiming {
             transport: Timing::standard(),
             verify: VerifyPolicy::standard(),
             level_verify: VerifyPolicy::level(),
+            connect_verify: unit::connect_policy(),
+            disconnect_verify: unit::disconnect_policy(),
             backoff: REOPEN_BACKOFF,
             pause: std::thread::sleep,
         }
@@ -209,6 +284,10 @@ pub struct BmapLink<C: Connector> {
     last_open_failure: Option<(Instant, String)>,
     /// When the mode list was last asked for, whatever came of it.
     slots_asked: Option<Instant>,
+    /// When the name, multipoint and the paired devices were last asked for.
+    unit_asked: Option<Instant>,
+    /// When one of those that had a problem was last asked about again.
+    unit_problems_asked: Option<Instant>,
     status: LinkStatus,
     attempts: Vec<Attempt>,
     wire_log: Vec<WireEvent>,
@@ -226,6 +305,8 @@ impl<C: Connector> BmapLink<C> {
             session: None,
             last_open_failure: None,
             slots_asked: None,
+            unit_asked: None,
+            unit_problems_asked: None,
             status: LinkStatus::default(),
             attempts: Vec::new(),
             wire_log: Vec::new(),
@@ -301,6 +382,16 @@ impl<C: Connector> BmapLink<C> {
         self.status.eq = None;
         self.status.eq_problem = None;
         self.status.battery = None;
+        // Their name, multipoint and what they are connected to can all be
+        // changed from another device while this one is not looking.
+        self.status.name = None;
+        self.status.name_problem = None;
+        self.status.multipoint = None;
+        self.status.multipoint_problem = None;
+        self.status.paired = None;
+        self.status.paired_problem = None;
+        self.unit_asked = None;
+        self.unit_problems_asked = None;
         self.status.last_failure = None;
         self.last_open_failure = None;
     }
@@ -546,6 +637,276 @@ impl<C: Connector> BmapLink<C> {
                 })
             }
         }
+    }
+
+    /// How long ago the name, multipoint and the paired devices were last
+    /// asked for. `None` if they have not been since the device was last
+    /// seen to go.
+    pub fn unit_age(&self) -> Option<Duration> {
+        self.unit_asked.map(|at| at.elapsed())
+    }
+
+    /// Reads what the headphones are called, whether multipoint is on, and
+    /// which devices they are paired with and connected to, and remembers
+    /// each. Read-only.
+    ///
+    /// Three separate questions (and one more for each paired device). One
+    /// that is refused, not answered, or answered in a shape that has not
+    /// been observed is remembered as that feature's problem and does not
+    /// stop the others; the link is kept. Only the link itself failing ends
+    /// the reading.
+    ///
+    /// A feature with a problem is not asked about again on every call:
+    /// headphones that do not answer a question would otherwise hold the
+    /// link for a reply timeout each time. It is asked again after
+    /// [`UNIT_PROBLEM_RETRY`], when `force` is set, and when the headphones
+    /// have been away and come back.
+    pub fn read_unit(&mut self, force: bool) -> Result<(), LinkError> {
+        self.ensure_open(force)?;
+        self.unit_asked = Some(Instant::now());
+        let at = (self.now_text)();
+
+        let retry = force
+            || self
+                .unit_problems_asked
+                .map_or(true, |asked| asked.elapsed() >= UNIT_PROBLEM_RETRY);
+        let had_problem = self.status.name_problem.is_some()
+            || self.status.multipoint_problem.is_some()
+            || self.status.paired_problem.is_some();
+        if retry && had_problem {
+            self.unit_problems_asked = Some(Instant::now());
+        }
+
+        if self.status.name_problem.is_none() || retry {
+            let session = self.session.as_ref().expect("session ensured above");
+            match unit::read_name(&session.transport) {
+                Ok(name) => {
+                    self.status.name = Some(NameReading { name, at: at.clone() });
+                    self.status.name_problem = None;
+                }
+                Err(e) if is_link_failure(&e) => return Err(self.fail(e)),
+                Err(e) => {
+                    self.status.name = None;
+                    self.status.name_problem = Some(e.to_string());
+                    self.unit_problems_asked.get_or_insert_with(Instant::now);
+                }
+            }
+        }
+
+        if self.status.multipoint_problem.is_none() || retry {
+            let session = self.session.as_ref().expect("the link did not fail");
+            match unit::read_multipoint(&session.transport) {
+                Ok(enabled) => {
+                    self.status.multipoint = Some(MultipointReading { enabled, at: at.clone() });
+                    self.status.multipoint_problem = None;
+                }
+                Err(e) if is_link_failure(&e) => return Err(self.fail(e)),
+                Err(e) => {
+                    self.status.multipoint = None;
+                    self.status.multipoint_problem = Some(e.to_string());
+                    self.unit_problems_asked.get_or_insert_with(Instant::now);
+                }
+            }
+        }
+
+        if self.status.paired_problem.is_none() || retry {
+            // What came before goes to the wire log; what the next exchange
+            // puts there does not, because it is other devices' Bluetooth
+            // addresses.
+            self.collect_wire_log();
+            let session = self.session.as_ref().expect("the link did not fail");
+            let paired = unit::read_paired(&session.transport);
+            session.transport.take_wire_log();
+            match paired {
+                Ok(devices) => {
+                    self.status.paired = Some(PairedReading { devices, at });
+                    self.status.paired_problem = None;
+                }
+                Err(e) if is_link_failure(&e) => return Err(self.fail(e)),
+                Err(e) => {
+                    self.status.paired = None;
+                    self.status.paired_problem = Some(e.to_string());
+                    self.unit_problems_asked.get_or_insert_with(Instant::now);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Renames the headphones and reports what they then called themselves.
+    pub fn set_name(&mut self, requested: &str) -> Result<NameChange, LinkError> {
+        // Proves the link is alive, reconnecting once if it is not.
+        self.read_mode(true)?;
+
+        let session = self.session.as_ref().expect("read_mode left a session open");
+        let result = unit::set_name(&session.transport, requested, self.timing.verify);
+        self.collect_wire_log();
+
+        let change = match result {
+            Ok(change) => change,
+            // Device errors only surface here from the first read — a refused
+            // write comes back as a rejected change. Nothing was sent.
+            Err(e @ BmapError::Device { .. }) => {
+                self.status.name = None;
+                self.status.name_problem = Some(e.to_string());
+                return Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!(
+                        "The headphones' name could not be read as observed, so they were not \
+                         renamed. {e}"
+                    ),
+                ));
+            }
+            Err(e) => return Err(self.fail(e)),
+        };
+
+        // Whatever they last called themselves is what is remembered.
+        if let Some(after) = &change.after {
+            self.status.name = Some(NameReading {
+                name: after.clone(),
+                at: (self.now_text)(),
+            });
+            self.status.name_problem = None;
+        }
+        if change.is_verified_change() {
+            self.status.name_change = Some(NameProof {
+                before: change.before.clone(),
+                after: change.requested.clone(),
+                at: (self.now_text)(),
+            });
+        }
+        if change.sent && change.after.is_none() {
+            self.close();
+        }
+        Ok(change)
+    }
+
+    /// Connects the headphones to one of their paired devices, or
+    /// disconnects them from it, and reports what they then said about it.
+    ///
+    /// Nothing of this exchange goes to the wire log: every frame of it
+    /// carries another device's address.
+    pub fn set_paired_connection(
+        &mut self,
+        key: &str,
+        connect: bool,
+    ) -> Result<ConnectionChange, LinkError> {
+        self.read_mode(true)?;
+        self.collect_wire_log();
+
+        let policy = if connect {
+            self.timing.connect_verify
+        } else {
+            self.timing.disconnect_verify
+        };
+        let session = self.session.as_ref().expect("read_mode left a session open");
+        let result = unit::set_paired_connection(&session.transport, key, connect, policy);
+        session.transport.take_wire_log();
+
+        let change = match result {
+            Ok(change) => change,
+            Err(e @ BmapError::Device { .. }) => {
+                self.status.paired = None;
+                self.status.paired_problem = Some(e.to_string());
+                return Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!(
+                        "The headphones' paired devices could not be read as observed, so \
+                         nothing was changed. {e}"
+                    ),
+                ));
+            }
+            Err(e) => return Err(self.fail(e)),
+        };
+
+        if change.is_verified_change() {
+            self.status.paired_change = Some(PairedProof {
+                connected: change.requested,
+                at: (self.now_text)(),
+            });
+        }
+        if change.closed_after || (change.sent && change.after.is_none()) {
+            // The link went with it. What they are connected to is not known
+            // until they are reached again.
+            self.status.paired = None;
+            self.unit_asked = None;
+            self.close();
+        } else if change.sent {
+            // What they are connected to has changed, or may have: read the
+            // list again now rather than show the old one until it is due.
+            let session = self.session.as_ref().expect("the link did not go");
+            let paired = unit::read_paired(&session.transport);
+            session.transport.take_wire_log();
+            match paired {
+                Ok(devices) => {
+                    self.status.paired = Some(PairedReading {
+                        devices,
+                        at: (self.now_text)(),
+                    });
+                    self.status.paired_problem = None;
+                }
+                Err(e) if is_link_failure(&e) => {
+                    self.status.paired = None;
+                    self.fail(e);
+                }
+                Err(_) => {
+                    self.status.paired = None;
+                    self.unit_asked = None;
+                }
+            }
+        }
+        Ok(change)
+    }
+
+    /// Switches multipoint and reports what the headphones then said.
+    ///
+    /// With multipoint going off the headphones keep one connection. If it
+    /// is not this one they close it, and the session here is closed with it;
+    /// the change is still confirmed, by the state they answered with first.
+    pub fn set_multipoint(&mut self, requested: bool) -> Result<MultipointChange, LinkError> {
+        self.read_mode(true)?;
+
+        let session = self.session.as_ref().expect("read_mode left a session open");
+        let result = unit::set_multipoint(&session.transport, requested, self.timing.verify);
+        self.collect_wire_log();
+
+        let change = match result {
+            Ok(change) => change,
+            Err(e @ BmapError::Device { .. }) => {
+                self.status.multipoint = None;
+                self.status.multipoint_problem = Some(e.to_string());
+                return Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!(
+                        "Multipoint could not be read as observed, so it was not switched. {e}"
+                    ),
+                ));
+            }
+            Err(e) => return Err(self.fail(e)),
+        };
+
+        if let Some(enabled) = change.after {
+            self.status.multipoint = Some(MultipointReading {
+                enabled,
+                at: (self.now_text)(),
+            });
+            self.status.multipoint_problem = None;
+        }
+        if change.is_verified_change() {
+            self.status.multipoint_change = Some(MultipointProof {
+                enabled: change.requested,
+                at: (self.now_text)(),
+            });
+        }
+        // What they are connected to has just changed, or may have.
+        if change.sent {
+            self.status.paired = None;
+            self.unit_asked = None;
+        }
+        if change.closed_after || (change.sent && change.after.is_none()) {
+            self.close();
+        }
+        Ok(change)
     }
 
     /// Sets the equalizer and reports what the device then said.
@@ -805,6 +1166,8 @@ mod tests {
             transport: Timing::instant(),
             verify: VerifyPolicy::instant(3),
             level_verify: VerifyPolicy::instant(2),
+            connect_verify: VerifyPolicy::instant(3),
+            disconnect_verify: VerifyPolicy::instant(3),
             backoff,
             pause: |_| {},
         }
@@ -1427,6 +1790,344 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind, LinkErrorKind::UnexpectedFraming);
         assert!(!stream.sent().iter().any(|f| is_eq_write(f)));
+    }
+
+    // --- the name, multipoint and the paired devices --------------------------
+
+    const PHONE: [u8; 6] = [0x34, 0x11, 0x22, 0x33, 0x44, 0xF6];
+    const LAPTOP: [u8; 6] = [0x9C, 0x55, 0x66, 0x77, 0x88, 0x49];
+
+    fn name_status(name: &str) -> Chunk {
+        data(&unit::testing::name_status(name))
+    }
+    fn multipoint_status(on: bool) -> Chunk {
+        data(&unit::testing::multipoint_status(on))
+    }
+    fn paired_list(addresses: &[[u8; 6]]) -> Chunk {
+        data(&unit::testing::paired_list(addresses))
+    }
+    fn paired_info(address: [u8; 6], status: u8, name: &str) -> Chunk {
+        data(&unit::testing::paired_info(address, status, name))
+    }
+    fn is_unit_write(frame: &[u8]) -> bool {
+        matches!((frame[0], frame[1]), (1, 2) | (1, 10) | (4, _)) && frame[2] & 0x0F != 0x01
+    }
+
+    #[test]
+    fn the_name_multipoint_and_paired_devices_are_read_and_remembered() {
+        let stream = session(vec![
+            vec![status(0)], // probe at open
+            vec![name_status("Aurora")],
+            vec![multipoint_status(true)],
+            vec![paired_list(&[PHONE, LAPTOP])],
+            vec![paired_info(PHONE, 0x01, "Phone")],
+            vec![paired_info(LAPTOP, 0x03, "Laptop")],
+        ]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        assert!(l.unit_age().is_none(), "not asked for yet");
+        l.read_unit(false).unwrap();
+
+        let st = l.status();
+        assert_eq!(st.name.unwrap().name, "Aurora");
+        assert!(st.multipoint.unwrap().enabled);
+        let devices = st.paired.unwrap().devices;
+        assert_eq!(devices.len(), 2);
+        assert_eq!(
+            (devices[0].name.as_str(), devices[0].connected, devices[0].this_device),
+            ("Phone", true, false)
+        );
+        assert_eq!(
+            (devices[1].name.as_str(), devices[1].connected, devices[1].this_device),
+            ("Laptop", true, true)
+        );
+        assert!(l.unit_age().is_some());
+        assert!(!stream.sent().iter().any(|f| is_unit_write(f)), "nothing was set");
+    }
+
+    /// The paired devices come with their Bluetooth addresses. Those are
+    /// asked with, and kept out of the log of what crossed the link.
+    #[test]
+    fn other_devices_addresses_do_not_reach_the_wire_log() {
+        let stream = session(vec![
+            vec![status(0)],
+            vec![name_status("Aurora")],
+            vec![multipoint_status(true)],
+            vec![paired_list(&[PHONE, LAPTOP])],
+            vec![paired_info(PHONE, 0x01, "Phone")],
+            vec![paired_info(LAPTOP, 0x03, "Laptop")],
+        ]);
+        let mut l = link(vec![Ok(stream)]);
+        l.read_unit(false).unwrap();
+        let log = l.take_wire_log();
+        assert!(
+            log.iter().any(|e| e.bytes == [0x01, 0x02, 0x01, 0x00]),
+            "the name read is logged"
+        );
+        for event in &log {
+            for address in [PHONE, LAPTOP] {
+                assert!(
+                    !event.bytes.windows(6).any(|w| w == address),
+                    "an address in the log: {}",
+                    event.render()
+                );
+            }
+        }
+    }
+
+    /// Headphones with no multipoint say so; the name and the list are still
+    /// read, the link is kept, and they are not asked again straight away.
+    #[test]
+    fn one_question_refused_does_not_stop_the_others_or_cost_the_link() {
+        let refuse = data(&[0x01, 0x0A, 0x04, 0x01, 0x02]);
+        let stream = session(vec![
+            vec![status(0)],
+            vec![name_status("Aurora")],
+            vec![refuse],
+            vec![paired_list(&[])],
+            // The second reading: the name and the list, and no multipoint.
+            vec![name_status("Aurora")],
+            vec![paired_list(&[])],
+        ]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        l.read_unit(false).unwrap();
+        let st = l.status();
+        assert!(st.multipoint.is_none());
+        assert!(st.multipoint_problem.is_some());
+        assert_eq!(st.name.unwrap().name, "Aurora");
+        assert_eq!(st.paired.unwrap().devices.len(), 0);
+        assert!(l.is_open());
+
+        l.read_unit(false).unwrap();
+        let asked = stream.sent().iter().filter(|f| (f[0], f[1]) == (1, 10)).count();
+        assert_eq!(asked, 1, "not asked again so soon");
+        assert!(l.status().multipoint_problem.is_some());
+    }
+
+    #[test]
+    fn a_question_left_unanswered_is_a_problem_with_that_question_not_with_the_link() {
+        let stream = session(vec![
+            vec![status(0)],
+            vec![], // the name: silence
+            vec![multipoint_status(false)],
+            vec![paired_list(&[])],
+        ]);
+        let mut l = link(vec![Ok(stream)]);
+        l.read_unit(false).unwrap();
+        let st = l.status();
+        assert!(st.name.is_none() && st.name_problem.is_some());
+        assert!(!st.multipoint.unwrap().enabled);
+        assert!(l.is_open(), "the link was not dropped over it");
+    }
+
+    #[test]
+    fn headphones_that_went_away_are_asked_everything_again() {
+        let first = session(vec![
+            vec![status(0)],
+            vec![name_status("Aurora")],
+            vec![multipoint_status(true)],
+            vec![paired_list(&[])],
+        ]);
+        let mut l = link(vec![Ok(first)]);
+        l.read_unit(false).unwrap();
+        l.device_gone();
+        let st = l.status();
+        assert!(st.name.is_none() && st.multipoint.is_none() && st.paired.is_none());
+        assert!(l.unit_age().is_none());
+    }
+
+    #[test]
+    fn a_confirmed_rename_is_recorded() {
+        let stream = session(vec![
+            vec![status(0)],             // probe at open
+            vec![status(0)],             // liveness read
+            vec![name_status("Aurora")], // what they are called now
+            vec![name_status("Nova")],   // answer to the write
+            vec![name_status("Nova")],   // read-back
+        ]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        let change = l.set_name("Nova").unwrap();
+        assert!(change.is_verified_change());
+
+        let st = l.status();
+        assert_eq!(st.name.unwrap().name, "Nova");
+        let proof = st.name_change.expect("rename recorded");
+        assert_eq!((proof.before.as_str(), proof.after.as_str()), ("Aurora", "Nova"));
+        assert_eq!(stream.sent().iter().filter(|f| is_unit_write(f)).count(), 1);
+    }
+
+    #[test]
+    fn an_unconfirmed_rename_records_no_proof_but_the_real_name() {
+        let mut reactions = vec![
+            vec![status(0)],
+            vec![status(0)],
+            vec![name_status("Aurora")],
+            vec![name_status("Aurora")], // answered, and nothing changed
+        ];
+        reactions.extend((0..3).map(|_| vec![name_status("Aurora")]));
+        let mut l = link(vec![Ok(session(reactions))]);
+        let change = l.set_name("Nova").unwrap();
+        assert!(!change.is_verified_change());
+        let st = l.status();
+        assert!(st.name_change.is_none());
+        assert_eq!(st.name.unwrap().name, "Aurora", "what they said, not what was asked");
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_read_first_is_not_written() {
+        let odd = data(&[0x01, 0x02, 0x03, 0x02, 0x01, b'A']);
+        let stream = session(vec![vec![status(0)], vec![status(0)], vec![odd]]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        let err = l.set_name("Nova").unwrap_err();
+        assert_eq!(err.kind, LinkErrorKind::UnexpectedFraming);
+        assert!(l.status().name_problem.is_some());
+        assert!(!stream.sent().iter().any(|f| is_unit_write(f)));
+    }
+
+    #[test]
+    fn a_confirmed_switch_of_multipoint_is_recorded() {
+        let stream = session(vec![
+            vec![status(0)],
+            vec![status(0)],
+            vec![multipoint_status(false)],
+            vec![multipoint_status(true)], // answer to the write
+            vec![multipoint_status(true)], // read-back
+        ]);
+        let mut l = link(vec![Ok(stream)]);
+        let change = l.set_multipoint(true).unwrap();
+        assert!(change.is_verified_change());
+        let st = l.status();
+        assert!(st.multipoint.unwrap().enabled);
+        assert!(st.multipoint_change.expect("switch recorded").enabled);
+        assert!(l.is_open());
+    }
+
+    /// As on the test headphones: asked from the computer, they answered
+    /// "off" and closed the computer's connection.
+    #[test]
+    fn multipoint_going_off_may_close_this_link_and_is_still_recorded() {
+        let stream = session(vec![
+            vec![status(0)],
+            vec![status(0)],
+            vec![multipoint_status(true)],
+            vec![multipoint_status(false)], // answer to the write
+            vec![Chunk::Close],             // and then they were gone
+        ]);
+        let mut l = link(vec![Ok(stream)]);
+        let change = l.set_multipoint(false).unwrap();
+        assert!(change.is_verified_change());
+        assert!(change.closed_after);
+
+        let st = l.status();
+        assert!(!st.multipoint.unwrap().enabled);
+        assert!(!st.multipoint_change.expect("switch recorded").enabled);
+        assert!(st.paired.is_none(), "what they are connected to is no longer known");
+        assert!(!l.is_open(), "the session here went with it");
+    }
+
+    fn paired_ack(func: u8) -> Chunk {
+        data(&[0x04, func, 0x07, 0x00])
+    }
+    fn key_of(devices: &[PairedDevice], name: &str) -> String {
+        devices.iter().find(|d| d.name == name).expect("listed").key.clone()
+    }
+
+    /// Reads the list once to learn the key the laptop goes by, as the
+    /// interface would have, then uses it.
+    #[test]
+    fn a_confirmed_disconnection_is_recorded_and_the_list_read_again() {
+        let stream = session(vec![
+            vec![status(0)], // probe at open
+            // read_unit
+            vec![name_status("Aurora")],
+            vec![multipoint_status(true)],
+            vec![paired_list(&[PHONE, LAPTOP])],
+            vec![paired_info(PHONE, 0x03, "Phone")],
+            vec![paired_info(LAPTOP, 0x01, "Laptop")],
+            // set_paired_connection
+            vec![status(0)], // liveness read
+            vec![paired_list(&[PHONE, LAPTOP])],
+            vec![paired_info(LAPTOP, 0x01, "Laptop")], // before
+            vec![paired_ack(2)],
+            vec![paired_info(LAPTOP, 0x00, "Laptop")], // read-back
+            // the list, read again
+            vec![paired_list(&[PHONE, LAPTOP])],
+            vec![paired_info(PHONE, 0x03, "Phone")],
+            vec![paired_info(LAPTOP, 0x00, "Laptop")],
+        ]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        l.read_unit(false).unwrap();
+        let key = key_of(&l.status().paired.unwrap().devices, "Laptop");
+        l.take_wire_log();
+
+        let change = l.set_paired_connection(&key, false).unwrap();
+        assert!(change.is_verified_change());
+        assert_eq!(change.name, "Laptop");
+
+        let st = l.status();
+        assert!(!st.paired_change.expect("recorded").connected);
+        let devices = st.paired.expect("read again").devices;
+        assert!(!devices.iter().find(|d| d.name == "Laptop").unwrap().connected);
+        assert!(l.is_open());
+
+        // One request, to disconnect, and none to connect or remove.
+        let requests: Vec<_> = stream
+            .sent()
+            .into_iter()
+            .filter(|f| f[0] == 4 && !matches!(f[1], 4 | 5))
+            .collect();
+        assert_eq!(requests.len(), 1);
+        assert_eq!((requests[0][1], requests[0][2] & 0x0F), (2, 0x05));
+
+        // And none of it in the log: every frame of it holds an address.
+        for event in l.take_wire_log() {
+            assert_ne!(event.bytes.first(), Some(&0x04), "{}", event.render());
+        }
+    }
+
+    #[test]
+    fn disconnecting_this_device_closes_the_link_and_is_recorded() {
+        let stream = session(vec![
+            vec![status(0)],
+            vec![status(0)],
+            vec![paired_list(&[PHONE, LAPTOP])],
+            vec![paired_info(LAPTOP, 0x03, "Laptop")], // this device
+            vec![paired_ack(2)],
+            vec![Chunk::Close],
+        ]);
+        let mut l = link(vec![Ok(stream)]);
+        let key = unit::testing::key_of(&LAPTOP);
+        let change = l.set_paired_connection(&key, false).unwrap();
+        assert!(change.is_verified_change());
+        assert!(change.closed_after);
+        assert!(!l.is_open());
+        assert!(l.status().paired.is_none(), "what they are connected to is no longer known");
+    }
+
+    #[test]
+    fn a_device_that_is_not_on_the_list_is_not_asked_for() {
+        let stream = session(vec![
+            vec![status(0)],
+            vec![status(0)],
+            vec![paired_list(&[PHONE])],
+        ]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        let err = l
+            .set_paired_connection(&unit::testing::key_of(&LAPTOP), false)
+            .unwrap_err();
+        assert!(err.message.contains("no longer"), "{}", err.message);
+        assert!(!stream.sent().iter().any(|f| f[0] == 4 && matches!(f[1], 1..=3)));
+        assert!(l.status().paired_change.is_none());
+    }
+
+    #[test]
+    fn multipoint_that_cannot_be_read_first_is_not_switched() {
+        let odd = data(&[0x01, 0x0A, 0x03, 0x01, 0x03]);
+        let stream = session(vec![vec![status(0)], vec![status(0)], vec![odd]]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        let err = l.set_multipoint(false).unwrap_err();
+        assert_eq!(err.kind, LinkErrorKind::UnexpectedFraming);
+        assert!(l.status().multipoint_problem.is_some());
+        assert!(!stream.sent().iter().any(|f| is_unit_write(f)));
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //!
 //! Two design decisions worth noting:
 //!
-//! 1. The mock reports its capabilities as `Experimental`, never `Verified`.
+//! 1. The mock reports its capabilities as `Ready`, never `Verified`.
 //!    A simulated device has not verified anything about real hardware, and
 //!    letting the mock mint VERIFIED statuses would defeat the entire point of
 //!    the capability system.
@@ -20,7 +20,8 @@ use crate::device::capability::{CapabilityKey, CapabilitySet, Mechanism};
 use crate::device::command::CommandOutcome;
 use crate::device::state::{
     BatteryReading, BatterySource, ConnectionState, DeviceIdentity, DeviceSnapshot, DeviceSource,
-    EqSettings, EqState, NoiseControlMode, NoiseControlState, StateSource, Transport,
+    check_device_name, EqSettings, EqState, MultipointState, NoiseControlMode,
+    NoiseControlState, PairedDeviceState, StateSource, Transport,
 };
 use crate::device::traits::BoseDevice;
 use crate::device::{now_rfc3339, DeviceError, DeviceResult};
@@ -71,7 +72,17 @@ struct MockState {
     noise_mode: NoiseControlMode,
     noise_level: u8,
     eq: EqSettings,
+    multipoint: bool,
+    /// Whether the made-up second device is connected.
+    other_connected: bool,
+    /// What the simulated headphones are called, before the label that says
+    /// they are simulated.
+    name: String,
 }
+
+/// The ids the simulated device's two made-up paired devices go by.
+const SIMULATED_THIS: &str = "00000000000000000001";
+const SIMULATED_OTHER: &str = "00000000000000000002";
 
 pub struct MockBoseDevice {
     state: Mutex<MockState>,
@@ -96,6 +107,9 @@ impl MockBoseDevice {
                 noise_mode: NoiseControlMode::Quiet,
                 noise_level: 10,
                 eq: EqSettings::flat(),
+                multipoint: true,
+                other_connected: true,
+                name: "Bose QuietComfort".to_string(),
             }),
             behaviour,
             mutation_count: AtomicU64::new(0),
@@ -103,11 +117,12 @@ impl MockBoseDevice {
         }
     }
 
-    fn identity() -> DeviceIdentity {
+    fn identity(&self) -> DeviceIdentity {
         DeviceIdentity {
             // The name carries the label too, so that even a screenshot taken
             // out of context cannot be mistaken for real hardware output.
-            name: "Bose QuietComfort (SIMULATED)".to_string(),
+            // Renaming the simulated headphones changes what comes before it.
+            name: format!("{} (SIMULATED)", self.state.lock().name),
             id: "mock-0000-0000-0000".to_string(),
             instance_id: None,
             manufacturer: Some("Simulated".to_string()),
@@ -119,7 +134,7 @@ impl MockBoseDevice {
 
     /// The mock's capability set.
     ///
-    /// Everything it can do is `Experimental`, and nothing is
+    /// Everything it can do is `Ready`, and nothing is
     /// `hardware_verified`. A simulated device is evidence about the software,
     /// not about the headphones.
     fn simulated_capabilities() -> CapabilitySet {
@@ -134,9 +149,12 @@ impl MockBoseDevice {
             CapabilityKey::Equalizer,
             CapabilityKey::CustomNoiseControl,
             CapabilityKey::FirmwareVersion,
+            CapabilityKey::Multipoint,
+            CapabilityKey::DeviceRename,
+            CapabilityKey::PairedDevices,
         ] {
             caps.get_mut(key)
-                .mark_experimental(Mechanism::None, NOTE)
+                .mark_ready(Mechanism::None, NOTE)
                 .expect("fresh capability set permits transition");
         }
         caps
@@ -183,7 +201,7 @@ impl BoseDevice for MockBoseDevice {
     }
 
     async fn snapshot(&self) -> DeviceResult<DeviceSnapshot> {
-        let (connection, battery, charging, noise_mode, noise_level, eq) = {
+        let (connection, battery, charging, noise_mode, noise_level, eq, multipoint, other) = {
             let mut s = self.state.lock();
             if self.behaviour.drain_every > 0
                 && matches!(s.connection, ConnectionState::Connected)
@@ -201,6 +219,8 @@ impl BoseDevice for MockBoseDevice {
                 s.noise_mode,
                 s.noise_level,
                 s.eq,
+                s.multipoint,
+                s.other_connected,
             )
         };
 
@@ -215,7 +235,7 @@ impl BoseDevice for MockBoseDevice {
             } else {
                 Transport::None
             },
-            identity: connected.then(Self::identity),
+            identity: connected.then(|| self.identity()),
             capabilities: self.capabilities().await,
             battery: connected.then(|| BatteryReading {
                 percent: battery,
@@ -234,6 +254,29 @@ impl BoseDevice for MockBoseDevice {
                 settings: eq,
                 source: StateSource::Simulated,
                 read_at: now.clone(),
+            }),
+            multipoint: connected.then(|| MultipointState {
+                enabled: multipoint,
+                source: StateSource::Simulated,
+                read_at: now.clone(),
+            }),
+            // Made up, and named as made up: this machine, and with
+            // multipoint on a second device beside it.
+            paired_devices: connected.then(|| {
+                let mut devices = vec![PairedDeviceState {
+                    id: SIMULATED_THIS.to_string(),
+                    name: "This device (simulated)".to_string(),
+                    connected: true,
+                    this_device: true,
+                }];
+                devices.push(PairedDeviceState {
+                    id: SIMULATED_OTHER.to_string(),
+                    name: "Another device (simulated)".to_string(),
+                    // With multipoint off there is only the one connection.
+                    connected: multipoint && other,
+                    this_device: false,
+                });
+                devices
             }),
             // Windows audio is a real subsystem; the mock device does not
             // fabricate it. The audio module supplies it independently.
@@ -258,7 +301,7 @@ impl BoseDevice for MockBoseDevice {
 
     async fn device_info(&self) -> DeviceResult<Option<DeviceIdentity>> {
         self.require_connected()?;
-        Ok(Some(Self::identity()))
+        Ok(Some(self.identity()))
     }
 
     async fn battery(&self) -> DeviceResult<Option<BatteryReading>> {
@@ -371,6 +414,46 @@ impl BoseDevice for MockBoseDevice {
             Ok(CommandOutcome::sent_unverified("Readback mismatch."))
         }
     }
+
+    async fn set_multipoint(&self, enabled: bool) -> DeviceResult<CommandOutcome> {
+        self.require_connected()?;
+        self.state.lock().multipoint = enabled;
+        Ok(CommandOutcome::applied())
+    }
+
+    async fn set_paired_connection(
+        &self,
+        device: &str,
+        connected: bool,
+    ) -> DeviceResult<CommandOutcome> {
+        self.require_connected()?;
+        match device {
+            SIMULATED_OTHER => {
+                let mut state = self.state.lock();
+                if connected && !state.multipoint {
+                    return Ok(CommandOutcome::unsupported(
+                        "The simulated headphones hold one connection while multipoint is off.",
+                    ));
+                }
+                state.other_connected = connected;
+                Ok(CommandOutcome::applied())
+            }
+            SIMULATED_THIS if connected => Ok(CommandOutcome::applied()),
+            SIMULATED_THIS => Ok(CommandOutcome::unsupported(
+                "The simulated headphones are not disconnected from the device simulating them.",
+            )),
+            _ => Err(DeviceError::InvalidInput(
+                "that is not one of the simulated headphones' paired devices".to_string(),
+            )),
+        }
+    }
+
+    async fn set_device_name(&self, name: &str) -> DeviceResult<CommandOutcome> {
+        self.require_connected()?;
+        let name = check_device_name(name).map_err(DeviceError::InvalidInput)?;
+        self.state.lock().name = name;
+        Ok(CommandOutcome::applied())
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +462,56 @@ mod tests {
 
     fn perfect() -> MockBoseDevice {
         MockBoseDevice::new(MockBehaviour::perfect())
+    }
+
+    #[tokio::test]
+    async fn a_renamed_simulated_device_still_says_it_is_simulated() {
+        let dev = perfect();
+        dev.connect().await.unwrap();
+        assert!(dev.set_device_name("  Nova  ").await.unwrap().is_confirmed());
+        let name = dev.snapshot().await.unwrap().identity.unwrap().name;
+        assert_eq!(name, "Nova (SIMULATED)");
+        // And nothing it is called passes for headphones' own report.
+        assert_eq!(dev.reported_name(), None);
+
+        assert!(dev.set_device_name("").await.is_err());
+        assert!(dev.set_device_name(&"x".repeat(40)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn simulated_multipoint_switches_and_lists_made_up_devices_as_made_up() {
+        let dev = perfect();
+        assert!(dev.set_multipoint(false).await.is_err(), "not while disconnected");
+        dev.connect().await.unwrap();
+
+        let snap = dev.snapshot().await.unwrap();
+        assert!(snap.multipoint.unwrap().enabled);
+        let devices = snap.paired_devices.unwrap();
+        assert!(devices.iter().all(|d| d.name.contains("simulated")));
+        assert_eq!(devices.iter().filter(|d| d.this_device).count(), 1);
+
+        assert!(dev.set_multipoint(false).await.unwrap().is_confirmed());
+        let snap = dev.snapshot().await.unwrap();
+        assert!(!snap.multipoint.unwrap().enabled);
+        assert_eq!(snap.paired_devices.unwrap().iter().filter(|d| d.connected).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_simulated_second_device_can_be_dropped_and_brought_back() {
+        let dev = perfect();
+        dev.connect().await.unwrap();
+        let other = |snap: &DeviceSnapshot| {
+            snap.paired_devices.clone().unwrap().into_iter().find(|d| !d.this_device).unwrap()
+        };
+        let id = other(&dev.snapshot().await.unwrap()).id;
+
+        assert!(dev.set_paired_connection(&id, false).await.unwrap().is_confirmed());
+        assert!(!other(&dev.snapshot().await.unwrap()).connected);
+        assert!(dev.set_paired_connection(&id, true).await.unwrap().is_confirmed());
+        assert!(other(&dev.snapshot().await.unwrap()).connected);
+
+        // An id that is not one of its devices is not acted on.
+        assert!(dev.set_paired_connection("ffffffffffffffffffff", false).await.is_err());
     }
 
     #[tokio::test]

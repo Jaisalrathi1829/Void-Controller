@@ -167,6 +167,64 @@ pub struct EqState {
     pub read_at: String,
 }
 
+/// Whether the headphones will stay connected to two devices at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultipointState {
+    pub enabled: bool,
+    pub source: StateSource,
+    pub read_at: String,
+}
+
+/// A device the headphones are paired with: a phone, a computer.
+///
+/// By name only. The headphones know each by its Bluetooth address, and that
+/// is used in the native layer to ask for the name and goes no further.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedDeviceState {
+    /// Stands for the device when it is to be connected or disconnected. Not
+    /// its address, and not derivable from it without this installation's
+    /// salt; the native layer matches it against the headphones' own list.
+    pub id: String,
+    /// What the headphones call it. Empty if they have no name for it.
+    pub name: String,
+    pub connected: bool,
+    /// The phone or computer this application is running on.
+    pub this_device: bool,
+}
+
+/// Whether `id` has the shape of a paired device's id: twenty lowercase
+/// hexadecimal digits. Says nothing about whether such a device exists —
+/// that is settled against the headphones' list when it is used.
+pub fn is_paired_device_id(id: &str) -> bool {
+    id.len() == 20 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The longest name the headphones are given, in bytes of UTF-8.
+pub const MAX_DEVICE_NAME_BYTES: usize = 31;
+
+/// A name as it may be given to the headphones: what is left after trimming,
+/// or why not. Not empty, no longer than [`MAX_DEVICE_NAME_BYTES`], and
+/// nothing in it that is not a printing character.
+pub fn check_device_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("A name cannot be empty.".into());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("A name cannot contain line breaks or control characters.".into());
+    }
+    if name.len() > MAX_DEVICE_NAME_BYTES {
+        return Err(format!(
+            "That name is too long: {} bytes, and the most is {MAX_DEVICE_NAME_BYTES}. A plain \
+             letter is one byte; accented letters and emoji are more.",
+            name.len()
+        ));
+    }
+    Ok(name.to_string())
+}
+
 /// The host system's own volume: a Windows audio endpoint, or Android's media
 /// volume. Deliberately separate from any Bose-internal volume: they are
 /// different mechanisms and the UI never conflates them.
@@ -204,6 +262,14 @@ pub struct DeviceSnapshot {
     pub battery: Option<BatteryReading>,
     pub noise_control: Option<NoiseControlState>,
     pub equalizer: Option<EqState>,
+    /// Whether multipoint is on, as the headphones last said. `None` when
+    /// they have not said, or have no such thing.
+    #[serde(default)]
+    pub multipoint: Option<MultipointState>,
+    /// The devices the headphones are paired with and which are connected,
+    /// as they last listed them. `None` when they have not.
+    #[serde(default)]
+    pub paired_devices: Option<Vec<PairedDeviceState>>,
     pub system_audio: Option<SystemAudioState>,
     /// What the phone or computer this application runs on is called — the
     /// thing the headphones are connected to when they are connected here.
@@ -226,6 +292,8 @@ impl DeviceSnapshot {
             battery: None,
             noise_control: None,
             equalizer: None,
+            multipoint: None,
+            paired_devices: None,
             system_audio: None,
             host_name: None,
             last_error: None,

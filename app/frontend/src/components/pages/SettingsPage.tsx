@@ -1,12 +1,9 @@
-import { useState } from "react";
-import { Monitor, Moon, Sun, Trash2, Download } from "lucide-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 import {
-  Button,
   Panel,
   SectionLabel,
   Toggle,
 } from "../primitives";
-import { Modal } from "../Modal";
 import { VoiceFeedbackPanel } from "./VoiceFeedbackPanel";
 import { useApp, type ThemePref } from "../../store";
 import { hostPlatform, type SettingKey } from "@/services/ipc";
@@ -44,11 +41,8 @@ const themes: { value: ThemePref; label: string; icon: React.ElementType }[] = [
   { value: "dark", label: "Dark", icon: Moon },
 ];
 
-const logLevels = ["Off", "Error", "Warn", "Info", "Debug", "Trace"];
-
 export function SettingsPage() {
-  const { settings, toggleSetting, theme, setTheme, logLevel, setLogLevel, deviceName } = useApp();
-  const [clearOpen, setClearOpen] = useState(false);
+  const { settings, toggleSetting, theme, setTheme, deviceName } = useApp();
   // Starting with the system and starting minimized are desktop notions; on
   // a phone they are left out rather than listed as unavailable. "Minimize
   // to tray" is the same switch there, under the name of what it does.
@@ -158,43 +152,6 @@ export function SettingsPage() {
 
       <VoiceFeedbackPanel />
 
-      <Panel className="p-6">
-        <SectionLabel>Diagnostics</SectionLabel>
-        <div className="mt-3">
-          <label className="mb-2 block">Logging level</label>
-          <div className="flex flex-wrap gap-1.5">
-            {logLevels.map((l) => (
-              <button
-                key={l}
-                onClick={() => setLogLevel(l)}
-                className={cn(
-                  "rounded-md border px-3 py-1 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                  logLevel === l ? "border-primary/50 bg-accent text-accent-foreground" : "border-border text-muted-foreground hover:bg-accent",
-                )}
-              >
-                {l}
-              </button>
-            ))}
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" icon={<Download className="size-4" />}>Export Logs</Button>
-            <Button variant="ghost" size="sm" icon={<Trash2 className="size-4" />} onClick={() => setClearOpen(true)}>Clear Logs</Button>
-          </div>
-        </div>
-      </Panel>
-
-      <Modal
-        open={clearOpen}
-        onClose={() => setClearOpen(false)}
-        title="Clear Logs"
-        description="This will permanently remove all locally stored diagnostic logs."
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setClearOpen(false)}>Cancel</Button>
-            <Button variant="danger" onClick={() => setClearOpen(false)}>Clear Logs</Button>
-          </>
-        }
-      />
     </div>
   );
 }

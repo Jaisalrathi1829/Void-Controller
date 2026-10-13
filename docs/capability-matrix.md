@@ -17,8 +17,8 @@ the headphones' own report — see Experiments 5 and 6 in
 | --- | --- |
 | `UNKNOWN` | We have not established whether the feature is accessible. |
 | `SUPPORTED` | A technically valid interface appears to expose it, but it has **not** been confirmed on the physical device. |
+| `READY` | The device itself answers for the feature and reports its state, and every change is checked by reading it back. No change has been confirmed yet since the application started. Called `EXPERIMENTAL` until 2026-10-13. |
 | `VERIFIED` | The actual physical device was tested and the feature was confirmed to work. |
-| `EXPERIMENTAL` | Evidence suggests it may work, but verification is incomplete. |
 | `UNSUPPORTED` | Cannot currently be accessed safely through available interfaces. |
 
 `SUPPORTED` is never treated as working. The UI renders it with an explicit
@@ -39,17 +39,19 @@ caveat, and `CapabilityStatus::is_actionable()` returns `false` for it.
 | Aware mode | BMAP over RFCOMM, `[31.3]` | **VERIFIED** | **Yes** — Quiet → Aware confirmed by read-back |
 | Custom noise control | BMAP over RFCOMM, `[31.3]` and `[31.6]` | **VERIFIED** | **Yes** — switch into the custom mode and a level change, both confirmed by read-back |
 | Equalizer | BMAP over RFCOMM, `[1.7]` | **VERIFIED** | **Yes** — read (bass +4, mid +1, treble +4), changed and restored, confirmed by read-back |
-| Multipoint | BMAP (not driven) | UNKNOWN | No |
+| Multipoint | BMAP over RFCOMM, `[1.10]` | **VERIFIED** | **Yes** — read (on), switched off and on, each confirmed by the headphones' own report (2026-10-13) |
+| Paired devices, listed | BMAP over RFCOMM, `[4.4]` and `[4.5]` | **VERIFIED** (read) | **Yes** — two devices read, by name, with which is connected and which is asking |
+| Paired devices, connected and disconnected | BMAP over RFCOMM, `[4.1]` and `[4.2]` | SUPPORTED | **No** — an older model's requests, written and unit-tested, never sent to these headphones. Experiment 13 |
 | Firmware version | BMAP over RFCOMM, `[0.5]` | **VERIFIED** | **Yes** — read `1.0.6-80+f5f219b` |
 | Auto-off | BMAP (not driven) | UNKNOWN | No |
 | Voice prompts | BMAP (not driven) | UNKNOWN | No |
 | Sidetone | BMAP (not driven) | UNKNOWN | No |
-| Device rename | BMAP (not driven) | UNKNOWN | No |
+| Device rename | BMAP over RFCOMM, `[1.2]` | **VERIFIED** | **Yes** — read ("Aurora"), renamed and renamed back, each confirmed by read-back (2026-10-13) |
 
 This table is the project's record of what has been demonstrated on the test
 unit. **The running application does not start from it.** Each session rebuilds
 its statuses from what it has itself observed, so noise control shows
-`EXPERIMENTAL` when the app opens and becomes `VERIFIED` once the headphones
+`READY` when the app opens and becomes `VERIFIED` once the headphones
 have confirmed a switch in each direction in that session — and the custom
 mode once they have confirmed a switch into it and a change to its level.
 Nothing is carried over on trust.
@@ -155,13 +157,26 @@ control is withheld and says why.
 Three bands, -10 to +10, held on the headphones. The application shows the
 values the headphones report and, on 2026-10-10, changed one band and restored
 it with each step read back. In the running application the equalizer is
-`EXPERIMENTAL` once it has been read and `VERIFIED` once a change has been
+`READY` once it has been read and `VERIFIED` once a change has been
 confirmed in that session.
 
-This is the hardware equalizer only. The "Software EQ" panel in the UI is not
-implemented and says so.
+This is the hardware equalizer, and the only one: the "Software EQ" panel
+that used to sit beside it was never implemented, and was removed on
+2026-10-13.
 
-### Multipoint and the rest — still `UNKNOWN`
+### Multipoint, the paired devices and renaming
+
+Read and driven since 2026-10-13: Experiments 11 and 12 in
+[protocol-notes.md](protocol-notes.md). In the running application each is
+`READY` once the headphones have reported it in the shape that was observed
+and `VERIFIED` once they have confirmed a change in that session. A reply in
+any other shape leaves the feature `UNKNOWN` and nothing is written.
+
+What `VERIFIED` covers for multipoint is the switch being made and reported.
+It does not cover which device the headphones keep when it goes off: once,
+they dropped the computer that had asked and kept the phone.
+
+### The rest — still `UNKNOWN`
 
 Upstream documents some of these for this model. This application has not sent
 a single frame for any of them, so there is no evidence of its own to stand on.

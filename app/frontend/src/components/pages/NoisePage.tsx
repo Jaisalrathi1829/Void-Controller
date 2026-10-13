@@ -125,16 +125,6 @@ export function NoisePage() {
           </div>
         )}
 
-        {cap === "experimental" && (
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-warning-subtle/40 p-3 text-sm">
-            <Info className="mt-0.5 size-4 shrink-0 text-warning" />
-            <span className="text-muted-foreground">
-              <span className="font-medium text-foreground">Experimental. </span>
-              {evidence ?? capabilityMeta.experimental.note}
-            </span>
-          </div>
-        )}
-
         {!disabled && customUnavailable && customEvidence && (
           <p className="mt-3 text-xs text-muted-foreground" data-testid="custom-unavailable">
             Custom: {customEvidence}
@@ -184,15 +174,6 @@ export function NoisePage() {
               )}
             </div>
 
-            {customCap === "experimental" && (
-              <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-warning-subtle/40 p-3 text-sm">
-                <Info className="mt-0.5 size-4 shrink-0 text-warning" />
-                <span className="text-muted-foreground">
-                  <span className="font-medium text-foreground">Experimental. </span>
-                  {customEvidence ?? capabilityMeta.experimental.note}
-                </span>
-              </div>
-            )}
           </div>
 
           {/* Wind block has no device interface in this build. It is offered

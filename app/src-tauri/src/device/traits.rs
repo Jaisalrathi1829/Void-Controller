@@ -94,4 +94,33 @@ pub trait BoseDevice: Send + Sync {
 
     /// Same verification requirement as `set_noise_control`.
     async fn set_equalizer(&self, settings: EqSettings) -> DeviceResult<CommandOutcome>;
+
+    /// Switches multipoint: whether the device stays connected to two hosts
+    /// at once. `Applied` only when the device then reports that state.
+    ///
+    /// With it going off the device keeps one connection, and that may not
+    /// be this host's. A device that says "off" and then drops this
+    /// connection has still applied the change.
+    async fn set_multipoint(&self, enabled: bool) -> DeviceResult<CommandOutcome>;
+
+    /// Connects the device to one of the hosts it is paired with, or
+    /// disconnects it from one. `device` is the id the snapshot gave for
+    /// that host. `Applied` only when the device then reports it so — or,
+    /// for the host that is asking being disconnected, when the device takes
+    /// the request and drops this connection.
+    async fn set_paired_connection(
+        &self,
+        device: &str,
+        connected: bool,
+    ) -> DeviceResult<CommandOutcome>;
+
+    /// Renames the device. `Applied` only when it then reports that name.
+    async fn set_device_name(&self, name: &str) -> DeviceResult<CommandOutcome>;
+
+    /// What the device itself last said it is called, if the backend has
+    /// that in hand. Costs nothing. The host system keeps a name for it too,
+    /// which can be an older one.
+    fn reported_name(&self) -> Option<String> {
+        None
+    }
 }

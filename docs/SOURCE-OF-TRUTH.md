@@ -5,10 +5,10 @@ what did not, and the exact state it was left in. If something breaks, start
 here: every claim below says whether it was **measured**, **tested**, or
 **not verified**.
 
-Last updated: 2026-10-12.
+Last updated: 2026-10-13.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- Everything described here is committed and pushed. The commit that holds the code is `1502442` (see [§12](#12-git-state))
+- The commit that holds the code is `1502442` (see [§12](#12-git-state)). The work of 2026-10-13 is **not yet committed**: [§18](#18-third-round-on-the-phone-app-2026-10-13)
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -78,8 +78,13 @@ RESULT 6 · PROCESSING 7
 | --- | --- | --- |
 | `[0.3]` | Product id | Measured 2026-10-11: `GET` → `00 03 03 03 40 75 0D` = `0x4075` + variant `0x0D`, matching Windows |
 | `[0.5]` | Firmware version | Used to validate every connection |
+| `[1.2]` | The headphones' own name (`00`, then UTF-8) | Read and written 2026-10-13, confirmed by read-back |
 | `[1.7]` | Equalizer, 3 bands, −10…+10 | Read and written, confirmed by read-back |
+| `[1.10]` | Multipoint: `07` on, `06` off | Read and written 2026-10-13. Going off, the headphones dropped the computer that asked |
 | `[2.2]` | Battery | Measured 2026-10-11: `GET` → `02 02 03 04 0A FF FF 00` = 10 %, Windows showed 10 |
+| `[4.1]`, `[4.2]` + address | Connect to, disconnect from, a paired device | **Not run on the headphones.** An older model's requests; sent by the per-device switch added 2026-10-13 |
+| `[4.4]` | Addresses of the paired devices | Read 2026-10-13. Never written |
+| `[4.5]` + address | One paired device: status byte (bit 0 connected, bit 1 "this is you") and name | Read 2026-10-13. Never written |
 | `[31.1]` | List all modes (START, answered by a series of `[31.6]`) | Read |
 | `[31.3]` | Current mode index | Read and written |
 | `[31.6]` | Mode configuration (47-byte STATUS, 39-byte SETGET on this model) | Read; level written with a minimal-edit guard |
@@ -206,8 +211,8 @@ Rules that hold everywhere:
 1. The UI cannot express a Bluetooth write. No command carries a UUID,
    handle or byte array.
 2. One mutex-guarded control link; operations are strictly sequential.
-3. Capability states: UNKNOWN / SUPPORTED / EXPERIMENTAL / VERIFIED /
-   UNSUPPORTED. VERIFIED needs a `HardwareProof` built from an observed
+3. Capability states: UNKNOWN / SUPPORTED / READY / VERIFIED /
+   UNSUPPORTED (READY was called EXPERIMENTAL until 2026-10-13). VERIFIED needs a `HardwareProof` built from an observed
    change in device-reported state.
 4. The mock device is always labelled SIMULATED and is never watched,
    notified about or announced.
@@ -498,8 +503,8 @@ cargo clippy --manifest-path app/src-tauri/Cargo.toml --lib --tests -- -D warnin
 
 | Suite | Result | When |
 | --- | --- | --- |
-| Rust app | 508 passed, 0 failed, 39 ignored | 2026-10-12 |
-| Frontend | 215 passed; `tsc` clean; `vite build` OK | 2026-10-12 |
+| Rust app | 579 passed, 0 failed, 47 ignored | 2026-10-13 |
+| Frontend | 255 passed; `tsc` clean; `vite build` OK | 2026-10-13 |
 | Vendored crate / tools | 103 / 16 / 27 / 32 passed | 2026-10-11 |
 | Clippy | clean but for the two old lints allowed above | 2026-10-12 |
 | Hardware (Windows) | `hw_a1–3`, `hw_b0–b8`, `hw_diag_mode_slots`, all `kokoro_real_*`, `voice_real_*` and `voice_hw_*`, and `bundled_real_model` by itself: all pass | 2026-10-12, after every change described in this document — see [§15](#15-hardware-run-2026-10-12) |
@@ -998,3 +1003,185 @@ longer counts as the application having gone.
 The phone package replaces the one listed in §16. It installs over the
 version already on the phone; a widget already on the home screen stays one
 cell tall until it is stretched.
+
+---
+
+## 18. Third round on the phone app (2026-10-13)
+
+Asked for by the owner, of the mobile app: remove the Diagnostics section;
+remove the word "Windows" from the equalizer; remove the term "experimental"
+everywhere; add a switch for the multi-device connection that shows what is
+connected; detect the headphones' name whatever it is; and add a way to
+change the name.
+
+**Not committed yet** at the time of writing.
+
+### What was done
+
+| Asked | Done |
+| --- | --- |
+| Remove Diagnostics | On Android it is not in the navigation, the Device page has no button to it, and Settings has no logging section (`pagesFor` in `pages.ts`). The desktop keeps all of it |
+| "Windows" in the equalizer | The software-equalizer panel is not shown on Android — it was a panel for a Windows audio pipeline that does not exist — and the page is the headphones' own equalizer. The Device page, the battery tooltip and the reasons given for a capability's state no longer say Windows on a phone either |
+| "Experimental" everywhere | The status is renamed `ready` throughout — the type, both languages, the labels — and shown as "Ready". The amber boxes that began "Experimental." on the Noise and Equalizer pages are gone. What it means is unchanged, and it still turns to "Verified" on a confirmed change. This applies to the desktop too: it is one interface |
+| Multi-device switch, and what is connected | New, on the Device page: Experiments 11 and 12, `bose/bmap/unit.rs` |
+| Detect the name, whatever it is | It always was read rather than written in — nothing in the application knows "Aurora". Now it is the headphones' own answer over the control link that is shown and spoken, where before it was the system's record of them. Models other than the QuietComfort Headphones (`0x4075`) are still not driven: none has been tested |
+| Change the name | New, on the Device page: Experiment 12 |
+
+### Decisions
+
+| Decision | Why |
+| --- | --- |
+| "Ready", not just a blank where "Experimental" was | The state is real and worth showing: the headphones are answering, and nothing has been confirmed yet this run. The old word made that sound like doubt about features that have each been proven on the headphones |
+| Switching multipoint off is asked about first | It dropped the device that asked, at once, and it could then only be switched back on after reconnecting by hand. A switch that can lock you out of itself says so before it is flipped |
+| A switch to "off" counts as confirmed on the headphones' answer alone if they then close the link | They answer with the new state and then go. Waiting for a read-back that cannot come would report a change that happened as unconfirmed |
+| Only `06` and `07` are read as multipoint | Upstream's rule for other models reads both as "on". Two values were seen; two are accepted |
+| Paired devices are shown by name, and their addresses stop in one module | They are other people's devices. The address is needed to ask for the name and for nothing else, and that exchange is kept out of the wire log |
+| Nothing in the device-management block is written | True when this table was written. Later the same day connecting and disconnecting were asked for and added — see the end of this section. Removing a paired device is still not sent by anything |
+| The headphones' own name replaces the system's wherever it is known | After a rename Windows keeps the old name until they are paired again; without this the application would rename them and go on using the old name |
+| The name limit is 31 bytes, counted as it is sent | Upstream's figure. The headphones' own limit was not looked for — that would be probing |
+| A feature that does not answer is left alone for a minute, and the link kept | Headphones that never answer one question would otherwise hold the link for a reply timeout on every refresh |
+
+### Files
+
+| File | What |
+| --- | --- |
+| `src/bose/bmap/unit.rs` (new) | `read_name`, `set_name`, `read_multipoint`, `set_multipoint`, `read_paired`; `check_name`; 31 tests |
+| `src/bose/bmap/link.rs` | `read_unit`, `set_name`, `set_multipoint`; what was read and what was confirmed, in `LinkStatus` |
+| `src/bose/real.rs` | The snapshot's `multipoint` and `paired_devices`; the name from the headphones; capabilities for Multipoint and DeviceRename; `reported_name` |
+| `src/device/{state,command,traits}.rs` | `MultipointState`, `PairedDeviceState`, `check_device_name`; commands `SetMultipoint`, `SetDeviceName`; trait methods |
+| `src/bose/mock.rs` | The simulated device has both, labelled as simulated |
+| `src/lib.rs`, `src/watcher.rs`, `src/settings.rs` | `go_by_own_name`, `remember_own_name`, `reported_device_name` |
+| `src/bose/bmap/hardware_tests.rs` | `hw_diag_device_settings`, `hw_diag_multipoint_toggle`, `hw_set_multipoint_on`, `hw_diag_rename_and_back` |
+| `frontend/src/components/pages/DevicePage.tsx` | The multi-device panel, the rename editor; the page's header stacks on a phone |
+| `frontend/src/pages.ts`, `Sidebar.tsx`, `App.tsx`, `TopBar.tsx`, `EqualizerPage.tsx`, `SettingsPage.tsx`, `primitives.tsx` | What a phone leaves out |
+| `frontend/src/types/capability.ts`, `store.tsx`, `NoisePage.tsx` and the Rust `device/capability.rs` | `experimental` → `ready` |
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| Name, multipoint and paired devices read from the headphones | `hw_diag_device_settings`, `hw_b9` through the application's code | "Aurora"; on; "Jaisal's S24 Ultra" and "NEMESIS", both connected, the computer marked as the one asking. Nothing but reads sent; nothing about the other devices in the wire log |
+| Rename and rename back | `hw_diag_rename_and_back`, `hw_b10` through the application's code | Each confirmed by read-back in about 75 ms; written once each; DeviceRename `VERIFIED`; the new name is the one shown. Left as "Aurora" |
+| Multipoint off and on | `hw_diag_multipoint_toggle`, `hw_set_multipoint_on` | Off: `06`, and the computer was dropped. On again after reconnecting by hand: `07`, read back three times. Left on |
+| Asking for multipoint as it already is | `hw_b11` | Nothing written |
+| The parsing, the write-once rule, the closed-link case, refusals, addresses kept in | `unit.rs`, `link.rs`, `real.rs`, `command.rs`, `mock.rs`, `lib.rs` tests | 563 Rust tests pass |
+| What the phone leaves out; the Device page's switch, list, confirmation and rename editor | `mobile.test.tsx`, `DevicePage.test.tsx` | 240 frontend tests pass |
+| The pages at phone width with an Android user agent, against the simulated device | Browser preview, 375 × 812 | No Diagnostics in the navigation; the Equalizer page without the software panel or the word Windows; "Ready" on Noise; rename and switch-off with its warning both work; no sideways scroll; no console errors |
+
+### Not checked
+
+- **Anything on a phone.** The multi-device switch, the list and the rename
+  were run on the headphones from Windows. The code between the page and the
+  wire is the same on Android, and the phone build compiles, but nobody has
+  used them there.
+- **Multipoint switched off through the application's own code path on the
+  headphones.** It was switched off once, with the diagnostic test's raw
+  frames; the application's path for it is covered by unit tests using the
+  bytes that were seen. Doing it again meant dropping the computer again.
+- **Which device the headphones keep** when multipoint goes off, as a rule.
+  Seen once.
+- What a paired, not-connected device looks like on this model.
+- How long a phone or a computer takes to show a new name of their own.
+- The desktop application's Device page, by eye. It uses the same page.
+
+### State the hardware was left in
+
+Called **"Aurora"** · multipoint **on** · connected to the phone and the
+computer · mode, equalizer and custom level not touched.
+
+### Builds
+
+| | |
+| --- | --- |
+| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-13 12:50, 139,337,102 bytes, SHA-256 `19471427b0d3cc2a5c16780fcd4375a77eca93e443f50684125ccb2da2e020d4`. Not run by anyone |
+| Windows installer | `Setups\Bose QC Control Center_0.1.0_x64-setup.exe`, 2026-10-13 12:52, 105,297,172 bytes, SHA-256 `6c88793cdcc430cb8af5da7521fd58c5910748427da738d7a25c418b04f60dc4`. Not run by anyone |
+
+These replace the ones listed in §15 and §17. Both install over the version
+already there.
+
+### Later the same day: the Device page on the phone, and a switch for each device
+
+Asked for by the owner after installing the build above on the phone (which
+is the first evidence that it runs there: their screenshot is of its Device
+page). Two things: take the card at the top of the Device page off — the
+headphones' picture, their name, Reconnect and Disconnect — as saying again
+what is already there; and make the multi-device section bigger, with a
+switch in front of each device that is on while it is connected and
+disconnects it when turned off.
+
+| Asked | Done |
+| --- | --- |
+| Remove the card | Not shown on Android. A Reconnect button appears on the Connection row when the headphones are not connected, since the card was the page's only way to reconnect. The desktop keeps the card |
+| Bigger | The section's title, each device's name and its rows are larger, and each device has an icon tile |
+| A switch for each device | Every paired device is listed with one, on while the headphones are connected to it. Moving it sends `START [4.2]` (off) or `START [4.1]` (on) with that device's address — see below |
+
+**The switch for each device has not been run on the headphones.** The
+experiment, `hw_diag_paired_disconnect_and_reconnect`, disconnects the
+owner's phone for some seconds and was stopped before it ran, for want of
+their explicit agreement to that. The requests are an older model's
+(Experiment 13 in protocol-notes.md). Everything else about it is tested:
+
+| What | How |
+| --- | --- |
+| The device is looked up on the headphones' own list by an id, read first, asked once, and read back; a device not on the list sends nothing; an address given as an id reaches nothing | `unit.rs`, `link.rs`, `command.rs` tests |
+| Disconnecting the device that is asking is confirmed by the link going, and only then | same |
+| The page: each device's switch follows what the headphones report; disconnecting this phone, and connecting another device with multi-device off, are asked about first | `DevicePage.test.tsx`; and by hand in a browser at phone width against the simulated device |
+
+New since the tables above: `CapabilityKey::PairedDevices`, the command
+`SetPairedDeviceConnection { device, connected }`, `PairedDeviceState.id`,
+`set_paired_connection` in `unit.rs`, `link.rs` and both device backends.
+Tests now: 579 Rust, 251 frontend.
+
+Decisions:
+
+| Decision | Why |
+| --- | --- |
+| A device is named to the native layer by a salted hash of its address | The interface has to say which device, and must not hold addresses. The hash is matched against the headphones' list each time, so it can only ever name something the headphones themselves just listed |
+| Disconnecting this phone is asked about first | The application cannot undo it: with the phone dropped there is no link to ask over |
+| Connecting another device while multi-device is off is asked about first | The headphones then hold one connection, so it drops this one |
+| No request to remove a paired device | Not asked for, and not reversible from here |
+
+Builds with this in them, replacing the two listed just above:
+
+| | |
+| --- | --- |
+| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-13 13:15, 139,369,870 bytes, SHA-256 `8b0cf866e0b270cb2be0bb86d56946eecbbdf640a87116ae6a7dca1c74a28248`. Not run by anyone |
+| Windows installer | `Setups\Bose QC Control Center_0.1.0_x64-setup.exe`, 2026-10-13 13:19, 105,335,116 bytes, SHA-256 `ae7a3574ef032cf81cf1386bcf113182dc6bc939dddab4567cb611ead90cecfd`. Not run by anyone |
+
+### And then: the same on Windows
+
+Asked for by the owner once the phone build had these changes: make every
+change that was made for the phone in the Windows build as well — the card
+off the Device page, the Diagnostics section gone.
+
+So what had been left out on a phone is now simply not in the application:
+
+| | Before | Now |
+| --- | --- | --- |
+| Diagnostics page, its button on the Device page, the logging section of Settings | Hidden on Android | Removed. `DiagnosticsPage.tsx` is deleted; `diagnostics` is no longer a page |
+| The card at the top of the Device page | Hidden on Android | Removed. Reconnect is on the Connection row, on both, when the headphones are not connected |
+| Software EQ panel | Hidden on Android | Removed, with the store state behind it. The Equalizer page is one panel |
+| `pagesFor`, `pageTitle` (what each platform has) | Decided per platform | Gone: there is one set of pages |
+
+What still differs by platform is wording that names the host — "This phone"
+or "This computer", "Phone volume" or "Windows volume" — and the settings
+that only one of them has (start with Windows, the desktop widget, keep
+running in the background).
+
+Nothing native changed for this. The event log the Diagnostics page showed
+was kept in the interface only, and the part of it the Device page's
+timeline uses is still there.
+
+Checked: 255 frontend tests (the "what the application no longer has" cases
+now run for a phone and for a desktop), the type check, and by eye in a
+browser at desktop width against the simulated device — the sidebar has six
+entries, the Device page opens at Device Information, the Equalizer page is
+one panel, Settings has no logging section, no console errors. Not checked:
+the installed Windows application itself.
+
+Builds, replacing the two listed before this subsection:
+
+| | |
+| --- | --- |
+| Windows installer | `Setups\Bose QC Control Center_0.1.0_x64-setup.exe`, 2026-10-13 13:57, 105,187,353 bytes, SHA-256 `20a1fc639720b9fa60f934e7dfc0985cd9412b9eb48fac68554935483fbcd92f`. Not run by anyone |
+| Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-13 13:59, 139,353,486 bytes, SHA-256 `7b040efae243b29bc040d8c7a4cfddb35c1f03bfb68f606cb4c0f79fa807c38d`. Not run by anyone |

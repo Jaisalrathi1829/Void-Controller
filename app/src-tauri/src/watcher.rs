@@ -303,7 +303,11 @@ pub fn spawn(app: AppHandle) {
             .flatten();
 
             let mut sighting = sighting;
-            if let Some(seen) = &sighting {
+            if let Some(seen) = &mut sighting {
+                // By the name they have given themselves, if they have been
+                // asked: the system's can still be the one from before a
+                // rename.
+                state.go_by_own_name(seen);
                 state.remember_device(seen);
             }
             // The home-screen widget shows whether they are connected, and
