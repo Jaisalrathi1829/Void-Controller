@@ -8,7 +8,7 @@ here: every claim below says whether it was **measured**, **tested**, or
 Last updated: 2026-10-13.
 
 - Repository: `https://github.com/Jaisalrathi1829/bose-qc-control-center` (private), branch `main`
-- The commit that holds the code is `1502442` (see [§12](#12-git-state)). The work of 2026-10-13 is **not yet committed**: [§18](#18-third-round-on-the-phone-app-2026-10-13)
+- Everything described here is committed and pushed. The commit that holds the code is `621448e` (see [§12](#12-git-state))
 
 Deeper detail lives in the other documents; this one is the index and the
 record of decisions:
@@ -581,10 +581,15 @@ On `origin/main`:
 
 | `1502442` | The equalizer on the Android widget, and the widget's taps no longer waiting on one another ([§17](#17-equalizer-on-the-android-widget-2026-10-12)) |
 
-Commits that touch only this document are bookkeeping; `1502442` is the one
+| `621448e` | Everything of 2026-10-13 ([§18](#18-third-round-on-the-phone-app-2026-10-13)): multi-device connection, renaming, a switch for each paired device, "ready" in place of "experimental", and one interface for the phone and the desktop — no Diagnostics, no card on the Device page, no software equalizer |
+
+Commits that touch only this document are bookkeeping; `621448e` is the one
 to return to for the code.
 
 Earlier points to go back to, if something in the latest turns out wrong:
+`1502442` is the last commit with the Diagnostics page, the software-equalizer
+panel and the card on the Device page, and before anything was read from or
+written to the headphones' name, multipoint or paired devices;
 `7bfd6e1` is the Android widget with the modes alone, as the owner reported
 working on the phone — with the 2.5 s wait between taps still in it;
 `b1f2a3f` is everything verified on the headphones, without the Android
@@ -1014,7 +1019,7 @@ everywhere; add a switch for the multi-device connection that shows what is
 connected; detect the headphones' name whatever it is; and add a way to
 change the name.
 
-**Not committed yet** at the time of writing.
+Committed as `621448e`, with everything else in this section.
 
 ### What was done
 
