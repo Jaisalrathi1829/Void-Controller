@@ -76,13 +76,64 @@ these it is:
 | **Tested** | QuietComfort Headphones (`0x4075`) | Everything in the capability matrix, each proven on the physical headphones |
 | **Documented** | QuietComfort Ultra Headphones (2nd Gen), QuietComfort Headphones (2nd Gen), QuietComfort Ultra Earbuds (2nd Gen), QuietComfort 45, QuietComfort Earbuds, Ultra Open Earbuds | Follows upstream's description of the model. Never run here. A custom mode's level is written only where its layout was checked on the model: the QC Ultra 2nd Gen headphones and earbuds. The QuietComfort Headphones (2nd Gen) are given the QC Ultra's description upstream, marked unconfirmed, so their modes are read and switched but never written into |
 | **Recognized** | Every other headphone and earbud model — QuietComfort Ultra (1st Gen), QuietComfort Ultra Earbuds (1st Gen), QuietComfort Earbuds II, 700, Sport Earbuds and the rest | Asks the questions every documented model answers the same way — name, equalizer, multipoint, its list of modes — and offers what it answers. Nothing is written into its modes |
-| Documented, by level | QuietComfort 35 and 35 II | Their noise cancellation is a level, not a mode: Void offers the levels the headphones list — High, Low, Off — and sets one by upstream's description of the QC35, confirming it by reading it back. No equalizer, Aware mode, custom level or profiles: they have none. Never run here |
+| Documented, by level | QuietComfort 35 and 35 II | Their noise cancellation is a level, not a mode: Void offers the levels the headphones list — High, Low, Off — and sets one by upstream's description of the QC35, confirming it by reading it back. No equalizer, Aware mode, custom level or profiles: they have none. The QC35 II has been used by the owner, on the phone |
 
 Whatever the model, a change counts only when the device reports it, so a
 model that does not behave as described shows a change as unconfirmed, never
 as made. A feature is not shown at all when the model has none, or when the
 device answers that it has no such function. The modes are the device's own
 list — a QC Ultra's Immersion and Cinema included — under its own names.
+
+**On connection, every device is asked rather than assumed:**
+
+- A device that stays silent at first is asked for its protocol version and
+  then again (the QC35 generation needs this; any other model that does is
+  handled the same way).
+- Its noise control is found out: modes (`[31.3]`); if it answers it has
+  none, a noise-cancellation level (`[1.6]`, as the QC35); if it has neither
+  — sport earbuds, Frames — no noise control is shown, and everything else
+  still is.
+- Its name, equalizer, multi-device switch and paired devices are each shown
+  if it answers for them in the documented shape, and hidden if it answers
+  that it has no such function.
+- A Bose product the catalogue does not have — a model newer than it — is
+  connected the same cautious way as a recognized one, under the name it
+  gives itself.
+
+**Per model**, as the application's own rules give it (`cargo test --lib
+print_model_table -- --ignored --nocapture` prints this table). "Described":
+upstream's description of the model; "Recognized": known to be the model,
+nothing described, so asked on connection. Multi-device, the name and the
+paired devices are asked on every model and shown if it answers.
+
+| Model | Product id | Kind | Tried | Noise control | Custom mode's level | Equalizer | Battery |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Hearphones | `0x4015` | Headphones | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level |
+| Hearphones II | `0x402B` | Headphones | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level |
+| Noise Cancelling Headphones 700 | `0x4024` | Headphones | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level |
+| ProFlight | `0x4021` | Headphones | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level |
+| QuietComfort 35 | `0x400C` | Headphones | Described | Levels: High, Low, Off | No | No | Level |
+| QuietComfort 35 II | `0x4020` | Headphones | Described | Levels: High, Low, Off | No | No | Level |
+| QuietComfort 45 | `0x4039` | Headphones | Described | Modes: Quiet, Aware, your custom modes | No | Yes | Level |
+| QuietComfort Headphones | `0x4075` | Headphones | Tested | Modes: Quiet, Aware, your custom modes | Yes | Yes | Level |
+| QuietComfort Headphones (2nd Gen) | `0x4083` | Headphones | Described | Modes: Quiet, Aware, Immersion, Cinema, your custom modes | No | Yes | Level |
+| QuietComfort Ultra Headphones | `0x4066` | Headphones | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level |
+| QuietComfort Ultra Headphones (2nd Gen) | `0x4082` | Headphones | Described | Modes: Quiet, Aware, Immersion, Cinema, your custom modes | Yes | Yes | Level |
+| Frames | `0x402C` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| Frames | `0x4061` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| Frames (2nd Gen) | `0x404C` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| Frames Tempo | `0x4060` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| QuietComfort Earbuds | `0x402F` | Earbuds | Described | Modes: Quiet, Aware | No | Yes | Level, and Right, Left, Case if it reports them |
+| QuietComfort Earbuds II | `0x4064` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| QuietComfort Ultra Earbuds | `0x4072` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| QuietComfort Ultra Earbuds (2nd Gen) | `0x4062` | Earbuds | Described | Modes: Quiet, Aware, Immersion, Cinema, your custom modes | Yes | Yes | Level, and Right, Left, Case |
+| QuietControl 30 | `0x4014` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| SoundSport | `0x4012` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| SoundSport Free | `0x4018` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| SoundSport Pulse | `0x4013` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| Sport Earbuds | `0x402D` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| Sport Open Earbuds | `0x403A` | Earbuds | Recognized | Asked on connection: modes, levels, or none | No | If it answers | Level, and Right, Left, Case if it reports them |
+| Ultra Open Earbuds | `0x4068` | Earbuds | Described | Modes, from its own list | No | Yes | Level, and Right, Left, Case if it reports them |
 
 The Settings page controls starting with Windows, starting minimized, a
 system-tray icon, whether the application attaches to the headphones at launch

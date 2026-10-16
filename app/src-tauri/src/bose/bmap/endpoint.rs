@@ -30,6 +30,7 @@
 
 use super::stream::{ByteStream, StreamTransport, Timing, WireEvent};
 use bmap::device::{parse_firmware, Addr, DeviceConfig};
+use bmap::error::BmapError;
 use bmap::protocol::{bmap_packet, parse_all_responses, Operator};
 use bmap::Transport;
 use std::time::Duration;
@@ -218,7 +219,19 @@ pub fn validate_endpoint<T: Transport>(transport: &T, config: &DeviceConfig) -> 
 
     let Addr(fblock, func) = config.firmware.unwrap_or(Addr(0, 5));
     let pkt = bmap_packet(fblock, func, Operator::Get, &[]);
-    let data = transport.send_recv(&pkt).map_err(|e| e.to_string())?;
+    let data = match transport.send_recv(&pkt) {
+        Ok(data) => data,
+        // A model whose description does not say it needs the version
+        // request first, and stays silent without it — as the QC35 does — is
+        // asked for the version, then for the firmware once more. Both are
+        // reads.
+        Err(BmapError::Timeout(_)) if config.init_packet.is_none() => {
+            let version = bmap_packet(0, 1, Operator::Get, &[]);
+            let _ = transport.send_recv(&version);
+            transport.send_recv(&pkt).map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
 
     let frames = parse_all_responses(&data);
     let reply = frames

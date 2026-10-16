@@ -130,12 +130,17 @@ mod tests {
         assert_eq!(qc35.info.codename, "baywolf");
         assert!(models::uses_levels(&qc35));
         assert!(config_for_product(0xBC59).is_none(), "a speaker");
-        assert!(config_for_product(0x1234).is_none(), "not a Bose product");
     }
 
+    /// A product the catalogue does not have is driven the cautious way:
+    /// the generic description, nothing written into its modes.
     #[test]
-    fn unknown_products_are_refused() {
-        assert!(config_for_product(0xFFFF).is_none());
-        assert!(config_for_product(0x0000).is_none());
+    fn unlisted_products_get_the_generic_description() {
+        for id in [0x1234u16, 0xFFFF, 0x0000] {
+            let config = config_for_product(id).unwrap_or_else(|| panic!("{id:#06x}"));
+            assert!(models::is_generic(&config), "{id:#06x}");
+            assert_eq!(config.info.name, models::UNLISTED);
+            assert!(!custom::can_adjust(&config));
+        }
     }
 }

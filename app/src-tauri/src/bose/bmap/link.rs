@@ -219,6 +219,14 @@ pub struct LinkStatus {
     /// instead of modes (the QuietComfort 35 generation). `confirmed` holds
     /// the same level, as its index.
     pub anr: Option<super::anr::AnrStatus>,
+    /// The device answered that it has no mode function, and that it has a
+    /// noise-cancellation level instead: it is driven by the level, whatever
+    /// its description said.
+    pub levels_detected: bool,
+    /// The device answered that it has neither a mode function nor a
+    /// noise-cancellation level — earbuds without noise cancellation — and
+    /// why. Everything else is still read and offered.
+    pub noise_absent: Option<String>,
     /// A confirmed change to a custom mode's level.
     pub level: Option<LevelProof>,
     /// The equalizer as last reported by the device.
@@ -474,23 +482,19 @@ impl<C: Connector> BmapLink<C> {
 
         // Before this session is allowed to write anything, check that the
         // device's current-mode reply — or on a model with levels, its
-        // noise-cancellation reply — has exactly the documented shape.
+        // noise-cancellation reply — has exactly the documented shape. A
+        // device that answers that it has no mode function is asked for a
+        // level instead, and one that has neither has no noise control.
         if super::models::uses_levels(&self.config) {
-            match super::anr::read(&transport) {
-                Ok(status) => {
-                    self.status.framing_problem = None;
-                    self.record_level(status);
-                }
-                Err(e) => {
-                    self.status.framing_problem = Some(e.to_string());
-                }
-            }
+            self.probe_levels(&transport, None);
         } else {
             match probe_current_mode(&transport, &self.config) {
                 Ok(index) => {
                     self.status.framing_problem = None;
+                    self.status.noise_absent = None;
                     self.record_confirmed(index);
                 }
+                Err(why) if says_not_supported(&why) => self.probe_levels(&transport, Some(why)),
                 Err(why) => {
                     self.status.framing_problem = Some(why);
                 }
@@ -514,6 +518,9 @@ impl<C: Connector> BmapLink<C> {
     pub fn read_mode(&mut self, force: bool) -> Result<u8, LinkError> {
         let was_open = self.session.is_some();
         self.ensure_open(force)?;
+        if let Some(why) = &self.status.noise_absent {
+            return Err(LinkError::new(LinkErrorKind::Unsupported, why.clone()));
+        }
 
         match self.read_mode_once() {
             Ok(index) => Ok(index),
@@ -526,6 +533,49 @@ impl<C: Connector> BmapLink<C> {
             }
             Err(e) => Err(self.fail(e)),
         }
+    }
+
+    /// Asks for the noise-cancellation level, on a model with levels or one
+    /// that has just said it has no modes (`no_modes`, with what it said).
+    fn probe_levels<T: bmap::Transport>(&mut self, transport: &T, no_modes: Option<String>) {
+        match super::anr::read(transport) {
+            Ok(status) => {
+                if no_modes.is_some() {
+                    // Driven by the level from now on.
+                    self.config.current_mode = None;
+                    self.config.anr = Some(bmap::device::Addr(1, 6));
+                    self.status.levels_detected = true;
+                }
+                self.status.framing_problem = None;
+                self.status.noise_absent = None;
+                self.record_level(status);
+            }
+            Err(e) if refuses(&e) => {
+                self.status.framing_problem = None;
+                self.status.noise_absent = Some(match no_modes {
+                    Some(modes) => format!(
+                        "The headphones answered that they have no noise-cancellation control: \
+                         {modes}; and for the level, {e}."
+                    ),
+                    None => format!(
+                        "The headphones answered that they have no noise-cancellation level: {e}."
+                    ),
+                });
+            }
+            Err(e) => {
+                self.status.framing_problem = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Opens the session if it is not, and on a device with noise control
+    /// reads it: proof the link is alive before something else is written.
+    fn touch(&mut self, force: bool) -> Result<(), LinkError> {
+        self.ensure_open(force)?;
+        if self.status.noise_absent.is_some() {
+            return Ok(());
+        }
+        self.read_mode(force).map(|_| ())
     }
 
     /// Remembers a noise-cancellation level as read, and that level as the
@@ -649,6 +699,11 @@ impl<C: Connector> BmapLink<C> {
     /// at the same moment.
     pub fn read_battery(&mut self, force: bool) -> Result<u8, LinkError> {
         self.ensure_open(force)?;
+        // A model whose description names no parts is read by the shape of
+        // its reply: earbuds answer with a record for each part.
+        if self.config.battery_components.is_empty() {
+            return self.read_battery_by_shape();
+        }
         let session = self.session.as_ref().expect("session ensured above");
         let result = session.conn.battery_status();
         self.collect_wire_log();
@@ -690,6 +745,42 @@ impl<C: Connector> BmapLink<C> {
                     ),
                     e => self.fail(e),
                 })
+            }
+        }
+    }
+
+    fn read_battery_by_shape(&mut self) -> Result<u8, LinkError> {
+        let session = self.session.as_ref().expect("session ensured by caller");
+        let addr = self
+            .config
+            .battery
+            .map(|a| (a.0, a.1))
+            .unwrap_or((2, 2));
+        let result = unit::exchange(&session.transport, addr, bmap::protocol::Operator::Get, &[]);
+        self.collect_wire_log();
+        let reply = match result {
+            Ok(payload) => parse_battery_reply(&payload),
+            Err(e @ BmapError::Device { .. }) => Err(e.to_string()),
+            Err(e) => {
+                self.status.battery = None;
+                return Err(self.fail(e));
+            }
+        };
+        match reply {
+            Ok((percent, parts)) => {
+                self.status.battery = Some(BatteryReport {
+                    percent,
+                    parts,
+                    at: (self.now_text)(),
+                });
+                Ok(percent)
+            }
+            Err(why) => {
+                self.status.battery = None;
+                Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!("The headphones' battery level could not be read as documented. {why}"),
+                ))
             }
         }
     }
@@ -791,7 +882,7 @@ impl<C: Connector> BmapLink<C> {
     /// Renames the headphones and reports what they then called themselves.
     pub fn set_name(&mut self, requested: &str) -> Result<NameChange, LinkError> {
         // Proves the link is alive, reconnecting once if it is not.
-        self.read_mode(true)?;
+        self.touch(true)?;
 
         let session = self.session.as_ref().expect("read_mode left a session open");
         let result = unit::set_name(&session.transport, requested, self.timing.verify);
@@ -846,7 +937,7 @@ impl<C: Connector> BmapLink<C> {
         key: &str,
         connect: bool,
     ) -> Result<ConnectionChange, LinkError> {
-        self.read_mode(true)?;
+        self.touch(true)?;
         self.collect_wire_log();
 
         let policy = if connect {
@@ -919,7 +1010,7 @@ impl<C: Connector> BmapLink<C> {
     /// is not this one they close it, and the session here is closed with it;
     /// the change is still confirmed, by the state they answered with first.
     pub fn set_multipoint(&mut self, requested: bool) -> Result<MultipointChange, LinkError> {
-        self.read_mode(true)?;
+        self.touch(true)?;
 
         let session = self.session.as_ref().expect("read_mode left a session open");
         let result = unit::set_multipoint(&session.transport, requested, self.timing.verify);
@@ -967,7 +1058,7 @@ impl<C: Connector> BmapLink<C> {
     /// Sets the equalizer and reports what the device then said.
     pub fn set_eq(&mut self, requested: EqLevels) -> Result<EqChange, LinkError> {
         // Proves the link is alive, reconnecting once if it is not.
-        self.read_mode(true)?;
+        self.touch(true)?;
 
         let session = self.session.as_ref().expect("read_mode left a session open");
         let result = eq::set_eq(&session.conn, requested, self.timing.verify);
@@ -1215,6 +1306,69 @@ impl<C: Connector> BmapLink<C> {
 /// link, not the protocol.
 fn is_link_failure_or_timeout(e: &BmapError) -> bool {
     is_link_failure(e) || matches!(e, BmapError::Timeout(_))
+}
+
+/// A battery level, and each named part's.
+type BatteryReading = (u8, Vec<(&'static str, u8)>);
+
+/// A battery reply read by its shape, for a model whose description names no
+/// parts: the level, and each part's where there are parts.
+///
+/// One record — `level FF FF 00`, as the tested headphones answer — is one
+/// level. Two or more four-byte records — `level, two bytes, part` — are a
+/// device with several batteries. Where the parts are numbered as on the one
+/// earbuds whose layout is described (the QC Ultra Earbuds, 2nd Gen: 1 right,
+/// 2 left, 3 case, 4 the pair), they are named so; otherwise only the level
+/// is given, the lower of the parts'. A part with no level (`FF`) is left out.
+fn parse_battery_reply(payload: &[u8]) -> Result<BatteryReading, String> {
+    const NAMED: [(u8, &str); 3] = [(1, "Right"), (2, "Left"), (3, "Case")];
+    const PAIR: u8 = 4;
+    if payload.len() < 8 || payload.len() % 4 != 0 {
+        return match payload.first() {
+            Some(&level) if level <= 100 => Ok((level, Vec::new())),
+            Some(&level) => Err(format!("a battery level of {level}, which is not a percentage")),
+            None => Err("an empty battery reply".to_string()),
+        };
+    }
+    let mut records: Vec<(u8, u8)> = Vec::new();
+    for record in payload.chunks_exact(4) {
+        let (level, id) = (record[0], record[3]);
+        if records.iter().any(|(i, _)| *i == id) {
+            return Err(format!("battery part {id} reported twice"));
+        }
+        records.push((id, level));
+    }
+    let level_of = |id: u8| records.iter().find(|(i, l)| *i == id && *l <= 100).map(|(_, l)| *l);
+    let numbered_as_described = records.iter().all(|(id, _)| (1..=PAIR).contains(id));
+    let parts: Vec<(&'static str, u8)> = if numbered_as_described {
+        NAMED
+            .iter()
+            .filter_map(|(id, name)| level_of(*id).map(|l| (*name, l)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let lowest_bud = || [1, 2].into_iter().filter_map(level_of).min();
+    let lowest_any = || records.iter().filter(|(_, l)| *l <= 100).map(|(_, l)| *l).min();
+    let percent = if numbered_as_described {
+        level_of(PAIR).or_else(lowest_bud).or_else(lowest_any)
+    } else {
+        lowest_any()
+    };
+    percent
+        .map(|p| (p, parts))
+        .ok_or_else(|| "no part reported a battery level".to_string())
+}
+
+/// Whether a reason a probe failed is the device saying it has no such
+/// function: an `ERROR` naming the function or its block as unsupported.
+fn says_not_supported(why: &str) -> bool {
+    why.contains("FuncNotSupp") || why.contains("FblockNotSupp")
+}
+
+/// Whether an error is the device answering that it has no such function.
+fn refuses(e: &BmapError) -> bool {
+    matches!(e, BmapError::Device { code: 3 | 4, .. })
 }
 
 #[cfg(test)]
@@ -2283,5 +2437,128 @@ mod tests {
             .filter(|e| e.bytes == [0x00, 0x05, 0x01, 0x00])
             .count();
         assert_eq!(firmware_gets, 2, "both sessions' validation appears in the log");
+    }
+
+    // --- what kind of noise control the device has -------------------------
+
+    fn link_for(
+        config: DeviceConfig,
+        stream: ScriptedStream,
+    ) -> BmapLink<QueueConnector> {
+        BmapLink::new(
+            QueueConnector::new(vec![Ok(stream)]),
+            config,
+            timing(Duration::ZERO),
+            || "2026-10-16T00:00:00Z".to_string(),
+        )
+    }
+
+    fn generic() -> DeviceConfig {
+        super::super::models::generic_config("Some Bose model", "unknown")
+    }
+
+    /// `[31.3]` answered with FuncNotSupp.
+    fn no_modes() -> Chunk {
+        data(&[0x1F, 0x03, 0x04, 0x01, 0x04])
+    }
+
+    fn level(byte: u8) -> Chunk {
+        data(&[0x01, 0x06, 0x03, 0x02, byte, 0x0B])
+    }
+
+    /// A device that answers it has no modes and has a level is driven by
+    /// the level, whatever its description said.
+    #[test]
+    fn a_device_without_modes_is_driven_by_its_level() {
+        let stream = session(vec![vec![no_modes()], vec![level(1)], vec![level(3)]]);
+        let mut l = link_for(generic(), stream);
+        assert_eq!(l.read_mode(false).unwrap(), 3);
+        let st = l.status();
+        assert!(st.levels_detected);
+        assert!(st.noise_absent.is_none() && st.framing_problem.is_none());
+        assert_eq!(st.anr.unwrap().level, super::super::anr::Level::Low);
+        assert!(super::super::models::uses_levels(l.config()));
+    }
+
+    /// A device with neither — earbuds without noise cancellation — has no
+    /// noise control, and the rest of it still works.
+    #[test]
+    fn a_device_without_noise_control_still_does_the_rest() {
+        use super::super::unit::testing::multipoint_status;
+        let refused_level = data(&[0x01, 0x06, 0x04, 0x01, 0x04]);
+        let stream = session(vec![
+            vec![no_modes()],
+            vec![refused_level],
+            vec![data(&multipoint_status(false))],
+            vec![data(&multipoint_status(true))],
+            vec![data(&multipoint_status(true))],
+        ]);
+        let mut l = link_for(generic(), stream);
+        let err = l.read_mode(false).unwrap_err();
+        assert_eq!(err.kind, LinkErrorKind::Unsupported);
+        let why = l.status().noise_absent.expect("no noise control");
+        assert!(why.contains("FuncNotSupp"), "{why}");
+        assert!(l.status().framing_problem.is_none(), "not a framing problem");
+
+        let change = l.set_multipoint(true).unwrap();
+        assert_eq!(change.verdict, super::super::noise::Verdict::Verified);
+    }
+
+    /// A device that is silent until it is asked for the protocol version is
+    /// asked for it, and then answers.
+    #[test]
+    fn a_device_silent_until_asked_for_its_version_is_asked() {
+        let version = data(&[0x00, 0x01, 0x03, 0x05, b'1', b'.', b'1', b'.', b'0']);
+        let stream = ScriptedStream::new()
+            .on_send(vec![])
+            .on_send(vec![version])
+            .on_send(vec![data(FW)])
+            .on_send(vec![status(0)])
+            .on_send(vec![status(0)]);
+        let mut l = link_for(devices::qc_prince(), stream.clone());
+        assert_eq!(l.read_mode(false).unwrap(), 0);
+        let sent = stream.sent();
+        assert_eq!(sent[0], vec![0x00, 0x05, 0x01, 0x00], "the firmware, unanswered");
+        assert_eq!(sent[1], vec![0x00, 0x01, 0x01, 0x00], "then the version");
+        assert_eq!(sent[2], vec![0x00, 0x05, 0x01, 0x00], "then the firmware again");
+    }
+
+    // --- batteries read by the shape of the reply ---------------------------
+
+    #[test]
+    fn one_record_is_one_level() {
+        assert_eq!(parse_battery_reply(&[0x0A, 0xFF, 0xFF, 0x00]), Ok((10, vec![])));
+        assert_eq!(parse_battery_reply(&[55]), Ok((55, vec![])));
+        assert!(parse_battery_reply(&[0xFF, 0xFF, 0xFF, 0x00]).is_err());
+        assert!(parse_battery_reply(&[]).is_err());
+    }
+
+    #[test]
+    fn earbuds_records_are_named_as_on_the_described_earbuds() {
+        let reply = [80, 0xFF, 0xFF, 1, 70, 0xFF, 0xFF, 2, 0xFF, 0xFF, 0xFF, 3, 75, 0xFF, 0xFF, 4];
+        assert_eq!(parse_battery_reply(&reply), Ok((75, vec![("Right", 80), ("Left", 70)])));
+        // Without the pair's own level: the lower bud's.
+        let buds = [80, 0xFF, 0xFF, 1, 70, 0xFF, 0xFF, 2, 40, 0xFF, 0xFF, 3];
+        assert_eq!(
+            parse_battery_reply(&buds),
+            Ok((70, vec![("Right", 80), ("Left", 70), ("Case", 40)]))
+        );
+    }
+
+    #[test]
+    fn parts_numbered_otherwise_give_a_level_and_no_names() {
+        let reply = [60, 0, 0, 7, 50, 0, 0, 9];
+        assert_eq!(parse_battery_reply(&reply), Ok((50, vec![])));
+        assert!(parse_battery_reply(&[60, 0, 0, 1, 50, 0, 0, 1]).is_err(), "a part twice");
+    }
+
+    #[test]
+    fn a_recognized_earbuds_battery_is_read_by_its_shape() {
+        let reply = data(&[0x02, 0x02, 0x03, 0x0C, 81, 0xFF, 0xFF, 1, 76, 0xFF, 0xFF, 2, 54, 0xFF, 0xFF, 3]);
+        let stream = session(vec![vec![status(0)], vec![reply]]);
+        let mut l = link_for(generic(), stream);
+        assert_eq!(l.read_battery(false).unwrap(), 76);
+        let report = l.status().battery.unwrap();
+        assert_eq!(report.parts, vec![("Right", 81), ("Left", 76), ("Case", 54)]);
     }
 }

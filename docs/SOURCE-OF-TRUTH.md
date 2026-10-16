@@ -1353,3 +1353,75 @@ the headphones answer for it; upstream says they do not.
 | --- | --- |
 | Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 23:26, 105,516,372 bytes, with the voice model, SHA-256 `cbe629c270621f19d61e6715e52838c6bfdad500665c9591e26b94978d5b4150`. Not run by anyone |
 | Phone | `Setups\Void-0.1.0-android-arm64.apk`, 2026-10-16 23:23, 139,733,658 bytes, SHA-256 `a45d85a8a47a196dc5219d416e56f727252a50c3876d71f7a7d0596606ee56e2`. Not run by anyone |
+
+## 21. Every model, asked rather than assumed (2026-10-16)
+
+The owner reported the QC35 II working ("Dragoon", on the phone) and asked
+that every Bose headphone and earbud connect, that the same problem not
+happen again, and that each model show what it has and nothing else.
+
+The QC35's problem was two assumptions: that a model answers straight away,
+and that its noise control is modes. Both are now found out from the device.
+
+### What changed
+
+| Assumption | Now | Where |
+| --- | --- | --- |
+| A model answers the firmware request at once | One that is silent is asked for its protocol version (`GET [0.1]`) and then for the firmware again — whatever its description says. The phone's model check always asks the version first | `endpoint.rs` `validate_endpoint`; `android/directory.rs` |
+| Noise control is modes unless the description says levels | On opening: `[31.3]`. If the device answers it has no such function (`FuncNotSupp` / `FblockNotSupp`), `[1.6]`, the QC35's level; it is then driven by the level. If it has neither, it has no noise control — none is shown, and the name, equalizer, multi-device, paired devices and battery are still read and offered | `link.rs` `probe_levels`, `noise_absent`, `levels_detected`, `touch`; `real.rs` `effective`, `mark_what_the_model_lacks` |
+| A product the catalogue does not have is refused | Driven the cautious way, as a recognized one: what it answers is offered, nothing written into its modes. Named "Bose device" until it says its own name | `models.rs` `config_for`, `UNLISTED` |
+| On Windows, the control service must be listed | A model in Bose's catalogue is tried without it (older ones may not list it); a product the catalogue does not have must still list it. A connection is used only once it has answered the firmware request in the protocol's shape | `real.rs` `control_target` |
+
+Every write is gated as before: by the device's own answer in the
+documented shape, written once, confirmed by read-back. The per-model table
+in the README is printed from the same rules (`print_model_table`).
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| A device without modes is driven by its level; one with neither still does the rest; a silent one is asked for its version | `link.rs` tests | pass |
+| Unlisted products get the generic description; a device without noise control has none shown and its name still offered; a device that answered with levels is offered them | `models.rs`, `bmap/mod.rs`, `real.rs` tests | 626 Rust tests pass; clippy clean |
+| Nothing changed for the tested headphones | `hw_b0`, `hw_b2`, `hw_b4`, `hw_b6`, `hw_b9`, `hw_b11`, `hw_b12`, `hw_b13` on "Aurora" | All pass: identified, modes listed, Aware → Quiet → Aware confirmed, equalizer, multipoint, name, custom mode all `READY`. Left in Aware, as found |
+
+### Not checked
+
+- Any model but the QuietComfort Headphones and (by the owner, on the phone)
+  the QC35 II.
+- What a model with neither modes nor a level actually answers: the rule is
+  from the protocol's error codes, not from such a device.
+- The 700's noise cancellation, if it is neither (`[1.5]` levels 0-10 in
+  upstream's notes for another model): it would show no noise control.
+
+### Builds
+
+| | |
+| --- | --- |
+| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-17 00:00, 105,436,856 bytes, with the voice model, SHA-256 `d779f60f147a27748316595e602777bbd4a5b8d529a6f4b28c835d53d39d5ebe`. Not run by anyone |
+| Phone | `Setups\Void-0.1.0-android-arm64.apk`, 2026-10-16 23:57, 139,750,042 bytes, SHA-256 `b16cdd1cae1bc055844eefaab5459f312f458ca1e7ab0efeefa3a6514dbb2e31`. Not run by anyone |
+
+### Earbuds' batteries (later the same night)
+
+Asked by the owner: are all earbuds supported? They all connect; what each
+shows is in the README's per-model table. One gap was closed: only the QC
+Ultra Earbuds (2nd Gen) had their battery reply described, as a record per
+part. Any model whose description names no parts is now read by the shape of
+its reply (`parse_battery_reply` in `link.rs`): one record — as the tested
+headphones answer — is one level; several four-byte records are parts, named
+Right, Left and Case where they are numbered as on the described earbuds, and
+otherwise given only as the lowest level. Before, such a reply would have been
+read as its first byte: on the phone, a bud's level shown as the battery.
+Checked by tests with the tested headphones' recorded reply and with earbuds
+replies; not on any earbuds.
+
+Still not offered for earbuds, on any model: touch-control shortcuts,
+in-ear detection, the ear-tip fit test, find-my-buds. Multi-device is read
+only in the format the tested headphones use; a model that answers in
+another is shown as not read, not guessed at.
+
+Builds, replacing the two above:
+
+| | |
+| --- | --- |
+| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-17 00:07, 105,396,251 bytes, with the voice model, SHA-256 `173a8940e5d61799cf65b75dde4167d3cfa9e57823472dd778528e3ce0bfd8ee`. Not run by anyone |
+| Phone | `Setups\Void-0.1.0-android-arm64.apk`, 2026-10-17 00:05, 139,750,042 bytes, SHA-256 `3e66ce4c7228ce51d29d803961afec20c3c49932562f223b51730602e66dc8f1`. Not run by anyone |

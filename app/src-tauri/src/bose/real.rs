@@ -208,7 +208,12 @@ fn control_target(obs: &Observed) -> Result<ControlTarget, String> {
             ),
         });
     };
-    if !obs.advertises_bmap {
+    // Windows lists the control service for current models. Older ones —
+    // the QC35 generation — may not list it and still answer on it, so a
+    // product in Bose's catalogue is tried either way: a connection is used
+    // only once it has answered the firmware request in the protocol's shape.
+    // A product the catalogue does not have must list it.
+    if !obs.advertises_bmap && control::models::model_for(product_id).is_none() {
         return Err(
             "Bose's control service (BMAP) is not listed among this device's services."
                 .to_string(),
@@ -722,6 +727,19 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
         return;
     }
 
+    // A device that answered that it has no noise control has none shown
+    // (see `mark_what_the_model_lacks`); the rest of it is still offered.
+    if link.noise_absent.is_some() && link.endpoint.is_some() {
+        let where_from = link
+            .endpoint
+            .as_ref()
+            .map(|e| e.describe())
+            .unwrap_or_else(|| "the control channel".to_string());
+        apply_eq_capability(caps, link, &where_from);
+        apply_unit_capabilities(caps, link, &where_from);
+        return;
+    }
+
     if link.confirmed.is_none() {
         let why = match &link.last_failure {
             Some(failure) => format!("The control channel could not be validated: {failure}"),
@@ -733,7 +751,7 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
         return;
     }
 
-    let config = &target.config;
+    let config = &effective(&target.config, link);
     let where_from = link
         .endpoint
         .as_ref()
@@ -837,6 +855,18 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
     apply_unit_capabilities(caps, link, &where_from);
 }
 
+/// The description the device is being driven by: its own, or — where the
+/// device answered that it has no modes and has a noise-cancellation level
+/// instead — that, with the level in place of the mode.
+fn effective(config: &::bmap::DeviceConfig, link: &LinkStatus) -> ::bmap::DeviceConfig {
+    let mut config = config.clone();
+    if link.levels_detected {
+        config.current_mode = None;
+        config.anr = Some(::bmap::device::Addr(1, 6));
+    }
+    config
+}
+
 /// Which model Windows says the device is, as the catalogue names it.
 fn model_state(obs: &Observed) -> Option<ModelState> {
     obs.product_id
@@ -872,6 +902,7 @@ fn noise_modes(config: &::bmap::DeviceConfig, link: &LinkStatus) -> Option<Vec<N
 /// or the description's presets; or on a model with levels, the levels they
 /// say they have, by the value each is set with.
 fn offered_modes(config: &::bmap::DeviceConfig, link: &LinkStatus) -> Vec<control::noise::ModeOption> {
+    let config = &effective(config, link);
     if control::models::uses_levels(config) {
         let levels = match &link.anr {
             Some(status) => status.offered(),
@@ -949,6 +980,7 @@ fn mark_what_the_model_lacks(
     config: &::bmap::DeviceConfig,
     link: &LinkStatus,
 ) {
+    let config = &effective(config, link);
     let model = config.info.name;
     let refused = |problem: &Option<String>| problem.as_deref().is_some_and(says_not_supported);
     let lacks = [
@@ -976,6 +1008,21 @@ fn mark_what_the_model_lacks(
             CapabilityKey::AwareMode,
             control::models::uses_levels(config),
             format!("The {model} has noise-cancellation levels, and no Aware mode."),
+        ),
+        (
+            CapabilityKey::NoiseControl,
+            link.noise_absent.is_some(),
+            link.noise_absent.clone().unwrap_or_default(),
+        ),
+        (
+            CapabilityKey::AwareMode,
+            link.noise_absent.is_some(),
+            link.noise_absent.clone().unwrap_or_default(),
+        ),
+        (
+            CapabilityKey::CustomNoiseControl,
+            link.noise_absent.is_some(),
+            link.noise_absent.clone().unwrap_or_default(),
         ),
         (
             CapabilityKey::CustomNoiseControl,
@@ -1579,7 +1626,13 @@ impl BoseDevice for RealBoseDevice {
             Some(target) if obs.connected => {
                 let read = self
                     .with_link(target.clone(), move |link| {
-                        let index = link.read_mode(false)?;
+                        // A device that has answered that it has no noise
+                        // control is not asked for it; the rest still is.
+                        let index = match link.read_mode(false) {
+                            Ok(index) => index,
+                            Err(_) if link.status().noise_absent.is_some() => 0,
+                            Err(e) => return Err(e),
+                        };
 
                         // The mode list says whether a custom mode exists and,
                         // while the headphones are in one, what it is called
@@ -1588,7 +1641,8 @@ impl BoseDevice for RealBoseDevice {
                         // is when its level is on screen and may be changed
                         // from elsewhere. A failure is remembered by the link
                         // and surfaces as the capability's reason.
-                        let levels = control::models::uses_levels(link.config());
+                        let levels = control::models::uses_levels(link.config())
+                            || link.status().noise_absent.is_some();
                         let in_custom = !levels && preset_for_index(link.config(), index).is_none();
                         let status = link.status();
                         let known = status.slots.is_some() || status.slots_problem.is_some();
@@ -1643,7 +1697,7 @@ impl BoseDevice for RealBoseDevice {
         // confirmed mode and `last_error` says the read failed.
         let noise_control = match (&target, &link.confirmed) {
             (Some(target), Some(confirmed)) if obs.connected => {
-                Some(noise_state(&target.config, confirmed, link.slots.as_ref()))
+                Some(noise_state(&effective(&target.config, &link), confirmed, link.slots.as_ref()))
             }
             _ => None,
         };
@@ -1777,7 +1831,12 @@ impl BoseDevice for RealBoseDevice {
         let config = target.config.clone();
         // An explicit read: the backoff does not apply.
         self.with_link(target, |link| {
-            let index = link.read_mode(true)?;
+            let index = match link.read_mode(true) {
+                Ok(index) => index,
+                // Nothing to read on a device without noise control.
+                Err(_) if link.status().noise_absent.is_some() => return Ok(0),
+                Err(e) => return Err(e),
+            };
             if preset_for_index(link.config(), index).is_none() {
                 // In a custom mode, its name and level are part of the answer.
                 let _ = link.read_slots(true);
@@ -1788,6 +1847,7 @@ impl BoseDevice for RealBoseDevice {
         .map_err(device_error)?;
 
         let link = self.link_status.read();
+        let config = effective(&config, &link);
         Ok(link
             .confirmed
             .as_ref()
@@ -1813,7 +1873,7 @@ impl BoseDevice for RealBoseDevice {
         let link = self.link_status.read();
         link.confirmed
             .as_ref()
-            .map(|c| noise_state(&target.config, c, link.slots.as_ref()))
+            .map(|c| noise_state(&effective(&target.config, &link), c, link.slots.as_ref()))
     }
 
     fn reported_name(&self) -> Option<String> {
@@ -1872,7 +1932,11 @@ impl BoseDevice for RealBoseDevice {
 
         let config = target.config.clone();
         self.with_link(target, |link| {
-            let index = link.read_mode(false)?;
+            let index = match link.read_mode(false) {
+                Ok(index) => index,
+                Err(_) if link.status().noise_absent.is_some() => return Ok(0),
+                Err(e) => return Err(e),
+            };
             let status = link.status();
             let unnamed = status.slots.is_none() && status.slots_problem.is_none();
             if unnamed && preset_for_index(link.config(), index).is_none() {
@@ -1884,6 +1948,7 @@ impl BoseDevice for RealBoseDevice {
         .map_err(device_error)?;
 
         let link = self.link_status.read();
+        let config = effective(&config, &link);
         Ok(link
             .confirmed
             .as_ref()
@@ -1918,7 +1983,7 @@ impl BoseDevice for RealBoseDevice {
             Ok(target) => target,
             Err(why) => return Ok(CommandOutcome::unsupported(why)),
         };
-        if control::models::uses_levels(&target.config) {
+        if control::models::uses_levels(&effective(&target.config, &self.link_status.read())) {
             return Ok(CommandOutcome::unsupported(format!(
                 "The {} has noise-cancellation levels rather than Quiet, Aware and custom \
                  modes. Choose one of its levels.",
@@ -2084,7 +2149,7 @@ impl BoseDevice for RealBoseDevice {
             Ok(target) => target,
             Err(why) => return Ok(CommandOutcome::unsupported(why)),
         };
-        let config = target.config.clone();
+        let config = effective(&target.config, &self.link_status.read());
         let option = listed_mode(&config, &self.link_status.read(), index)?;
         let change = if control::models::uses_levels(&config) {
             let level = control::anr::Level::from_byte(index).ok_or_else(|| {
@@ -2391,12 +2456,14 @@ mod tests {
         let target = control_target(&qc35).expect("the QC35 II is driven");
         assert_eq!(target.config.info.name, "QuietComfort 35 II");
 
-        let unknown = Observed {
+        // A Bose product the catalogue does not have is driven too, the
+        // cautious way.
+        let unlisted = Observed {
             product_id: Some(0x1234),
             ..aurora()
         };
-        let why = control_target(&unknown).err().unwrap();
-        assert!(why.contains("0x1234"), "{why}");
+        let target = control_target(&unlisted).expect("an unlisted product is driven");
+        assert!(control::models::is_generic(&target.config));
     }
 
     #[test]
@@ -2408,16 +2475,25 @@ mod tests {
         assert!(control_target(&obs).is_err());
     }
 
-    /// The right product id is not sufficient on its own: Windows' service
-    /// discovery must also show the device advertising BMAP.
+    /// A product the catalogue does not have must be seen advertising BMAP;
+    /// a catalogued Bose model is tried without it, since older ones do not
+    /// list it.
     #[test]
-    fn a_device_not_advertising_bmap_gets_no_control_link() {
-        let obs = Observed {
+    fn a_device_not_advertising_bmap_gets_a_link_only_if_it_is_a_bose_model() {
+        let unlisted = Observed {
             advertises_bmap: false,
+            product_id: Some(0x1234),
             ..aurora()
         };
-        let why = control_target(&obs).err().unwrap();
+        let why = control_target(&unlisted).err().unwrap();
         assert!(why.contains("BMAP"), "{why}");
+
+        let qc35 = Observed {
+            advertises_bmap: false,
+            product_id: Some(0x4020),
+            ..aurora()
+        };
+        assert!(control_target(&qc35).is_ok());
     }
 
     // --- capability evidence ------------------------------------------------
@@ -3224,11 +3300,63 @@ mod tests {
         assert!(noise.evidence.contains("2026-10-16T08:00:00Z"), "{}", noise.evidence);
     }
 
-    /// A model whose product id is not known has its controls left undecided.
+    /// A product the catalogue does not have is offered what it answers for,
+    /// and nothing written into its modes.
     #[test]
-    fn a_model_that_is_not_known_has_its_controls_undecided() {
-        let unknown = caps(&observed_as(0x1234), &open_link(0));
-        assert_eq!(unknown.get(CapabilityKey::NoiseControl).status, CapabilityStatus::Unknown);
+    fn an_unlisted_product_is_offered_what_it_answers() {
+        let unlisted = caps(&observed_as(0x1234), &open_link(0));
+        assert_eq!(unlisted.get(CapabilityKey::NoiseControl).status, CapabilityStatus::Ready);
+        assert_eq!(
+            unlisted.get(CapabilityKey::CustomNoiseControl).status,
+            CapabilityStatus::Unsupported
+        );
+    }
+
+    /// A device that answered it has no noise control has none shown, and
+    /// the rest of it — here its name — is still offered.
+    #[test]
+    fn a_device_without_noise_control_shows_the_rest() {
+        let link = LinkStatus {
+            confirmed: None,
+            noise_absent: Some("FuncNotSupp".into()),
+            name: Some(control::link::NameReading {
+                name: "Buds".into(),
+                at: "2026-10-16T12:00:00Z".into(),
+            }),
+            ..open_link(0)
+        };
+        let caps = caps(&observed_as(0x402D), &link);
+        for key in [
+            CapabilityKey::NoiseControl,
+            CapabilityKey::AwareMode,
+            CapabilityKey::CustomNoiseControl,
+        ] {
+            assert_eq!(caps.get(key).status, CapabilityStatus::Unsupported, "{key:?}");
+        }
+        assert_eq!(caps.get(CapabilityKey::DeviceRename).status, CapabilityStatus::Ready);
+        assert!(noise_modes(&control::config_for_product(0x402D).unwrap(), &link).is_none());
+    }
+
+    /// A device whose description has modes, that answered with a level
+    /// instead, is offered its levels.
+    #[test]
+    fn a_device_that_answered_with_levels_is_offered_its_levels() {
+        let link = LinkStatus {
+            levels_detected: true,
+            anr: Some(control::anr::AnrStatus {
+                level: control::anr::Level::High,
+                supported: None,
+            }),
+            ..open_link(1)
+        };
+        let config = control::config_for_product(0x4024).unwrap(); // a 700, recognized
+        let names: Vec<String> =
+            noise_modes(&config, &link).unwrap().into_iter().map(|m| m.name).collect();
+        assert_eq!(names, ["High", "Low", "Off"]);
+        let state = noise_state(&effective(&config, &link), &confirmed(1).unwrap(), None);
+        assert_eq!(state.label.as_deref(), Some("High"));
+        let caps = caps(&observed_as(0x4024), &link);
+        assert_eq!(caps.get(CapabilityKey::AwareMode).status, CapabilityStatus::Unsupported);
     }
 
     // --- the QuietComfort 35 generation: levels, not modes ------------------

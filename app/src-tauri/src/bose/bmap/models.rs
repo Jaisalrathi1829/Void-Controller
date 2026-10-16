@@ -106,8 +106,17 @@ pub fn all_models() -> Vec<Model> {
 /// cancellation: a current-mode function, or — the QuietComfort 35
 /// generation — a noise-cancellation level (see [`uses_levels`]).
 pub fn config_for(product_id: u16) -> Option<DeviceConfig> {
-    let model = model_for(product_id)?;
-    let entry = catalog::lookup_device(product_id)?;
+    if is_speaker(product_id) {
+        return None;
+    }
+    let (Some(model), Some(entry)) = (model_for(product_id), catalog::lookup_device(product_id))
+    else {
+        // A Bose product the catalogue does not have — newer than it, most
+        // likely. It is only asked when it speaks the protocol, so it is
+        // driven the cautious way: what it answers is read and offered, and
+        // nothing is written into its modes.
+        return Some(generic_config(UNLISTED, "unlisted"));
+    };
     let mut config = match entry.config {
         Some(key) => bmap::devices::get_device(key)?,
         None => generic_config(entry.name, entry.codename),
@@ -128,6 +137,10 @@ pub fn config_for(product_id: u16) -> Option<DeviceConfig> {
 pub fn uses_levels(config: &DeviceConfig) -> bool {
     config.current_mode.is_none() && config.anr.is_some()
 }
+
+/// What a Bose product the catalogue does not have is called, until it says
+/// its own name.
+pub const UNLISTED: &str = "Bose device";
 
 /// The codename a generic description carries, so that the rest of the
 /// control link can tell it from a documented one.
@@ -304,6 +317,73 @@ mod tests {
 
         for len in [0, 6, 39, 40, 45, 46, 49, 60] {
             assert!(parse_mode_config_any(&vec![0u8; len]).is_none(), "{len}");
+        }
+    }
+
+    /// Prints the table of what each model is offered, from the same rules
+    /// the application uses, for the README.
+    #[test]
+    #[ignore = "prints the per-model table for the README"]
+    fn print_model_table() {
+        println!("| Model | Product id | Kind | Tried | Noise control | Custom mode's level | Equalizer | Battery |");
+        println!("| --- | --- | --- | --- | --- | --- | --- | --- |");
+        let mut models = all_models();
+        models.sort_by_key(|m| (m.category as u8, m.name));
+        for m in models {
+            let config = config_for(m.product_id).expect("every model is driven");
+            let generic = is_generic(&config);
+            let noise = if uses_levels(&config) {
+                "Levels: High, Low, Off".to_string()
+            } else if generic {
+                "Asked on connection: modes, levels, or none".to_string()
+            } else {
+                let mut names: Vec<String> = config
+                    .preset_modes
+                    .iter()
+                    .map(|(k, _)| {
+                        let mut c = k.chars();
+                        c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+                    })
+                    .collect();
+                if !config.editable_slots.is_empty() {
+                    names.push("your custom modes".to_string());
+                }
+                if names.is_empty() {
+                    "Modes, from its own list".to_string()
+                } else {
+                    format!("Modes: {}", names.join(", "))
+                }
+            };
+            let level = if super::super::custom::can_adjust(&config) { "Yes" } else { "No" };
+            let eq = match (config.eq.is_some(), generic) {
+                (true, true) => "If it answers",
+                (true, false) => "Yes",
+                (false, _) => "No",
+            };
+            let battery = if config.battery_components.is_empty() {
+                match m.category {
+                    Category::Earbuds => "Level, and Right, Left, Case if it reports them".to_string(),
+                    Category::Headphones => "Level".to_string(),
+                }
+            } else {
+                format!(
+                    "Level, and {}",
+                    config.battery_components.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(", ")
+                )
+            };
+            let kind = match m.category {
+                Category::Headphones => "Headphones",
+                Category::Earbuds => "Earbuds",
+            };
+            let tried = match m.support {
+                Support::Tested => "Tested",
+                Support::Documented => "Described",
+                Support::Recognized => "Recognized",
+            };
+            println!(
+                "| {} | `0x{:04X}` | {kind} | {tried} | {noise} | {level} | {eq} | {battery} |",
+                m.name, m.product_id
+            );
         }
     }
 }
