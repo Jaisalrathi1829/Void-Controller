@@ -749,7 +749,7 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
         for key in PRESET_KEYS {
             match &link.to_mode {
                 Some(switch) => {
-                    let describe = |index: u8| format!("mode {index}");
+                    let describe = |index: u8| describe_index(config, index);
                     let after = describe(switch.after);
                     if let Some(proof) = HardwareProof::observed_at(
                         key,
@@ -764,14 +764,21 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
                     }
                 }
                 None => {
-                    let _ = caps.get_mut(key).mark_ready(
-                        Mechanism::RfcommVendor,
+                    let why = if control::models::uses_levels(config) {
+                        format!(
+                            "The noise-cancellation level is read from the headphones \
+                             ({where_from}), and the levels offered are the ones they list. A \
+                             change is checked by reading the level back; none has been \
+                             confirmed this session yet."
+                        )
+                    } else {
                         format!(
                             "The current mode is read from the headphones ({where_from}), and \
                              their modes are the ones they list. A switch is checked by reading \
                              the mode back; none has been confirmed this session yet."
-                        ),
-                    );
+                        )
+                    };
+                    let _ = caps.get_mut(key).mark_ready(Mechanism::RfcommVendor, why);
                 }
             }
         }
@@ -846,7 +853,7 @@ fn model_state(obs: &Observed) -> Option<ModelState> {
 /// are in: a list with no mode marked would be a guess at which one is.
 fn noise_modes(config: &::bmap::DeviceConfig, link: &LinkStatus) -> Option<Vec<NoiseModeOption>> {
     let confirmed = link.confirmed.as_ref()?;
-    let options = mode_options(config, link.slots.as_ref().map(|t| t.slots.as_slice()));
+    let options = offered_modes(config, link);
     Some(
         options
             .into_iter()
@@ -861,6 +868,32 @@ fn noise_modes(config: &::bmap::DeviceConfig, link: &LinkStatus) -> Option<Vec<N
     )
 }
 
+/// What the headphones offer to switch to: their modes, from their own list
+/// or the description's presets; or on a model with levels, the levels they
+/// say they have, by the value each is set with.
+fn offered_modes(config: &::bmap::DeviceConfig, link: &LinkStatus) -> Vec<control::noise::ModeOption> {
+    if control::models::uses_levels(config) {
+        let levels = match &link.anr {
+            Some(status) => status.offered(),
+            None => control::anr::AnrStatus {
+                level: control::anr::Level::High,
+                supported: None,
+            }
+            .offered(),
+        };
+        return levels
+            .into_iter()
+            .map(|level| control::noise::ModeOption {
+                index: level.byte(),
+                name: level.name().to_string(),
+                preset: true,
+                adjustable: false,
+            })
+            .collect();
+    }
+    mode_options(config, link.slots.as_ref().map(|t| t.slots.as_slice()))
+}
+
 /// The mode a switch by slot asks for: only one the headphones offer, from
 /// their own list as last read or the description's presets.
 fn listed_mode(
@@ -868,7 +901,7 @@ fn listed_mode(
     link: &LinkStatus,
     index: u8,
 ) -> DeviceResult<control::noise::ModeOption> {
-    mode_options(config, link.slots.as_ref().map(|t| t.slots.as_slice()))
+    offered_modes(config, link)
         .into_iter()
         .find(|o| o.index == index)
         .ok_or_else(|| {
@@ -938,6 +971,11 @@ fn mark_what_the_model_lacks(
             CapabilityKey::PairedDevices,
             refused(&link.paired_problem),
             format!("The {model} does not list the devices it is paired with."),
+        ),
+        (
+            CapabilityKey::AwareMode,
+            control::models::uses_levels(config),
+            format!("The {model} has noise-cancellation levels, and no Aware mode."),
         ),
         (
             CapabilityKey::CustomNoiseControl,
@@ -1380,6 +1418,17 @@ fn noise_state(
     confirmed: &Confirmed,
     slots: Option<&SlotTable>,
 ) -> NoiseControlState {
+    // A model with levels is at one, named; none of them has a level of its
+    // own to show, and none is Quiet or Aware.
+    if control::models::uses_levels(config) {
+        return NoiseControlState {
+            mode: NoiseControlMode::Custom,
+            level: None,
+            label: control::anr::Level::from_byte(confirmed.index).map(|l| l.name().to_string()),
+            source: StateSource::VendorProtocol,
+            read_at: confirmed.at.clone(),
+        };
+    }
     let preset = preset_for_index(config, confirmed.index);
     let slot = match preset {
         Some(_) => None,
@@ -1539,7 +1588,8 @@ impl BoseDevice for RealBoseDevice {
                         // is when its level is on screen and may be changed
                         // from elsewhere. A failure is remembered by the link
                         // and surfaces as the capability's reason.
-                        let in_custom = preset_for_index(link.config(), index).is_none();
+                        let levels = control::models::uses_levels(link.config());
+                        let in_custom = !levels && preset_for_index(link.config(), index).is_none();
                         let status = link.status();
                         let known = status.slots.is_some() || status.slots_problem.is_some();
                         let current_listed = status.slots_problem.is_some()
@@ -1547,7 +1597,9 @@ impl BoseDevice for RealBoseDevice {
                                 .slots
                                 .as_ref()
                                 .is_some_and(|t| t.slots.iter().any(|s| s.index == index));
-                        if mode_list_due(link.slots_age(), known, in_custom, current_listed) {
+                        if !levels
+                            && mode_list_due(link.slots_age(), known, in_custom, current_listed)
+                        {
                             let _ = link.read_slots(false);
                         }
 
@@ -1866,6 +1918,13 @@ impl BoseDevice for RealBoseDevice {
             Ok(target) => target,
             Err(why) => return Ok(CommandOutcome::unsupported(why)),
         };
+        if control::models::uses_levels(&target.config) {
+            return Ok(CommandOutcome::unsupported(format!(
+                "The {} has noise-cancellation levels rather than Quiet, Aware and custom \
+                 modes. Choose one of its levels.",
+                target.config.info.name
+            )));
+        }
 
         let config = target.config.clone();
         let change = self
@@ -2027,14 +2086,19 @@ impl BoseDevice for RealBoseDevice {
         };
         let config = target.config.clone();
         let option = listed_mode(&config, &self.link_status.read(), index)?;
-        let wanted = Target::Listed {
-            index,
-            name: option.name,
-        };
-        let change = self
-            .with_link(target, move |link| link.change_to(wanted))
-            .await?
-            .map_err(device_error)?;
+        let change = if control::models::uses_levels(&config) {
+            let level = control::anr::Level::from_byte(index).ok_or_else(|| {
+                DeviceError::InvalidInput("That is not one of the headphones' levels.".to_string())
+            })?;
+            self.with_link(target, move |link| link.set_level(level)).await?
+        } else {
+            let wanted = Target::Listed {
+                index,
+                name: option.name,
+            };
+            self.with_link(target, move |link| link.change_to(wanted)).await?
+        }
+        .map_err(device_error)?;
         Ok(outcome_for(&change, &config))
     }
 
@@ -2316,16 +2380,16 @@ mod tests {
         assert_eq!(target.config.info.name, "QuietComfort Ultra Headphones (2nd Gen)");
     }
 
-    /// A model it knows but cannot drive, and a product it does not know, get
-    /// none — and are told apart.
+    /// The QC35 II gets a control link of its own; a product Void does not
+    /// know gets none, and is told so.
     #[test]
-    fn a_model_that_cannot_be_driven_or_is_not_known_gets_no_control_link() {
+    fn a_qc35_gets_a_control_link_and_an_unknown_product_does_not() {
         let qc35 = Observed {
             product_id: Some(0x4020),
             ..aurora()
         };
-        let why = control_target(&qc35).err().unwrap();
-        assert!(why.contains("QuietComfort 35 II"), "{why}");
+        let target = control_target(&qc35).expect("the QC35 II is driven");
+        assert_eq!(target.config.info.name, "QuietComfort 35 II");
 
         let unknown = Observed {
             product_id: Some(0x1234),
@@ -3160,18 +3224,67 @@ mod tests {
         assert!(noise.evidence.contains("2026-10-16T08:00:00Z"), "{}", noise.evidence);
     }
 
-    /// A model Void knows and cannot drive shows none of the controls; one
-    /// whose product id is not known has them left undecided.
+    /// A model whose product id is not known has its controls left undecided.
     #[test]
-    fn a_model_that_cannot_be_driven_shows_no_controls() {
-        let qc35 = caps(&observed_as(0x4020), &open_link(0));
-        for key in CONTROL_KEYS {
-            let cap = qc35.get(key);
-            assert_eq!(cap.status, CapabilityStatus::Unsupported, "{key:?}");
-            assert!(cap.evidence.contains("QuietComfort 35 II"), "{}", cap.evidence);
-        }
+    fn a_model_that_is_not_known_has_its_controls_undecided() {
         let unknown = caps(&observed_as(0x1234), &open_link(0));
         assert_eq!(unknown.get(CapabilityKey::NoiseControl).status, CapabilityStatus::Unknown);
+    }
+
+    // --- the QuietComfort 35 generation: levels, not modes ------------------
+
+    fn qc35_link(level: u8) -> LinkStatus {
+        LinkStatus {
+            anr: Some(control::anr::AnrStatus {
+                level: control::anr::Level::from_byte(level).unwrap(),
+                supported: Some(vec![
+                    control::anr::Level::High,
+                    control::anr::Level::Low,
+                    control::anr::Level::Off,
+                ]),
+            }),
+            ..open_link(level)
+        }
+    }
+
+    #[test]
+    fn a_qc35_offers_its_levels_with_the_current_one_marked() {
+        let config = control::config_for_product(0x4020).unwrap();
+        let modes = noise_modes(&config, &qc35_link(3)).unwrap();
+        let shown: Vec<(u8, &str, bool, bool)> = modes
+            .iter()
+            .map(|m| (m.index, m.name.as_str(), m.adjustable, m.active))
+            .collect();
+        assert_eq!(
+            shown,
+            [(1, "High", false, false), (3, "Low", false, true), (0, "Off", false, false)]
+        );
+        let state = noise_state(&config, &confirmed(3).unwrap(), None);
+        assert_eq!(state.label.as_deref(), Some("Low"));
+        assert_eq!(state.level, None);
+        assert_eq!(listed_mode(&config, &qc35_link(3), 0).unwrap().name, "Off");
+        assert!(listed_mode(&config, &qc35_link(3), 2).is_err(), "wind is not listed");
+    }
+
+    #[test]
+    fn a_qc35_shows_noise_control_and_not_what_it_lacks() {
+        let caps_now = caps(&observed_as(0x4020), &qc35_link(1));
+        assert_eq!(caps_now.get(CapabilityKey::NoiseControl).status, CapabilityStatus::Ready);
+        for key in [
+            CapabilityKey::AwareMode,
+            CapabilityKey::CustomNoiseControl,
+            CapabilityKey::Equalizer,
+        ] {
+            assert_eq!(caps_now.get(key).status, CapabilityStatus::Unsupported, "{key:?}");
+        }
+        let switched = LinkStatus {
+            to_mode: transition(1, 3, "2026-10-16T12:00:00Z"),
+            ..qc35_link(3)
+        };
+        let cap = caps(&observed_as(0x4020), &switched);
+        let noise = cap.get(CapabilityKey::NoiseControl);
+        assert_eq!(noise.status, CapabilityStatus::Verified);
+        assert!(noise.evidence.contains("Low"), "{}", noise.evidence);
     }
 
     /// A preset other than Quiet and Aware goes by its own name, whether or

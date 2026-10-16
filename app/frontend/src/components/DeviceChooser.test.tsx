@@ -11,6 +11,7 @@ const ipcMock = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
   listBoseDevices: vi.fn(),
   chooseBoseDevice: vi.fn(),
+  requestBluetoothPermission: vi.fn(),
 }));
 vi.mock('@/services/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/ipc')>()),
@@ -159,5 +160,36 @@ describe('the device chooser', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(screen.queryByText('chooser closed')).not.toBeInTheDocument();
     expect(screen.getByText('Which headphones?')).toBeInTheDocument();
+  });
+});
+
+describe('when devices cannot be listed', () => {
+  it('asks for Bluetooth access, and carries on by itself once it is given', async () => {
+    ipcMock.listBoseDevices
+      .mockRejectedValueOnce({ kind: 'not-permitted', message: 'Allow "Nearby devices".' })
+      .mockRejectedValueOnce({ kind: 'not-permitted', message: 'Allow "Nearby devices".' })
+      .mockResolvedValue([AURORA]);
+    ipcMock.requestBluetoothPermission.mockResolvedValue(undefined);
+    await renderChooser();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Headphones/ }));
+    expect(await screen.findByTestId('needs-permission', {}, LONG)).toHaveTextContent('Nearby devices');
+    expect(screen.queryByText('No Bose headphones connected.')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Allow Bluetooth access' }));
+    expect(ipcMock.requestBluetoothPermission).toHaveBeenCalled();
+
+    // Looked at again in the background, and opened once it can be.
+    await waitFor(() => expect(ipcMock.chooseBoseDevice).toHaveBeenCalledWith(AURORA.id), {
+      timeout: 8000,
+    });
+  }, 12000);
+
+  it('says Bluetooth is off rather than that nothing is connected', async () => {
+    ipcMock.listBoseDevices.mockRejectedValue({ kind: 'bluetooth-unavailable', message: 'off' });
+    await renderChooser();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Earbuds/ }));
+    expect(await screen.findByText('Bluetooth is off.', {}, LONG)).toBeInTheDocument();
+    expect(screen.queryByText('No Bose earbuds connected.')).not.toBeInTheDocument();
   });
 });

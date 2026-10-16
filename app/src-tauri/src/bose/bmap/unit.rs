@@ -62,7 +62,7 @@ fn unexpected(message: String) -> BmapError {
 /// is the headphones saying no; anything else from it that is not a `STATUS`
 /// is not an answer; and frames from elsewhere with none from it mean the
 /// connection is out of step with the requests.
-fn exchange<T: Transport>(
+pub(super) fn exchange<T: Transport>(
     raw: &T,
     addr: (u8, u8),
     op: Operator,

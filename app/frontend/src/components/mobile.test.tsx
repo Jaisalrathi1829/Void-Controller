@@ -390,6 +390,16 @@ describe('bottom navigation', () => {
     for (const name of ['Dashboard', 'Device', 'Settings']) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
     }
+
+    // Levels and no equalizer, as on a QuietComfort 35 II: noise control, no
+    // profiles.
+    cleanup();
+    capabilities.noiseControl = { ...capabilities.noiseControl, status: 'ready' };
+    capabilities.awareMode = { ...capabilities.awareMode, status: 'unsupported' };
+    ipcMock.getSnapshot.mockResolvedValue({ ...snapshot, capabilities });
+    await renderNav(vi.fn());
+    expect(screen.getByRole('button', { name: 'Noise Control' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Profiles' })).not.toBeInTheDocument();
   });
 });
 

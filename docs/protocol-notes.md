@@ -1091,3 +1091,136 @@ It prints what the headphones answer to each request, the device's status
 byte every half second after it — which would also show, for the first time
 on this model, what a paired device that is not connected looks like — and
 fails loudly if the device was left disconnected.
+
+## Experiment 14 — what the headphones broadcast over Bluetooth LE (2026-10-16)
+
+Asked: could an iPhone reach the headphones at all? iOS lets an application
+open no Bluetooth Classic channel to them (the RFCOMM link everything here
+uses), only Bluetooth LE through CoreBluetooth.
+
+What was known: Windows has the headphones paired over Classic only — no
+`BTHLE` node for them — so it records no LE services for them.
+
+Done: a **passive** LE scan from the development PC for 30 s
+(`BluetoothLEAdvertisementWatcher`, `ScanningMode::Passive`): it listens to
+advertisements and transmits nothing, not even scan requests. The headphones
+were on, connected to the phone and the PC.
+
+Heard:
+
+| Address (random, rotating) | RSSI | Advertised service | Manufacturer data |
+| --- | --- | --- | --- |
+| `4538AAD2FA95` | −50 dBm | `0000febe-0000-1000-8000-00805f9b34fb` | id `0x4703`, `7D10BA58090A914A71602496E4E4` |
+| `763DBBFEF6D8` | −59 dBm | the same | the same |
+
+The two are one device: the same payload under two random addresses, the
+address changing during the scan, as a device with LE privacy does. `0xFEBE`
+is the 16-bit service number registered to Bose. It was the strongest signal
+heard and the only Bose one, so it is almost certainly the test headphones;
+that was not confirmed (for example by switching them off and seeing it go).
+
+What it shows: the headphones advertise a Bose service over LE while
+connected over Classic, which is a route an iPhone application could
+connect over. What it does not show: what that service offers, and whether
+the BMAP functions used here (mode, equalizer, name, multipoint) are reachable
+through it. Finding out means connecting over LE and listing its GATT
+services and characteristics — standard discovery reads that change nothing,
+but not passive.
+
+**Then, with the owner's agreement:** connected over LE to the device
+advertising `0xFEBE` (random address `4538AAD2FA95`), listed its services and
+characteristics uncached, and disconnected. No characteristic value was read
+and nothing was written. It gave no name. Its GATT table:
+
+| Service | Characteristic | Properties |
+| --- | --- | --- |
+| `0x1801` Generic Attribute | `0x2A05` Service Changed | indicate |
+| **`0xFEBE` (Bose)** | `9ec813b4-256b-4090-93a8-a4f0e9107733` | read, notify |
+| | `d417c028-9818-4354-99d1-2ac09d074591` | read, write, write without response, notify |
+| | `c65b8f2f-aee2-4c89-b758-bc4892d6f2d8` | read, write, write without response, notify |
+| | `234bfbd5-e3b3-4536-a3fe-723620d4b78d` | write |
+| | `b8ec1fa5-f56b-4aad-8961-856b84fed4f8` | write |
+| | `c1c449f8-34d7-4c61-ad8a-4fb364f10b27` | write |
+| `0xFE03` (Amazon) | `f04eb177-3005-43a7-ac61-a390ddf83076` | write |
+| | `2beea05b-1879-4bb4-8a2f-72641f82420b` | read, notify |
+| `0x1800` Generic Access | `0x2A00` name, `0x2A01` appearance | read |
+| `0x180A` Device Information | `0x2A29`, `0x2A24`, `0x2A27`, `0x2A26`, `0x2A28`, `0x2A23`, `0x2A2A`, `0x2A50` | read |
+
+Windows reported no protection required on any of them. Two characteristics
+of Bose's service take writes and send notifications — the shape of a
+request-and-reply channel, which is what BMAP over RFCOMM is. Whether BMAP
+frames are what they carry is not known: nothing was sent to find out. Nor is
+it confirmed that the device is the test headphones; its Device Information
+values would say, and were not read.
+
+**Then, with the owner's agreement, one request.** Over LE again (the device
+was now at random address `47C5A9EB96FA`, found by the same service), uncached:
+
+| Read | Value |
+| --- | --- |
+| Manufacturer `0x2A29` | "Bose Corporation" |
+| Model number `0x2A24` | "884367-0100" |
+| Hardware `0x2A27` | "1.0.0" |
+| Firmware `0x2A26`, software `0x2A28` | "1.0.6" — the version the test headphones give over Classic (`1.0.6-80+f5f219b`) |
+| PnP id `0x2A50` | `01 9E 00 75`: Bluetooth SIG source, vendor `0x009E` (Bose); the product id came back short, one byte of it (`0x75`, as in `0x4075`) |
+| `9ec813b4-…` (Bose) | `00 00 00 00 00 00`; notified the same once on subscribing |
+| `d417c028-…` (Bose) | empty |
+| `c65b8f2f-…` (Bose) | not read: `ProtocolError`, as a characteristic that needs an encrypted link answers |
+
+Notifications were turned on for the three that have them. Then the one
+request: `00 05 01 00` — BMAP `GET [0.5]`, the firmware version, the first
+thing the application asks over RFCOMM — written with response to
+`d417c028-…`. The write was accepted (`Success`). **Nothing was notified in
+the 3 s after it**, on any of the three; over RFCOMM the same request is
+answered in milliseconds. Notifications were turned off again and the link
+closed. Nothing else was written.
+
+Result: it is the test headphones, they keep a Bose service on LE, and that
+service did not answer a BMAP request sent to it as RFCOMM frames are. What
+it would take is not known: a different framing, the other characteristic
+(which wants an encrypted link, so a pairing over LE first), or an
+authentication of Bose's own. The last would be out of bounds (no bypassing
+of authentication). Stopped here: one request was what was agreed.
+
+For an iPhone application this means: no route to the headphones' controls
+has been shown. The LE service is the only one iOS would allow, and it has
+not been made to answer.
+
+## Experiment 15 — pairing over LE, and the same request on the locked characteristic (2026-10-16)
+
+Asked for by the owner after Experiment 14: pair this PC with the headphones
+over LE, then send the one request to `c65b8f2f-…`, the Bose characteristic
+that would not be read without an encrypted link.
+
+Done: found again by its service (random address `49B6A0D7FEA1`, not paired
+over LE before). Paired from Windows with custom pairing, accepting **Just
+Works only** — nothing that would have needed a PIN was answered, and none
+was asked for. Then over the paired link: read the Bose characteristics,
+turned notifications on, waited 2 s, and wrote `00 05 01 00` (`GET [0.5]`) to
+`c65b8f2f-…`.
+
+| Step | Result |
+| --- | --- |
+| Pairing asked for | `ConfirmOnly` (Just Works) |
+| Pairing | `Paired`, protection level **None** — bonded, not encrypted as an authenticated link |
+| Reading `c65b8f2f-…` | `ProtocolError`, as before |
+| Notifications on the three | turned on (`Success`) |
+| Unsolicited | `9ec813b4-…` notified `00 00 00 00 00 00` once, as before |
+| Writing the request to `c65b8f2f-…` | refused: `0x80650005`, **"The attribute requires authentication before it can be read or written"** — the ATT *Insufficient Authentication* error. Nothing reached it |
+
+The program stopped at that error before its own clean-up, so the pairing
+was then removed from the PC separately (`UnpairAsync`: `Unpaired`). After
+it, Windows lists no LE entry for the headphones, and they were still
+connected to the PC over Classic. **The headphones may still remember this
+PC's LE pairing on their side**; nothing here can remove that, and it does
+nothing while this PC does not use it.
+
+What it shows: the characteristic wants an *authenticated* link — a pairing
+protected against interception — which Just Works is not, and which
+headphones with no screen or keypad can only get some other way (for
+example derived from the existing Classic pairing, which Windows did not do
+here). Whether an iPhone gets such a link to them, and whether BMAP is then
+what the characteristic carries, cannot be found out from this PC: it would
+take an application running on an iPhone, which takes a Mac to build.
+
+For an iPhone version: still no route to the controls shown.

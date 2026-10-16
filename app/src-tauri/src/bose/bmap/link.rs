@@ -215,6 +215,10 @@ pub struct LinkStatus {
     /// noise control is verified by on a model without Quiet and Aware
     /// presets in its description.
     pub to_mode: Option<TransitionProof>,
+    /// The noise-cancellation level as last read, on a model that has one
+    /// instead of modes (the QuietComfort 35 generation). `confirmed` holds
+    /// the same level, as its index.
+    pub anr: Option<super::anr::AnrStatus>,
     /// A confirmed change to a custom mode's level.
     pub level: Option<LevelProof>,
     /// The equalizer as last reported by the device.
@@ -384,6 +388,7 @@ impl<C: Connector> BmapLink<C> {
     pub fn device_gone(&mut self) {
         self.close();
         self.status.confirmed = None;
+        self.status.anr = None;
         self.status.slots = None;
         self.status.slots_problem = None;
         self.slots_asked = None;
@@ -468,14 +473,27 @@ impl<C: Connector> BmapLink<C> {
         self.status.firmware = Some(endpoint.firmware.clone());
 
         // Before this session is allowed to write anything, check that the
-        // device's current-mode reply has exactly the documented shape.
-        match probe_current_mode(&transport, &self.config) {
-            Ok(index) => {
-                self.status.framing_problem = None;
-                self.record_confirmed(index);
+        // device's current-mode reply — or on a model with levels, its
+        // noise-cancellation reply — has exactly the documented shape.
+        if super::models::uses_levels(&self.config) {
+            match super::anr::read(&transport) {
+                Ok(status) => {
+                    self.status.framing_problem = None;
+                    self.record_level(status);
+                }
+                Err(e) => {
+                    self.status.framing_problem = Some(e.to_string());
+                }
             }
-            Err(why) => {
-                self.status.framing_problem = Some(why);
+        } else {
+            match probe_current_mode(&transport, &self.config) {
+                Ok(index) => {
+                    self.status.framing_problem = None;
+                    self.record_confirmed(index);
+                }
+                Err(why) => {
+                    self.status.framing_problem = Some(why);
+                }
             }
         }
 
@@ -510,8 +528,25 @@ impl<C: Connector> BmapLink<C> {
         }
     }
 
+    /// Remembers a noise-cancellation level as read, and that level as the
+    /// confirmed state.
+    fn record_level(&mut self, status: super::anr::AnrStatus) {
+        self.record_confirmed(status.level.byte());
+        self.status.anr = Some(status);
+    }
+
     fn read_mode_once(&mut self) -> Result<u8, BmapError> {
         let session = self.session.as_ref().expect("session ensured by caller");
+        // On a model with levels the level is what stands for the mode.
+        if super::models::uses_levels(&self.config) {
+            let result = super::anr::read(&session.transport);
+            self.collect_wire_log();
+            return result.map(|status| {
+                let level = status.level.byte();
+                self.record_level(status);
+                level
+            });
+        }
         let result = noise::read_mode(&session.conn);
         self.collect_wire_log();
         if let Ok(index) = result {
@@ -989,6 +1024,52 @@ impl<C: Connector> BmapLink<C> {
             )),
             None => Ok(()),
         }
+    }
+
+    /// Sets the noise-cancellation level, on a model that has levels, and
+    /// reports what the device then said. Recorded as a mode change whose
+    /// indices are levels.
+    pub fn set_level(&mut self, level: super::anr::Level) -> Result<ModeChange, LinkError> {
+        if !super::models::uses_levels(&self.config) {
+            return Err(LinkError::new(
+                LinkErrorKind::Unsupported,
+                "These headphones have modes, not noise-cancellation levels.".to_string(),
+            ));
+        }
+        self.read_mode(true)?;
+        self.refuse_writes_on_bad_framing()?;
+
+        let session = self.session.as_ref().expect("read_mode left a session open");
+        let result = super::anr::set_level(&session.transport, level, self.timing.verify);
+        self.collect_wire_log();
+
+        let change = match result {
+            Ok(change) => change,
+            Err(e @ BmapError::InvalidArg(_)) => {
+                return Err(LinkError::new(LinkErrorKind::Unsupported, e.to_string()))
+            }
+            Err(e) => return Err(self.fail(e)),
+        };
+
+        if let Some(after) = change.after {
+            self.record_confirmed(after);
+            if let (Some(status), Some(now)) =
+                (self.status.anr.as_mut(), super::anr::Level::from_byte(after))
+            {
+                status.level = now;
+            }
+        }
+        if change.is_verified_transition() {
+            self.status.to_mode = Some(TransitionProof {
+                before: change.before,
+                after: change.requested_index,
+                at: (self.now_text)(),
+            });
+        }
+        if change.sent && change.after.is_none() {
+            self.close();
+        }
+        Ok(change)
     }
 
     /// Requests a preset and reports what the device then said.

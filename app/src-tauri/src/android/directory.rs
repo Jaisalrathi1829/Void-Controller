@@ -129,10 +129,15 @@ fn probe_routes() -> Vec<Route> {
     routes
 }
 
-/// Asks whatever answers on the probe routes for its product id: one
-/// read-only `GET [0.3]` per route that connects, stopping at the first
-/// answer that is a product id. A route that connects and says something
-/// else is closed and passed over, as it is by the control link.
+/// Asks whatever answers on the probe routes for its product id: per route
+/// that connects, the protocol version `GET [0.1]` and then `GET [0.3]`,
+/// both read-only, stopping at the first answer that is a product id. A route
+/// that connects and says something else is closed and passed over, as it
+/// is by the control link.
+///
+/// The version comes first because the QuietComfort 35 generation answers
+/// nothing until it has been asked for it (upstream's `init_packet`), and so
+/// went unrecognized on the phone; every model answers it.
 fn ask_product<C: Connector>(connector: &mut C, timing: Timing, between: Duration) -> Option<u16>
 where
     C::Stream: ByteStream,
@@ -147,6 +152,7 @@ where
         let found = {
             let transport = StreamTransport::new(opened.stream, timing);
             transport.drain_greeting();
+            let _ = transport.send_recv(&[0x00, 0x01, 0x01, 0x00]);
             transport
                 .send_recv(&[0x00, 0x03, 0x01, 0x00])
                 .ok()
@@ -181,15 +187,26 @@ static PROBES: Mutex<Option<Probes>> = Mutex::new(None);
 
 /// Extracts the product id from the reply to `GET [0.3]`: a STATUS frame from
 /// that address whose payload starts with the id, most significant byte first.
+/// Other frames in the same reply — a late answer to the version request — are
+/// passed over.
 fn product_from_reply(reply: &[u8]) -> Option<u16> {
     const STATUS: u8 = 3;
-    let [0x00, 0x03, flags, len, payload @ ..] = reply else {
-        return None;
-    };
-    if flags & 0x0F != STATUS || usize::from(*len) < 2 || payload.len() < 2 {
-        return None;
+    let mut rest = reply;
+    while let [fblock, func, flags, len, tail @ ..] = rest {
+        let len = usize::from(*len);
+        let payload = tail.get(..len.min(tail.len()))?;
+        if (*fblock, *func) == (0x00, 0x03) {
+            if flags & 0x0F != STATUS || len < 2 || payload.len() < 2 {
+                return None;
+            }
+            return Some(u16::from_be_bytes([payload[0], payload[1]]));
+        }
+        if tail.len() < len {
+            return None;
+        }
+        rest = &tail[len..];
     }
-    Some(u16::from_be_bytes([payload[0], payload[1]]))
+    None
 }
 
 /// The model of the connected device at `address`, asked of the device.
@@ -335,6 +352,16 @@ mod tests {
         );
     }
 
+    /// A QuietComfort 35 II's, after its answer to the version request
+    /// arrived late in the same read: the id is still found.
+    #[test]
+    fn the_product_id_is_found_after_another_frame() {
+        assert_eq!(
+            product_from_reply(&[0x00, 0x01, 0x03, 0x05, 0x31, 0x2E, 0x31, 0x2E, 0x30, 0x00, 0x03, 0x03, 0x02, 0x40, 0x20]),
+            Some(0x4020)
+        );
+    }
+
     #[test]
     fn anything_else_is_not_a_product_id() {
         // An error reply from the same address.
@@ -390,10 +417,21 @@ mod probe_tests {
         }
     }
 
-    /// A stream that answers the product-id request as the headphones did.
-    fn prince() -> ScriptedStream {
-        ScriptedStream::new().on_send(vec![data(&[0x00, 0x03, 0x03, 0x03, 0x40, 0x75, 0x0D])])
+    /// The answer to the protocol-version request that comes first.
+    fn version() -> crate::bose::bmap::stream::testing::Chunk {
+        data(&[0x00, 0x01, 0x03, 0x05, b'1', b'.', b'1', b'.', b'0'])
     }
+
+    /// A stream that answers the version and the product-id requests as the
+    /// test headphones do.
+    fn prince() -> ScriptedStream {
+        ScriptedStream::new()
+            .on_send(vec![version()])
+            .on_send(vec![data(&[0x00, 0x03, 0x03, 0x03, 0x40, 0x75, 0x0D])])
+    }
+
+    /// Asked for the version first, then for its id.
+    const ASKED: [[u8; 4]; 2] = [[0x00, 0x01, 0x01, 0x00], [0x00, 0x03, 0x01, 0x00]];
 
     fn ask(device: &mut Device) -> Option<u16> {
         ask_product(device, Timing::instant(), Duration::ZERO)
@@ -405,8 +443,8 @@ mod probe_tests {
         let mut device = Device::new(vec![(Route::SerialPortService, Ok(stream.clone()))]);
         assert_eq!(ask(&mut device), Some(0x4075));
         assert_eq!(device.tried, vec![Route::SerialPortService]);
-        // One request, and a read-only one.
-        assert_eq!(stream.sent(), vec![vec![0x00, 0x03, 0x01, 0x00]]);
+        // Two requests, both read-only: the version, then the id.
+        assert_eq!(stream.sent(), ASKED.map(|r| r.to_vec()).to_vec());
     }
 
     #[test]
@@ -431,7 +469,7 @@ mod probe_tests {
             (Route::Channel(8), Ok(prince())),
         ]);
         assert_eq!(ask(&mut device), Some(0x4075));
-        assert_eq!(other.sent(), vec![vec![0x00, 0x03, 0x01, 0x00]], "asked once, then left");
+        assert_eq!(other.sent(), ASKED.map(|r| r.to_vec()).to_vec(), "asked, then left");
     }
 
     #[test]
@@ -466,11 +504,28 @@ mod probe_tests {
     /// model, and gets that model's description.
     #[test]
     fn another_models_id_is_reported_as_it_is() {
-        let ultra = ScriptedStream::new().on_send(vec![data(&[0x00, 0x03, 0x03, 0x03, 0x40, 0x82, 0x01])]);
+        let ultra = ScriptedStream::new()
+            .on_send(vec![version()])
+            .on_send(vec![data(&[0x00, 0x03, 0x03, 0x03, 0x40, 0x82, 0x01])]);
         let mut device = Device::new(vec![(Route::SerialPortService, Ok(ultra))]);
         let id = ask(&mut device).unwrap();
         assert_eq!(id, 0x4082);
         let config = crate::bose::bmap::config_for_product(id).expect("a known model");
         assert_eq!(config.info.name, "QuietComfort Ultra Headphones (2nd Gen)");
+    }
+
+    /// A QuietComfort 35 II, which answers once it has been asked for the
+    /// version, is identified, and driven by its noise-cancellation level.
+    #[test]
+    fn a_qc35_ii_is_identified() {
+        let qc35 = ScriptedStream::new()
+            .on_send(vec![version()])
+            .on_send(vec![data(&[0x00, 0x03, 0x03, 0x02, 0x40, 0x20])]);
+        let mut device = Device::new(vec![(Route::SerialPortService, Ok(qc35))]);
+        let id = ask(&mut device).unwrap();
+        assert_eq!(id, 0x4020);
+        let config = crate::bose::bmap::config_for_product(id).expect("a known model");
+        assert_eq!(config.info.name, "QuietComfort 35 II");
+        assert!(crate::bose::bmap::models::uses_levels(&config));
     }
 }

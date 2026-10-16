@@ -1,4 +1,13 @@
-import { Clapperboard, Ear, SlidersHorizontal, Sparkles, Waves } from "lucide-react";
+import {
+  AudioWaveform,
+  Clapperboard,
+  Ear,
+  EarOff,
+  SlidersHorizontal,
+  Sparkles,
+  Waves,
+  Wind,
+} from "lucide-react";
 import { SegmentedControl } from "./primitives";
 import { cn } from "./ui/utils";
 import { isShown, isUnavailable, useApp, type NoiseMode } from "../store";
@@ -7,18 +16,18 @@ import type { NoiseModeOption } from "@/types/device";
 /** The icon for a mode, by its name where it is one of the built-in ones. */
 function iconFor(mode: NoiseModeOption) {
   const name = mode.name.trim().toLowerCase();
-  const Icon =
-    name === "quiet"
-      ? Waves
-      : name === "aware"
-        ? Ear
-        : name === "immersion"
-          ? Sparkles
-          : name === "cinema"
-            ? Clapperboard
-            : mode.preset
-              ? Waves
-              : SlidersHorizontal;
+  // The QuietComfort 35 generation's levels go by these names too.
+  const byName: Record<string, typeof Waves> = {
+    quiet: Waves,
+    aware: Ear,
+    immersion: Sparkles,
+    cinema: Clapperboard,
+    high: Waves,
+    low: AudioWaveform,
+    wind: Wind,
+    off: EarOff,
+  };
+  const Icon = byName[name] ?? (mode.preset ? Waves : SlidersHorizontal);
   return <Icon className="size-4" />;
 }
 
@@ -27,6 +36,11 @@ export function describeMode(mode: NoiseModeOption): string {
   const name = mode.name.trim().toLowerCase();
   if (name === "quiet") return "Maximum noise cancellation for focus and quiet environments.";
   if (name === "aware") return "Let ambient sound through so you stay aware of your surroundings.";
+  // The levels of the QuietComfort 35 generation.
+  if (name === "high") return "Full noise cancellation.";
+  if (name === "low") return "Less noise cancellation: some of your surroundings come through.";
+  if (name === "wind") return "Noise cancellation that keeps wind noise down.";
+  if (name === "off") return "Noise cancellation is off.";
   if (mode.preset) return "One of the modes built into your headphones.";
   return mode.adjustable
     ? "A mode you set up. Its noise-cancellation level can be changed below."

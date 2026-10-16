@@ -23,6 +23,7 @@
 //! can ask for "Quiet", "Aware" or "Custom", and for a level from 0 to 10; the
 //! frames are built by upstream's codec from upstream's model configuration.
 
+pub mod anr;
 pub mod custom;
 pub mod endpoint;
 pub mod eq;
@@ -116,8 +117,8 @@ mod tests {
         assert!(config.current_mode.is_some());
     }
 
-    /// Every documented model with a mode function gets upstream's own
-    /// description; the QC35 generation, which has none, gets no link.
+    /// Every documented model gets upstream's own description — the QC35
+    /// generation too, driven by its noise-cancellation level.
     #[test]
     fn documented_models_get_upstreams_description() {
         for (id, codename) in [(0x4082u16, "wolverine"), (0x4039, "duran"), (0x402F, "lando")] {
@@ -125,7 +126,9 @@ mod tests {
             assert_eq!(config.info.codename, codename);
             assert!(!models::is_generic(&config));
         }
-        assert!(config_for_product(0x4020).is_none(), "QC35 II: no mode function");
+        let qc35 = config_for_product(0x4020).expect("QC35 II");
+        assert_eq!(qc35.info.codename, "baywolf");
+        assert!(models::uses_levels(&qc35));
         assert!(config_for_product(0xBC59).is_none(), "a speaker");
         assert!(config_for_product(0x1234).is_none(), "not a Bose product");
     }

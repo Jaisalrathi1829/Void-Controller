@@ -45,6 +45,9 @@ interface SimulatedProfile {
   parts?: BatteryPart[];
   /** Features this model does not have, and are not shown. */
   lacks: CapabilityKey[];
+  /** Noise cancellation as levels (the QuietComfort 35 generation): the
+   * indices are the levels' values, and none is Quiet or Aware. */
+  levels?: boolean;
 }
 
 const PROFILES: [SimulatedProfile, ...SimulatedProfile[]] = [
@@ -97,6 +100,19 @@ const PROFILES: [SimulatedProfile, ...SimulatedProfile[]] = [
     ],
     // No custom mode is set up on them, and they list no paired devices.
     lacks: ['customNoiseControl', 'pairedDevices'],
+  },
+  {
+    id: '00000000000000000a04',
+    name: 'Bose QC35 II',
+    model: { name: 'QuietComfort 35 II', category: 'headphones', support: 'documented' },
+    // Its levels, by the values the headphones use: high 1, low 3, off 0.
+    modes: [
+      { index: 1, name: 'High', preset: true },
+      { index: 3, name: 'Low', preset: true },
+      { index: 0, name: 'Off', preset: true },
+    ],
+    lacks: ['equalizer', 'customNoiseControl', 'awareMode', 'multipoint'],
+    levels: true,
   },
 ];
 
@@ -163,13 +179,15 @@ export class BrowserSimulatedDevice {
     if (profile.id !== this.profile.id) {
       this.profile = profile;
       this.name = profile.name;
-      this.modeIndex = 0;
+      this.modeIndex = profile.modes[0]?.index ?? 0;
     }
     this.connected = true;
     return this.snapshot();
   }
 
   private get mode(): NoiseControlMode {
+    // A level is named, like a custom mode, and is neither Quiet nor Aware.
+    if (this.profile.levels) return 'custom';
     if (this.modeIndex === 0) return 'quiet';
     if (this.modeIndex === 1) return 'aware';
     return 'custom';
@@ -293,6 +311,12 @@ export class BrowserSimulatedDevice {
 
       case 'setNoiseControl': {
         if (!this.connected) return { kind: 'rejected', reason: 'No device is connected.' };
+        if (this.profile.levels) {
+          return {
+            kind: 'unsupported',
+            reason: 'The simulated QC35 II has noise-cancellation levels, not Quiet and Aware.',
+          };
+        }
         const index =
           command.mode === 'quiet'
             ? 0

@@ -99,7 +99,12 @@ describe('the simulated devices to choose from', () => {
   it('lists headphones and earbuds, each with its model, all labelled simulated', async () => {
     const dev = new BrowserSimulatedDevice();
     const listed = await dev.paired();
-    expect(listed.map((d) => d.model?.category)).toEqual(['headphones', 'headphones', 'earbuds']);
+    expect(listed.map((d) => d.model?.category)).toEqual([
+      'headphones',
+      'headphones',
+      'earbuds',
+      'headphones',
+    ]);
     for (const d of listed) expect(d.name).toContain('(simulated)');
   });
 

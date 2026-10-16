@@ -518,3 +518,39 @@ describe('a device that lists its own modes', () => {
     expect(screen.queryByTestId('custom-unavailable')).not.toBeInTheDocument();
   });
 });
+
+describe('a QuietComfort 35 II', () => {
+  const levels = (active: number): NoiseModeOption[] =>
+    [
+      { index: 1, name: 'High' },
+      { index: 3, name: 'Low' },
+      { index: 0, name: 'Off' },
+    ].map((l) => ({ ...l, preset: true, adjustable: false, active: l.index === active }));
+
+  it('offers its levels, says what the current one does, and has no level slider', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot({ mode: 'custom', custom: 'unsupported', label: 'Low' }),
+      noiseModes: levels(3),
+    });
+    await renderPage();
+
+    expect(tab('High')).toBeInTheDocument();
+    expect(tab('Off')).toBeInTheDocument();
+    expect(tab('Low')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: 'Quiet' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Less noise cancellation/)).toBeInTheDocument();
+    expect(screen.queryByTestId('custom-panel')).not.toBeInTheDocument();
+  });
+
+  it('switches level by the value the headphones use', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot({ mode: 'custom', custom: 'unsupported', label: 'High' }),
+      noiseModes: levels(1),
+    });
+    ipcMock.selectNoiseMode.mockResolvedValue(applied);
+    await renderPage();
+
+    await userEvent.click(tab('Off'));
+    await waitFor(() => expect(ipcMock.selectNoiseMode).toHaveBeenCalledWith(0));
+  });
+});

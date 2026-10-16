@@ -1257,8 +1257,6 @@ and custom level not touched.
 ### Not checked
 
 - **Any model but the QuietComfort Headphones.** None was available.
-- The phone. The phone's paired list has no product ids, so the chooser there
-  would list every device as unrecognized until the phone side is done.
 - The installed Windows application. The installer below has not been run.
 
 ### Pop-ups removed
@@ -1279,15 +1277,79 @@ icons, `build.rs` has to be touched: the release build otherwise keeps the old i
 embedded in the executable. Checked by reading the icon out of a fresh copy of the built
 executable and of the installer: both are the wolf.
 
+### The phone (2026-10-16, later)
+
+Asked for by the owner once the Windows build was in use: the same on the phone.
+
+| What | Done |
+| --- | --- |
+| Which model each device is | Android keeps no product id. The device list asks each connected Bose device for it (`GET [0.3]`, read-only, once, remembered) the way the device in use already was; one that is not connected is listed without a model (`bose/choice.rs`) |
+| No permission yet, or Bluetooth off | The device list says which (`ready_to_list`), and the chooser shows "Bluetooth access is needed" with **Allow Bluetooth access**, then looks again by itself every two seconds until it is given; or "Bluetooth is off". The permission is checked first: without it Android reads Bluetooth as off |
+
+Checked on the emulator (x86_64, no paired devices) with today's build: the
+app is called Void in the system's permission dialog; the chooser comes up;
+with the permission declined, Headphones shows "Bluetooth access is
+needed"; granting it from outside the app moved the chooser on by itself to
+"No Bose headphones connected". Not checked: anything with headphones on a
+phone.
+
 ### Builds
 
 | | |
 | --- | --- |
-| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 15:47, 105,428,881 bytes, with the voice model, without pop-ups and with the wolf icon, SHA-256 `5ecb7e322c05a1613ff170e50ab4751813aeddfecaa8bddd93b1c6dad8191c5c`. Not run by anyone |
-| Phone | None for Void yet. `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk` is still the 2026-10-13 build of the old application |
+| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 16:47, 105,366,811 bytes, with the voice model, SHA-256 `50bfd31527e84d326533749fb69e8bfaf8c1618dbbf175ffbe0d8f5c5cffa6bf`. Not run by anyone |
+| Phone | `Setups\Void-0.1.0-android-arm64.apk`, 2026-10-16 16:44, 139,717,274 bytes, SHA-256 `b03d86cd41c99679cef7014a8a5f048069e9436e41617c46f90f47453515637c`. Installs over Bose QC Control Center (same package). Not run on a phone |
 
 The new name installs into a folder of its own (`%LOCALAPPDATA%\Void`) beside
 the old one, which stays until it is uninstalled. The identifier is the same,
 so settings, profiles and the voice model are found by both — uninstall the
 old one without deleting its application data. "Start with Windows" points at
 whichever copy last switched it on, so it is switched on again from Void.
+
+## 20. The QuietComfort 35 II (2026-10-16)
+
+Asked for by the owner, who has one ("Dragoon"): make the application work
+with it. Their screenshot of the phone build showed it listed as "Model not
+recognized".
+
+### What was wrong
+
+| | Why | Fix |
+| --- | --- | --- |
+| Not recognized on the phone | Android keeps no product id, so the phone asks the headphones (`GET [0.3]`). The QC35 generation answers nothing until it has been asked for the protocol version (`GET [0.1]`, upstream's `init_packet`), and the phone never asked | The phone asks `GET [0.1]` first, then `GET [0.3]`, both read-only, and finds the product id among whatever frames come back (`android/directory.rs`). Windows takes the id from the pairing and was not affected |
+| Not driven anywhere | Its noise cancellation is not a mode but a level, `[1.6]`: off `0`, high `1`, wind `2`, low `3`, with a mask of the levels there are. The control link was built around reading a mode | `bose/bmap/anr.rs`: the level read in the documented shape only, set once with `SETGET`, confirmed by read-back. On a model with levels the link reads the level wherever it would read the mode, checks the level's shape before allowing writes, and records a confirmed change like a mode switch. The device layer offers the levels the headphones list as its modes |
+
+### What it shows
+
+Noise control as **High / Low / Off** (Wind where the headphones list it),
+switched from the Noise page, the dashboard and the desktop widget, and
+announced by voice by name. The Device page: name and renaming, battery,
+firmware, paired devices, as on other models. Not shown: equalizer, Aware
+mode, a custom level, profiles (they have none). Multipoint is shown only if
+the headphones answer for it; upstream says they do not.
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| The level: parsing, write-once, read-back, refusals, levels not listed | `anr.rs` tests | pass |
+| Identified on the phone after the version request; the reply found among other frames | `android/directory.rs` tests | pass |
+| Offered levels, the current one marked, switching by value, what is hidden | `real.rs`, `NoisePage.test.tsx`, `mobile.test.tsx` | 621 Rust and 281 frontend tests pass; clippy clean |
+| The screens | Browser preview, simulated QC35 II | Navigation: Dashboard, Device, Noise Control, Settings; Noise page High / Low / Off |
+
+### Not checked
+
+- **Anything on a QC35 II.** None was available to the project; the owner's
+  is the first it will meet. Every change is only called made when the
+  headphones report it, so a level that does not take shows as unconfirmed.
+- The tested QuietComfort Headphones were not re-run: nothing on their path
+  changed except where it now asks which kind of model it is.
+- The phone's home-screen widget offers Quiet, Aware and the custom mode by
+  name, which a QC35 refuses; use the application for its levels.
+
+### Builds
+
+| | |
+| --- | --- |
+| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 23:26, 105,516,372 bytes, with the voice model, SHA-256 `cbe629c270621f19d61e6715e52838c6bfdad500665c9591e26b94978d5b4150`. Not run by anyone |
+| Phone | `Setups\Void-0.1.0-android-arm64.apk`, 2026-10-16 23:23, 139,733,658 bytes, SHA-256 `a45d85a8a47a196dc5219d416e56f727252a50c3876d71f7a7d0596606ee56e2`. Not run by anyone |

@@ -110,6 +110,12 @@ pub fn preset_for_index(config: &DeviceConfig, index: u8) -> Option<Preset> {
 
 /// How a mode index reads to a person.
 pub fn describe_index(config: &DeviceConfig, index: u8) -> String {
+    if super::models::uses_levels(config) {
+        return match super::anr::Level::from_byte(index) {
+            Some(level) => format!("noise cancellation {}", level.name()),
+            None => format!("noise-cancellation level {index}"),
+        };
+    }
     match preset_for_index(config, index) {
         Some(p) => p.label().to_string(),
         None => format!("custom slot {index}"),

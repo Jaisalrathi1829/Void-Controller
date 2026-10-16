@@ -76,7 +76,7 @@ these it is:
 | **Tested** | QuietComfort Headphones (`0x4075`) | Everything in the capability matrix, each proven on the physical headphones |
 | **Documented** | QuietComfort Ultra Headphones (2nd Gen), QuietComfort Headphones (2nd Gen), QuietComfort Ultra Earbuds (2nd Gen), QuietComfort 45, QuietComfort Earbuds, Ultra Open Earbuds | Follows upstream's description of the model. Never run here. A custom mode's level is written only where its layout was checked on the model: the QC Ultra 2nd Gen headphones and earbuds. The QuietComfort Headphones (2nd Gen) are given the QC Ultra's description upstream, marked unconfirmed, so their modes are read and switched but never written into |
 | **Recognized** | Every other headphone and earbud model — QuietComfort Ultra (1st Gen), QuietComfort Ultra Earbuds (1st Gen), QuietComfort Earbuds II, 700, Sport Earbuds and the rest | Asks the questions every documented model answers the same way — name, equalizer, multipoint, its list of modes — and offers what it answers. Nothing is written into its modes |
-| Not driven | QuietComfort 35 and 35 II | Recognized, but their noise cancellation works differently and is not described: none of their controls are shown |
+| Documented, by level | QuietComfort 35 and 35 II | Their noise cancellation is a level, not a mode: Void offers the levels the headphones list — High, Low, Off — and sets one by upstream's description of the QC35, confirming it by reading it back. No equalizer, Aware mode, custom level or profiles: they have none. Never run here |
 
 Whatever the model, a change counts only when the device reports it, so a
 model that does not behave as described shows a change as unconfirmed, never

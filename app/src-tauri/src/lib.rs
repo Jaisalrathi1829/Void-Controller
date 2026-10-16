@@ -1006,7 +1006,10 @@ fn get_bluetooth_availability() -> bluetooth::BluetoothAvailability {
 /// sent to any device.
 #[cfg_attr(desktop, tauri::command)]
 #[cfg_attr(mobile, tauri::command(async))]
-fn list_bose_devices(state: tauri::State<'_, AppState>) -> Vec<bose::choice::PairedBose> {
+fn list_bose_devices(
+    state: tauri::State<'_, AppState>,
+) -> UiResult<Vec<bose::choice::PairedBose>> {
+    bose::choice::ready_to_list()?;
     let current = state.settings().get().preferred_device_id;
     let mut listed = bose::choice::choices(bose::choice::paired(), current.as_deref());
     // The current device goes by the name it gave itself, where it has.
@@ -1015,7 +1018,7 @@ fn list_bose_devices(state: tauri::State<'_, AppState>) -> Vec<bose::choice::Pai
             device.name = own.clone();
         }
     }
-    listed
+    Ok(listed)
 }
 
 /// Makes the paired device listed under `id` the one this application is

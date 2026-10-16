@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Bluetooth, ChevronRight, FlaskConical, Loader2, RefreshCw, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Bluetooth,
+  ChevronRight,
+  FlaskConical,
+  Loader2,
+  RefreshCw,
+  ShieldQuestion,
+  X,
+} from "lucide-react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
 import { DeviceMark, DeviceVisual } from "./DeviceVisual";
@@ -186,7 +195,7 @@ export function DeviceChooser() {
   const { choosing, chooseDevice, closeChooser, setSimulated, nativeAvailable, busy } = useApp();
   const [kind, setKind] = useState<DeviceCategory | null>(null);
   const [found, setFound] = useState<Found | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
+  const [failed, setFailed] = useState<ipc.IpcError | null>(null);
   const [opening, setOpening] = useState<PairedBose | null>(null);
   const [preferred] = useState(lastKind);
   const search = useRef(0);
@@ -200,27 +209,35 @@ export function DeviceChooser() {
     [chooseDevice],
   );
 
+  /**
+   * Looks for devices of the kind asked for. `quiet` looks again without
+   * putting the search screen up, for a check made by itself in the
+   * background; what it finds replaces what is shown only once it differs.
+   */
   const look = useCallback(
-    async (wanted: DeviceCategory) => {
+    async (wanted: DeviceCategory, quiet = false) => {
       const mine = ++search.current;
-      setFound(null);
-      setFailed(null);
-      setOpening(null);
+      if (!quiet) {
+        setFound(null);
+        setFailed(null);
+        setOpening(null);
+      }
       const started = Date.now();
       let devices: PairedBose[] = [];
-      let error: string | null = null;
+      let error: ipc.IpcError | null = null;
       try {
         devices = await ipc.listBoseDevices();
       } catch (e) {
-        error = ipc.toIpcError(e).message;
+        error = ipc.toIpcError(e);
       }
       const left = SEARCH_AT_LEAST_MS - (Date.now() - started);
-      if (left > 0) await new Promise((r) => setTimeout(r, left));
+      if (!quiet && left > 0) await new Promise((r) => setTimeout(r, left));
       if (search.current !== mine) return;
       if (error) {
-        setFailed(error);
+        if (!quiet) setFailed(error);
         return;
       }
+      setFailed(null);
       const sorted = sort(devices, wanted);
       setFound(sorted);
       // One connected, and nothing else connected that it could be
@@ -248,6 +265,21 @@ export function DeviceChooser() {
     setFound(null);
     setFailed(null);
     setOpening(null);
+  };
+
+  // While the only thing in the way is a permission granted in a system
+  // dialog, look again every two seconds: nothing else says it was given.
+  const waitingForPermission = !!kind && failed?.kind === "not-permitted";
+  useEffect(() => {
+    if (!waitingForPermission || !kind) return;
+    const id = window.setInterval(() => void look(kind, true), 2000);
+    return () => window.clearInterval(id);
+  }, [waitingForPermission, kind, look]);
+
+  const askPermission = () => {
+    ipc.requestBluetoothPermission().catch((e) => {
+      setFailed(ipc.toIpcError(e));
+    });
   };
 
   // Escape backs out, or closes a chooser that was opened to change device.
@@ -380,10 +412,29 @@ export function DeviceChooser() {
     <Screen step="results">
       {header}
       <div className="py-8">
-        {failed ? (
+        {failed?.kind === "not-permitted" ? (
+          <div data-testid="needs-permission">
+            <h1 className="text-xl font-semibold">Bluetooth access is needed.</h1>
+            <p className="mt-2 text-sm text-muted-foreground">{failed.message}</p>
+            <Button
+              className="mt-5"
+              icon={<ShieldQuestion className="size-4" />}
+              onClick={askPermission}
+            >
+              Allow Bluetooth access
+            </Button>
+          </div>
+        ) : failed?.kind === "bluetooth-unavailable" ? (
+          <>
+            <h1 className="text-xl font-semibold">Bluetooth is off.</h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Turn Bluetooth on, then search again.
+            </p>
+          </>
+        ) : failed ? (
           <>
             <h1 className="text-xl font-semibold">Could not look for {noun(kind)}.</h1>
-            <p className="mt-2 text-sm text-muted-foreground">{failed}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{failed.message}</p>
           </>
         ) : found && found.connected.length > 0 ? (
           <>

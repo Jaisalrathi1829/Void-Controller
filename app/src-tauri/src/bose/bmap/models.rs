@@ -102,10 +102,9 @@ pub fn all_models() -> Vec<Model> {
 ///
 /// A documented model gets upstream's description, under the catalogue's
 /// name for the product (two products share one description). A recognized
-/// one gets [`generic_config`]. A model with no current-mode function — the
-/// QuietComfort 35 generation, whose noise cancellation is a different
-/// mechanism — gets none: the control link here is built around reading the
-/// mode, and that model is not driven yet.
+/// one gets [`generic_config`]. A model needs a way to read its noise
+/// cancellation: a current-mode function, or — the QuietComfort 35
+/// generation — a noise-cancellation level (see [`uses_levels`]).
 pub fn config_for(product_id: u16) -> Option<DeviceConfig> {
     let model = model_for(product_id)?;
     let entry = catalog::lookup_device(product_id)?;
@@ -117,8 +116,17 @@ pub fn config_for(product_id: u16) -> Option<DeviceConfig> {
     // A model given another's description keeps its own codename, so that
     // what was checked on that other model is not taken as checked on it.
     config.info.codename = entry.codename;
-    config.current_mode?;
+    if config.current_mode.is_none() && config.anr.is_none() {
+        return None;
+    }
     Some(config)
+}
+
+/// Whether the model's noise cancellation is a level — High, Low, Off —
+/// rather than a choice of modes: the QuietComfort 35 generation. See
+/// [`super::anr`].
+pub fn uses_levels(config: &DeviceConfig) -> bool {
+    config.current_mode.is_none() && config.anr.is_some()
 }
 
 /// The codename a generic description carries, so that the rest of the
@@ -253,13 +261,19 @@ mod tests {
         assert!(model_for(0x1234).is_none(), "not a Bose product id");
     }
 
-    /// The QC35 generation has no mode function; the control link here is
-    /// built around one, so it is recognized but not driven.
+    /// The QC35 generation has no mode function: its noise cancellation is a
+    /// level, and it is driven by that.
     #[test]
-    fn a_model_without_a_mode_function_is_known_but_not_driven() {
+    fn the_qc35_generation_is_driven_by_its_noise_cancellation_level() {
         let qc35 = model_for(0x4020).unwrap();
         assert_eq!(qc35.name, "QuietComfort 35 II");
-        assert!(config_for(0x4020).is_none());
+        assert_eq!(qc35.support, Support::Documented);
+        let config = config_for(0x4020).unwrap();
+        assert!(uses_levels(&config));
+        assert_eq!(config.info.name, "QuietComfort 35 II");
+        assert!(matches!(config.init_packet, Some(Addr(0, 1))), "asked for its version first");
+        assert!(uses_levels(&config_for(0x400C).unwrap()), "the first QC35 too");
+        assert!(!uses_levels(&config_for(0x4075).unwrap()));
     }
 
     #[test]

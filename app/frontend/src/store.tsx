@@ -266,8 +266,11 @@ export function shownPages(caps: FeatureCapabilities): Set<PageId> {
   const pages = new Set<PageId>(["dashboard", "device", "noise", "equalizer", "profiles", "settings"]);
   if (!isShown(caps.noiseControl)) pages.delete("noise");
   if (!isShown(caps.eq)) pages.delete("equalizer");
-  // A profile is a mode and an equalizer setting; with neither, nothing.
-  if (!isShown(caps.noiseControl) && !isShown(caps.eq)) pages.delete("profiles");
+  // A profile is Quiet, Aware or the custom mode, and an equalizer setting.
+  // A device with neither those modes nor an equalizer — the QuietComfort 35
+  // generation, whose noise cancellation is a level — has no use for one.
+  const profileModes = isShown(caps.noiseControl) && isShown(caps.awareMode);
+  if (!profileModes && !isShown(caps.eq)) pages.delete("profiles");
   return pages;
 }
 

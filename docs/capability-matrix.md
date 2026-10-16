@@ -82,8 +82,12 @@ model, whatever the description says: upstream's description of the tested
 headphones has no multipoint, and they have it. For those, only the device's
 own answer makes a feature `UNSUPPORTED`.
 
-The QuietComfort 35 and 35 II are recognized and not driven: every control is
-`UNSUPPORTED` on them, with the reason.
+The QuietComfort 35 and 35 II have no modes: their noise cancellation is a
+level at `[1.6]` — High, Low, Off (and Wind, where a model lists it). Noise
+control is `READY` once the level has been read and `VERIFIED` once a change
+of level has been confirmed by read-back; Aware mode, a custom mode's level
+and the equalizer are `UNSUPPORTED`. They are asked for the protocol version
+before anything else, which they need before they answer. Never run here.
 
 ## Mechanism notes
 
