@@ -1268,11 +1268,22 @@ rendered (`App.tsx`), so nothing pops up for a change made, unconfirmed or faile
 the headphones report is still what every control shows, and each outcome is still
 recorded in the session's event log (the widget's status line shows the latest).
 
+### The wolf as the application's icon
+
+Asked for by the owner the same day. `icons/app-icon-source.png` is the sidebar's wolf logo
+(`frontend/src/assets/wolf-logo.png`) on a 1024-pixel rounded tile, with the image's grey
+edge trimmed and a small sparkle mark in its corner blended out; `npx tauri icon` made every
+size from it: the Windows icons and the Android launcher icons. The installer is given
+the same icon (`installerIcon`), and the tray uses the application's. After changing the
+icons, `build.rs` has to be touched: the release build otherwise keeps the old icon
+embedded in the executable. Checked by reading the icon out of a fresh copy of the built
+executable and of the installer: both are the wolf.
+
 ### Builds
 
 | | |
 | --- | --- |
-| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 15:30, 105,366,483 bytes, with the voice model and without pop-ups, SHA-256 `f253df9d73346864c804fbc9dee7f4e60b6804bdf7a3f31a89d74215ea1a7e38`. Not run by anyone |
+| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 15:47, 105,428,881 bytes, with the voice model, without pop-ups and with the wolf icon, SHA-256 `5ecb7e322c05a1613ff170e50ab4751813aeddfecaa8bddd93b1c6dad8191c5c`. Not run by anyone |
 | Phone | None for Void yet. `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk` is still the 2026-10-13 build of the old application |
 
 The new name installs into a folder of its own (`%LOCALAPPDATA%\Void`) beside
