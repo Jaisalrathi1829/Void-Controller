@@ -6,11 +6,15 @@
     Each build leaves what it makes several folders down inside its own build tree. This
     puts a copy of each where it is easy to find:
 
-      Setups\Bose QC Control Center_<version>_x64-setup.exe      the Windows installer
-      Setups\Bose-QC-Control-Center-<version>-android-arm64.apk  the Android phone package
+      Setups\Void_<version>_x64-setup.exe      the Windows installer
+      Setups\Void-<version>-android-arm64.apk  the Android phone package
 
     and writes Setups\README.txt saying what each file is, when it was built and its
     checksum. A new build replaces the file of the same name.
+
+    The application was called Bose QC Control Center until 2026-10-16. Copies under
+    that name are taken out of Setups\ once one under the new name is there, so that
+    nothing old is left looking like the latest.
 
     Nothing is built here and nothing is fetched. A build that has not been made is
     simply left out. It runs by itself at the end of `npm run tauri:build`,
@@ -44,12 +48,17 @@ $builds = @(
         What   = 'Android phone package (arm64)'
         From   = Join-Path $Root 'app\src-tauri\gen\android\app\build\outputs\apk\arm64\release'
         Filter = 'app-arm64-release.apk'
-        Name   = "Bose-QC-Control-Center-$version-android-arm64.apk"
+        Name   = "Void-$version-android-arm64.apk"
+        Legacy = 'Bose-QC-Control-Center-*-android-arm64.apk'
+        # Its file name says nothing of which application it is, so one built
+        # before the rename is told by its date.
+        Since  = [datetime]'2026-10-16'
     }
 )
+$builds[0].Legacy = 'Bose QC Control Center_*_x64-setup.exe'
 
 $note = @(
-    'Bose QC Control Center - latest builds',
+    'Void - latest builds',
     '',
     'Copied here by tools\collect-setups.ps1 at the end of each build. A new build',
     'replaces the file of the same name. Both install over the version already there.',
@@ -68,10 +77,34 @@ foreach ($build in $builds) {
     }
 
     $name   = if ($build.Name) { $build.Name } else { $newest.Name }
+    # Only a build made under the new name goes to Setups; an old-named one
+    # still lying in the build tree is not the latest.
+    if ($build.Legacy -and ($newest.Name -like $build.Legacy)) {
+        Write-Host ("{0}: the newest build still has the old name; nothing copied." -f $build.What)
+        continue
+    }
+    if ($build.Since -and ($newest.LastWriteTime -lt $build.Since)) {
+        Write-Host ("{0}: the newest build was made before the rename to Void; nothing copied." -f $build.What)
+        $old = Get-ChildItem -Path $Setups -Filter $build.Legacy -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($old) {
+            $note += $old.Name
+            $note += ('  {0}, built before the rename: still Bose QC Control Center' -f $build.What)
+            $note += ('  built   {0:yyyy-MM-dd HH:mm}' -f $old.LastWriteTime)
+            $note += ''
+        }
+        continue
+    }
     $target = Join-Path $Setups $name
     Copy-Item -Force -Path $newest.FullName -Destination $target
     $copy = Get-Item $target
     $hash = (Get-FileHash -Algorithm SHA256 -Path $target).Hash.ToLower()
+
+    if ($build.Legacy) {
+        Get-ChildItem -Path $Setups -Filter $build.Legacy -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne $name } |
+            ForEach-Object { Remove-Item -Force $_.FullName; Write-Host ("removed the old-named copy {0}" -f $_.Name) }
+    }
 
     $note += $name
     $note += ('  {0}' -f $build.What)

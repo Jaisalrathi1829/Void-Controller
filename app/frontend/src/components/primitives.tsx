@@ -226,6 +226,34 @@ export function BatteryIndicator({
 /* ---------------------------------------------------------------
  * SegmentedControl — premium pill segmented control
  * --------------------------------------------------------------- */
+/**
+ * Each battery of a device with several — earbuds and their case — as the
+ * device reported them. Nothing when there are none.
+ */
+export function BatteryParts({
+  parts,
+  className,
+}: {
+  parts: { name: string; percent: number }[];
+  className?: string;
+}) {
+  if (parts.length === 0) return null;
+  return (
+    <ul
+      className={cn("flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm", className)}
+      aria-label="Battery of each part"
+      data-testid="battery-parts"
+    >
+      {parts.map((p) => (
+        <li key={p.name} className="inline-flex items-center gap-1.5">
+          <span className="text-muted-foreground">{p.name}</span>
+          <span className="tabular-nums font-medium">{p.percent}%</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function SegmentedControl<T extends string>({
   options,
   value,

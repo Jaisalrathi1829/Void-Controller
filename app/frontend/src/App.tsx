@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Toaster } from "./components/ui/sonner";
-import { AppProvider, useApp, type ConnectionState } from "./store";
+import { AppProvider, shownPages, useApp, type ConnectionState } from "./store";
+import { DeviceChooser } from "./components/DeviceChooser";
 import { type PageId } from "./pages";
 import { BottomNav, Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -52,26 +52,12 @@ function Content({ page, onNavigate }: { page: PageId; onNavigate: (p: PageId) =
   }
 }
 
-/** Whether the window is phone-width: one column, navigation at the bottom. */
-function useNarrow(): boolean {
-  const query = "(max-width: 767px)";
-  const [narrow, setNarrow] = useState(
-    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(query).matches,
-  );
-  useEffect(() => {
-    if (!window.matchMedia) return;
-    const mq = window.matchMedia(query);
-    const update = () => setNarrow(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
-  return narrow;
-}
-
 function Shell() {
-  const [page, setPage] = useState<PageId>("dashboard");
-  const { connection, simulated } = useApp();
+  const [chosenPage, setPage] = useState<PageId>("dashboard");
+  const { connection, simulated, capabilities, choosing } = useApp();
+  // A page for something this device does not have is not shown, and one
+  // that was open when the device changed gives way to the dashboard.
+  const page = shownPages(capabilities).has(chosenPage) ? chosenPage : "dashboard";
   const screen = screenKey(page, connection);
 
   // A new screen starts at its top, not wherever the last one was left.
@@ -79,6 +65,10 @@ function Shell() {
   useEffect(() => {
     if (main.current) main.current.scrollTop = 0;
   }, [screen]);
+
+  // Headphones or earbuds, and which: asked on every start, and whenever the
+  // device is changed.
+  if (choosing) return <DeviceChooser />;
 
   return (
     <div className="relative flex h-dvh w-full overflow-hidden bg-background text-foreground">
@@ -127,13 +117,12 @@ function Shell() {
   );
 }
 
+// No pop-ups: what the headphones report is what the controls show, and the
+// owner asked for the notices that used to pop up over it to go (2026-10-16).
 export default function App() {
-  // On a phone the bottom edge belongs to the navigation bar.
-  const narrow = useNarrow();
   return (
     <AppProvider>
       <Shell />
-      <Toaster position={narrow ? "top-center" : "bottom-right"} richColors closeButton />
     </AppProvider>
   );
 }

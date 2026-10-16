@@ -40,7 +40,7 @@ pub fn sync(app: &AppHandle, enabled: bool) -> Result<(), String> {
     }
 
     let failed = |e: tauri::Error| format!("could not create the tray icon: {e}");
-    let open = MenuItem::with_id(app, MENU_OPEN, "Open Bose QC Control Center", true, None::<&str>)
+    let open = MenuItem::with_id(app, MENU_OPEN, "Open Void", true, None::<&str>)
         .map_err(failed)?;
     let widget = MenuItem::with_id(app, MENU_WIDGET, "Show or hide the widget", true, None::<&str>)
         .map_err(failed)?;
@@ -49,7 +49,7 @@ pub fn sync(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let menu = Menu::with_items(app, &[&open, &widget, &separator, &quit]).map_err(failed)?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("Bose QC Control Center")
+        .tooltip("Void")
         .menu(&menu)
         // Left click opens the window; the menu is on right click.
         .show_menu_on_left_click(false)

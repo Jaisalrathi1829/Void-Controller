@@ -1190,3 +1190,93 @@ Builds, replacing the two listed before this subsection:
 | --- | --- |
 | Windows installer | `Setups\Bose QC Control Center_0.1.0_x64-setup.exe`, 2026-10-13 13:57, 105,187,353 bytes, SHA-256 `20a1fc639720b9fa60f934e7dfc0985cd9412b9eb48fac68554935483fbcd92f`. Not run by anyone |
 | Phone | `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk`, 2026-10-13 13:59, 139,353,486 bytes, SHA-256 `7b040efae243b29bc040d8c7a4cfddb35c1f03bfb68f606cb4c0f79fa807c38d`. Not run by anyone |
+
+## 19. Void, and every Bose headphone and earbud (2026-10-16)
+
+Asked for by the owner, first on Windows, the phone to follow once they have
+tried it: rename the application **Void**; support every Bose headphone and
+earbud — the QuietComfort generations and the QuietComfort Ultra generations
+among them; open by asking **Earbuds or Headphones**, then find the connected
+device, work out which model it is, and show that model's features and not
+ones it does not have; and read the name its owner gave it.
+
+### What was done
+
+| Asked | Done |
+| --- | --- |
+| Rename to Void | Product name, executable, window, tray, widget, installer (`Void_<version>_x64-setup.exe`), phone package name and label, voice-model script messages. The identifier `local.bosecontrolcenter.app` is kept, so settings carry over |
+| Every Bose headphone and earbud | `bose/bmap/models.rs`: upstream's catalogue, less speakers, each model **tested**, **documented** or **recognized** (README, *Models*). Documented models drive with upstream's description; recognized ones with the addresses the current generation shares, reading their mode list and writing nothing into a mode. The QC35 generation is recognized and not driven |
+| Earbuds or Headphones at start | `DeviceChooser.tsx`, on every start and on **Change device**. It lists what the system has paired (`list_bose_devices`, nothing sent to any device), opens the one connected device of that kind by itself, asks when there are several, and says so when there is none |
+| Identify the model and show its features | The snapshot carries the model; a feature is hidden where the device answers that it has no such function, where the description has none (the equalizer), where a custom mode's level cannot be written, and for a model that is not driven. Pages and dashboard cards for hidden features go with them |
+| Each model's modes | The modes are the device's own list, under its own names — Immersion and Cinema on a QC Ultra — switched by slot (`SelectNoiseMode`) and confirmed by read-back like any switch |
+| The owner's name for the device | Unchanged in kind: the name shown is the device's own answer, for any model. The chooser lists devices by that name |
+| Earbuds | Left, right and case batteries where the device reports them, and an earbuds picture rather than headphones |
+
+### Decisions
+
+| Decision | Why |
+| --- | --- |
+| Three degrees of support, shown on the Device page | "Supports every model" is true only in degrees. Saying which degree is the honest form of the claim |
+| A model never run here is driven at all | The owner asked for every model. Every change is still only counted when the device reports it, so a model that does not behave as described shows "could not be verified", never a change that did not happen |
+| Nothing written into a mode where its layout was not checked on that model | A level write rewrites a mode's whole configuration. A layout guessed from another model could change a different setting of the mode |
+| The QuietComfort Headphones (2nd Gen) read-only for mode writes | Upstream gives them the QC Ultra (2nd Gen)'s description and marks it unconfirmed |
+| Multipoint, the name and the paired list hidden only on the device's own word | Upstream's description of the tested headphones says they have no multipoint. They do |
+| The chooser on every start | Asked for. It sends nothing, and with one device of the kind connected it opens it by itself |
+| The QC35 generation not driven | Their noise cancellation is a different function (`[1.6]`) with nothing described of how it behaves |
+
+### Files
+
+| File | What |
+| --- | --- |
+| `src/bose/bmap/models.rs` (new) | The catalogue, the degrees, `config_for`, the generic description, `parse_mode_config_any` |
+| `src/bose/bmap/custom.rs` | A layout per model (47-, 48- and 44-byte mode configurations), written only where checked; `can_adjust` |
+| `src/bose/bmap/noise.rs` | `Target::Listed`, `mode_options` |
+| `src/bose/bmap/link.rs` | `to_mode`; batteries per part |
+| `src/bose/choice.rs` (new) | The paired Bose devices with their models; choosing one by its id |
+| `src/bose/real.rs` | The snapshot's model and mode list; `select_noise_mode`; `mark_what_the_model_lacks`; models that are not driven |
+| `src/device/{state,command,traits}.rs`, `src/bose/mock.rs`, `src/lib.rs` | `ModelState`, `NoiseModeOption`, `BatteryPart`; `SelectNoiseMode`; `list_bose_devices`, `use_bose_device` |
+| `frontend/src/components/DeviceChooser.tsx`, `NoiseModes.tsx` (new) | The chooser; the mode picker |
+| `frontend/src/store.tsx`, `App.tsx`, `Sidebar.tsx`, pages, widget, `DeviceVisual.tsx`, `mock/browserDevice.ts` | Model, modes, chooser state; hidden pages and cards; the earbuds picture; three simulated devices for the browser preview |
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| Catalogue, degrees, layouts, mode lists, hidden features, the paired list, batteries per part | Rust unit tests | 611 pass; clippy clean |
+| The chooser, the mode picker, hidden pages, the Device page's model and batteries, the simulation | Frontend tests | 277 pass; type check clean |
+| The whole flow against the browser preview's simulated devices | By eye at desktop and phone width | Headphones → two connected → choose the QC Ultra → five modes, Cinema with no level, Commute with one; Change device → Earbuds → opened by itself, four modes, no custom mode, Right/Left/Case batteries; no console errors |
+| The model, the listed modes and a switch by slot, on the tested headphones | `hw_b12`, through the application's code | Named "QuietComfort Headphones", tested; Quiet, Aware and "Focus" listed with Quiet marked; slot 1 then slot 0 each confirmed by read-back (`START [31.3]` with the slot, nothing written into a mode); slot 9 refused with nothing sent |
+| The paired list | `hw_b13`, the system's record only | "Aurora", connected, identified as the QuietComfort Headphones |
+| Nothing on the tested headphones hidden by the new rules | `hw_b0`, `hw_b2`, `hw_b4`, `hw_b6`, `hw_b9`, `hw_b11` | All pass; noise control, the custom mode, the equalizer, multipoint and the name all `READY`, none `UNSUPPORTED` |
+
+### State the hardware was left in
+
+Called **"Aurora"** · Quiet, as it was found · multipoint **on** · equalizer
+and custom level not touched.
+
+### Not checked
+
+- **Any model but the QuietComfort Headphones.** None was available.
+- The phone. The phone's paired list has no product ids, so the chooser there
+  would list every device as unrecognized until the phone side is done.
+- The installed Windows application. The installer below has not been run.
+
+### Pop-ups removed
+
+Asked for by the owner the same day: no pop-up notices at all. The pop-up area is no longer
+rendered (`App.tsx`), so nothing pops up for a change made, unconfirmed or failed. What
+the headphones report is still what every control shows, and each outcome is still
+recorded in the session's event log (the widget's status line shows the latest).
+
+### Builds
+
+| | |
+| --- | --- |
+| Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-16 15:30, 105,366,483 bytes, with the voice model and without pop-ups, SHA-256 `f253df9d73346864c804fbc9dee7f4e60b6804bdf7a3f31a89d74215ea1a7e38`. Not run by anyone |
+| Phone | None for Void yet. `Setups\Bose-QC-Control-Center-0.1.0-android-arm64.apk` is still the 2026-10-13 build of the old application |
+
+The new name installs into a folder of its own (`%LOCALAPPDATA%\Void`) beside
+the old one, which stays until it is uninstalled. The identifier is the same,
+so settings, profiles and the voice model are found by both — uninstall the
+old one without deleting its application data. "Start with Windows" points at
+whichever copy last switched it on, so it is switched on again from Void.

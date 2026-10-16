@@ -84,6 +84,20 @@ pub struct BatteryReading {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charging: Option<bool>,
     pub read_at: String,
+    /// Each part's own level, on a device that has more than one battery —
+    /// earbuds and their case — as the device reported them. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<BatteryPart>,
+}
+
+/// One battery of a device that has several: an earbud, or the case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatteryPart {
+    /// What the model's description calls it: "Left", "Right", "Case".
+    pub name: String,
+    /// 0-100.
+    pub percent: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +179,32 @@ pub struct EqState {
     pub settings: EqSettings,
     pub source: StateSource,
     pub read_at: String,
+}
+
+/// Which model the device is, as far as Void knows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelState {
+    /// Bose's name for the model, from the catalogue.
+    pub name: String,
+    pub category: crate::bose::bmap::models::Category,
+    pub support: crate::bose::bmap::models::Support,
+}
+
+/// One of the noise modes the device offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoiseModeOption {
+    /// The slot the device lists it under. What switching to it asks for.
+    pub index: u8,
+    /// The device's own name for it.
+    pub name: String,
+    /// A fixed mode, rather than one the user set up.
+    pub preset: bool,
+    /// Its noise-cancellation level can be changed from here.
+    pub adjustable: bool,
+    /// The mode the device last said it is in.
+    pub active: bool,
 }
 
 /// Whether the headphones will stay connected to two devices at once.
@@ -262,6 +302,13 @@ pub struct DeviceSnapshot {
     pub battery: Option<BatteryReading>,
     pub noise_control: Option<NoiseControlState>,
     pub equalizer: Option<EqState>,
+    /// Which model the device is. `None` when it cannot be told.
+    #[serde(default)]
+    pub model: Option<ModelState>,
+    /// The noise modes the device offers, in its own order. `None` when it
+    /// has not said.
+    #[serde(default)]
+    pub noise_modes: Option<Vec<NoiseModeOption>>,
     /// Whether multipoint is on, as the headphones last said. `None` when
     /// they have not said, or have no such thing.
     #[serde(default)]
@@ -292,6 +339,8 @@ impl DeviceSnapshot {
             battery: None,
             noise_control: None,
             equalizer: None,
+            model: None,
+            noise_modes: None,
             multipoint: None,
             paired_devices: None,
             system_audio: None,

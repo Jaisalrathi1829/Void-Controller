@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createUnknownCapabilities } from '@/types/capability';
 import type { DeviceSnapshot } from '@/types/device';
@@ -295,11 +295,10 @@ describe.each([
     await act(async () => {});
   }
 
-  it('has no Diagnostics page to go to', () => {
+  it('has no Diagnostics page to go to', async () => {
     expect(Object.keys(pageTitles)).not.toContain('diagnostics');
 
-    useAgent(agent);
-    render(<BottomNav page="noise" onNavigate={vi.fn()} />);
+    await renderPage(<BottomNav page="noise" onNavigate={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Diagnostics' })).not.toBeInTheDocument();
     for (const name of ['Dashboard', 'Device', 'Noise Control', 'Equalizer', 'Profiles', 'Settings']) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
@@ -345,9 +344,19 @@ describe('a phone', () => {
 });
 
 describe('bottom navigation', () => {
+  async function renderNav(onNavigate: (p: string) => void) {
+    render(
+      <AppProvider>
+        <BottomNav page="noise" onNavigate={onNavigate} />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(ipcMock.getSnapshot).toHaveBeenCalled());
+    await act(async () => {});
+  }
+
   it('offers every section and says which one is open', async () => {
     const onNavigate = vi.fn();
-    render(<BottomNav page="noise" onNavigate={onNavigate} />);
+    await renderNav(onNavigate);
 
     const names = ['Dashboard', 'Device', 'Noise Control', 'Equalizer', 'Profiles', 'Settings'];
     for (const name of names) {
@@ -358,6 +367,29 @@ describe('bottom navigation', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Equalizer' }));
     expect(onNavigate).toHaveBeenCalledWith('equalizer');
+  });
+
+  // A device with no equalizer has no Equalizer section to go to; one with
+  // neither modes nor an equalizer has no profiles either.
+  it('leaves out the sections for what the device does not have', async () => {
+    const capabilities = createUnknownCapabilities('test');
+    capabilities.equalizer = { ...capabilities.equalizer, status: 'unsupported' };
+    ipcMock.getSnapshot.mockResolvedValue({ ...snapshot, capabilities });
+    await renderNav(vi.fn());
+    expect(screen.queryByRole('button', { name: 'Equalizer' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Noise Control' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeInTheDocument();
+
+    cleanup();
+    capabilities.noiseControl = { ...capabilities.noiseControl, status: 'unsupported' };
+    ipcMock.getSnapshot.mockResolvedValue({ ...snapshot, capabilities });
+    await renderNav(vi.fn());
+    for (const name of ['Equalizer', 'Noise Control', 'Profiles']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    for (const name of ['Dashboard', 'Device', 'Settings']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
   });
 });
 

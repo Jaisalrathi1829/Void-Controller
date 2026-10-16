@@ -17,6 +17,7 @@ import type {
   DeviceSource,
   CommandOutcome,
   NoiseControlState,
+  PairedBose,
 } from '@/types/device';
 import type { DiscoveredDevice, BluetoothAvailability } from '@/types/bluetooth';
 import { BrowserSimulatedDevice } from '@/mock/browserDevice';
@@ -37,6 +38,7 @@ export type DeviceCommand =
   | { kind: 'mediaPrevious' }
   | { kind: 'setNoiseControl'; mode: 'quiet' | 'aware' | 'custom' | 'off' }
   | { kind: 'setNoiseControlLevel'; level: number }
+  | { kind: 'selectNoiseMode'; index: number }
   | { kind: 'setEqualizer'; settings: { bass: number; mid: number; treble: number } }
   | { kind: 'setMultipoint'; enabled: boolean }
   | { kind: 'setDeviceName'; name: string }
@@ -476,6 +478,44 @@ export async function getBluetoothAvailability(): Promise<BluetoothAvailability>
     };
   }
   return invokeNative<BluetoothAvailability>('get_bluetooth_availability');
+}
+
+/**
+ * The Bose headphones and earbuds paired with this phone or computer, with
+ * the model each is. Only what the system already knows; nothing is sent to
+ * any of them.
+ */
+export async function listBoseDevices(): Promise<PairedBose[]> {
+  if (!hasNativeLayer()) return browserFallback.paired();
+  return invokeNative<PairedBose[]>('list_bose_devices');
+}
+
+/**
+ * Makes the paired device listed under `id` the one this application is
+ * about, and connects to it. Takes the id it was listed under and nothing
+ * else.
+ */
+export async function chooseBoseDevice(id: string): Promise<DeviceSnapshot> {
+  if (!hasNativeLayer()) return browserFallback.choose(id);
+  return invokeNative<DeviceSnapshot>('use_bose_device', { id });
+}
+
+/** The highest mode slot any model lists. The native side checks the same. */
+export const MAX_MODE_INDEX = 15;
+
+/**
+ * Switches to one of the modes the device lists, by the slot it lists it
+ * under — as the snapshot's `noiseModes` gave it. `applied` only when the
+ * device then reported that mode.
+ */
+export async function selectNoiseMode(index: number): Promise<CommandOutcome> {
+  if (!Number.isInteger(index) || index < 0 || index > MAX_MODE_INDEX) {
+    throw {
+      kind: 'invalid-input',
+      message: 'That is not one of the modes the headphones list.',
+    } satisfies IpcError;
+  }
+  return executeCommand({ kind: 'selectNoiseMode', index });
 }
 
 export async function listBluetoothDevices(): Promise<DiscoveredDevice[]> {

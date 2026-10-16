@@ -27,6 +27,7 @@ pub mod custom;
 pub mod endpoint;
 pub mod eq;
 pub mod link;
+pub mod models;
 pub mod noise;
 pub mod stream;
 pub mod unit;
@@ -42,24 +43,16 @@ pub use eq::{EqChange, EqLevels};
 pub use link::{BmapLink, LinkError, LinkErrorKind, LinkStatus, LinkTiming};
 pub use noise::{ModeChange, Preset, Target, Verdict};
 
-/// Product ids this application will open a BMAP control link to.
+/// The protocol description Void uses for a product id, if it can open a
+/// control link to that model at all.
 ///
-/// Deliberately an allowlist rather than "anything in upstream's catalog".
-/// Upstream supports more models, and several share this protocol layout, but
-/// this application has only ever been run against one. Extending the list is
-/// a decision to make with the hardware in hand.
-pub const SUPPORTED_PRODUCT_IDS: &[u16] = &[
-    0x4075, // QuietComfort Headphones ("prince")
-];
-
-/// Upstream's device configuration for a product id, if this application
-/// supports it.
+/// Until 2026-10-16 this was an allowlist of the one model tested here. It is
+/// now every Bose headphone and earbud model in the catalogue that has a mode
+/// function, under the description that fits it — upstream's where upstream
+/// has one, a generic one otherwise. How much is known about each is
+/// [`models::Support`], and it is shown to the user. See [`models`].
 pub fn config_for_product(product_id: u16) -> Option<bmap::DeviceConfig> {
-    if !SUPPORTED_PRODUCT_IDS.contains(&product_id) {
-        return None;
-    }
-    let entry = bmap::catalog::lookup_device(product_id)?;
-    bmap::devices::get_device(entry.config?)
+    models::config_for(product_id)
 }
 
 /// The connector used for real hardware on this platform.
@@ -123,20 +116,18 @@ mod tests {
         assert!(config.current_mode.is_some());
     }
 
-    /// Upstream knows these models, but this application has never been run
-    /// against them, so it must not open a control link to them.
+    /// Every documented model with a mode function gets upstream's own
+    /// description; the QC35 generation, which has none, gets no link.
     #[test]
-    fn models_upstream_supports_but_we_have_not_tested_are_refused() {
-        for untested in [0x4082u16, 0x4039, 0x4020, 0x402F] {
-            assert!(
-                bmap::catalog::is_supported(untested),
-                "test premise: upstream supports {untested:#06x}"
-            );
-            assert!(
-                config_for_product(untested).is_none(),
-                "{untested:#06x} must stay refused until tested on hardware"
-            );
+    fn documented_models_get_upstreams_description() {
+        for (id, codename) in [(0x4082u16, "wolverine"), (0x4039, "duran"), (0x402F, "lando")] {
+            let config = config_for_product(id).unwrap_or_else(|| panic!("{id:#06x}"));
+            assert_eq!(config.info.codename, codename);
+            assert!(!models::is_generic(&config));
         }
+        assert!(config_for_product(0x4020).is_none(), "QC35 II: no mode function");
+        assert!(config_for_product(0xBC59).is_none(), "a speaker");
+        assert!(config_for_product(0x1234).is_none(), "not a Bose product");
     }
 
     #[test]

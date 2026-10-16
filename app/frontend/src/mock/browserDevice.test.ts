@@ -94,3 +94,41 @@ describe('browser simulated device', () => {
     expect(snap.identity).toBeNull();
   });
 });
+
+describe('the simulated devices to choose from', () => {
+  it('lists headphones and earbuds, each with its model, all labelled simulated', async () => {
+    const dev = new BrowserSimulatedDevice();
+    const listed = await dev.paired();
+    expect(listed.map((d) => d.model?.category)).toEqual(['headphones', 'headphones', 'earbuds']);
+    for (const d of listed) expect(d.name).toContain('(simulated)');
+  });
+
+  it('becomes the one chosen, with the modes and batteries of its model', async () => {
+    const dev = new BrowserSimulatedDevice();
+    const buds = (await dev.paired()).find((d) => d.model?.category === 'earbuds')!;
+    const snap = await dev.choose(buds.id);
+    expect(snap.connection).toBe('connected');
+    expect(snap.model?.category).toBe('earbuds');
+    expect(snap.noiseModes?.map((m) => m.name)).toEqual(['Quiet', 'Aware', 'Immersion', 'Cinema']);
+    expect(snap.battery?.parts?.map((p) => p.name)).toEqual(['Right', 'Left', 'Case']);
+    expect(snap.capabilities.customNoiseControl.status).toBe('unsupported');
+    expect(snap.pairedDevices).toBeNull();
+  });
+
+  it('switches to a listed mode by its slot, and refuses one it does not list', async () => {
+    const dev = new BrowserSimulatedDevice();
+    const ultra = (await dev.paired()).find((d) => d.name.startsWith('Bose QC Ultra ('))!;
+    await dev.choose(ultra.id);
+    expect((await dev.execute({ kind: 'selectNoiseMode', index: 3 })).kind).toBe('applied');
+    const snap = await dev.snapshot();
+    expect(snap.noiseModes?.find((m) => m.active)?.name).toBe('Cinema');
+    expect(snap.noiseControl?.label).toBe('Cinema');
+    expect(snap.noiseControl?.level).toBeUndefined();
+    expect((await dev.execute({ kind: 'selectNoiseMode', index: 9 })).kind).toBe('rejected');
+  });
+
+  it('refuses an id it did not list', async () => {
+    const dev = new BrowserSimulatedDevice();
+    await expect(dev.choose('ffffffffffffffffffff')).rejects.toMatchObject({ kind: 'not-connected' });
+  });
+});

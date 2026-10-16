@@ -11,6 +11,9 @@ use super::state::{check_device_name, is_paired_device_id, EqSettings, NoiseCont
 use super::{DeviceError, DeviceResult};
 use serde::{Deserialize, Serialize};
 
+/// The highest mode slot any model lists. The QC Ultra's run to 10.
+pub const MAX_MODE_INDEX: u8 = 15;
+
 /// The complete allowlist of operations the UI may request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -50,6 +53,13 @@ pub enum DeviceCommand {
     #[serde(rename_all = "camelCase")]
     SetNoiseControlLevel {
         level: u8,
+    },
+    /// Switch to one of the modes the device lists, by the slot it lists it
+    /// under — as the snapshot's `noiseModes` gave it. Checked against the
+    /// device's own list before anything is sent.
+    #[serde(rename_all = "camelCase")]
+    SelectNoiseMode {
+        index: u8,
     },
     #[serde(rename_all = "camelCase")]
     SetEqualizer {
@@ -113,6 +123,13 @@ impl DeviceCommand {
             Self::SetDeviceName { name } => {
                 check_device_name(name).map_err(DeviceError::InvalidInput)?;
             }
+            Self::SelectNoiseMode { index } => {
+                if *index > MAX_MODE_INDEX {
+                    return Err(DeviceError::InvalidInput(format!(
+                        "mode {index} is not one any model lists"
+                    )));
+                }
+            }
             Self::SetPairedDeviceConnection { device, .. } => {
                 if !is_paired_device_id(device) {
                     return Err(DeviceError::InvalidInput(
@@ -136,6 +153,7 @@ impl DeviceCommand {
                 | Self::SetSystemMute { .. }
                 | Self::SetNoiseControl { .. }
                 | Self::SetNoiseControlLevel { .. }
+                | Self::SelectNoiseMode { .. }
                 | Self::SetEqualizer { .. }
                 | Self::SetMultipoint { .. }
                 | Self::SetDeviceName { .. }
@@ -168,6 +186,7 @@ impl DeviceCommand {
             Self::MediaPrevious => "media_previous",
             Self::SetNoiseControl { .. } => "set_noise_control",
             Self::SetNoiseControlLevel { .. } => "set_noise_control_level",
+            Self::SelectNoiseMode { .. } => "select_noise_mode",
             Self::SetEqualizer { .. } => "set_equalizer",
             Self::SetMultipoint { .. } => "set_multipoint",
             Self::SetDeviceName { .. } => "set_device_name",
@@ -259,6 +278,21 @@ mod tests {
         .unwrap();
         assert!(cmd.is_mutating());
         assert_eq!(cmd.name(), "set_paired_device_connection");
+    }
+
+    #[test]
+    fn a_mode_is_asked_for_by_a_slot_any_model_could_have() {
+        let ask = |index| DeviceCommand::SelectNoiseMode { index };
+        assert!(ask(0).validate().is_ok());
+        assert!(ask(10).validate().is_ok());
+        assert!(ask(MAX_MODE_INDEX).validate().is_ok());
+        assert!(ask(MAX_MODE_INDEX + 1).validate().is_err());
+        assert!(ask(255).validate().is_err());
+        let cmd: DeviceCommand = serde_json::from_str(r#"{"kind":"selectNoiseMode","index":2}"#).unwrap();
+        assert_eq!(cmd, ask(2));
+        assert!(cmd.is_mutating());
+        assert!(serde_json::from_str::<DeviceCommand>(r#"{"kind":"selectNoiseMode","index":-1}"#).is_err());
+        assert!(serde_json::from_str::<DeviceCommand>(r#"{"kind":"selectNoiseMode","index":"quiet"}"#).is_err());
     }
 
     #[test]

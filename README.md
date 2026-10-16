@@ -1,7 +1,8 @@
-# Bose QC Control Center
+# Void
 
-A fully local Windows control center for Bose QuietComfort headphones. No cloud
-services, no accounts, no telemetry, no network requests.
+A fully local control center for Bose headphones and earbuds, for Windows and
+Android. No cloud services, no accounts, no telemetry, no network requests.
+Called Bose QC Control Center until 2026-10-16.
 
 > **Current state: noise control works on real hardware.** On a Bose
 > QuietComfort Headphones (product `0x4075`, firmware `1.0.6`), battery,
@@ -51,9 +52,37 @@ Run the desktop application:
 npm run tauri:dev
 ```
 
-If a Bose device is already paired with the PC, the application starts on real
-hardware; otherwise it starts on a simulated device, labelled as such. Starting
-on real hardware only reads from the headphones.
+Void opens by asking **Headphones or Earbuds?** It then looks at the Bose
+devices paired with the computer, finds the one of that kind that is
+connected, works out which model it is from the product id it was paired
+with, and opens on it — showing only what that model has. With more than one
+connected it asks which; with none it says so, lists the paired ones, and
+points to a device of the other kind if one is connected. **Change device**
+(at the foot of the sidebar, and on the Device page) asks again. Looking
+sends nothing to any device.
+
+If no Bose device is paired at all, the application can be tried on a
+simulated device instead, labelled as such.
+
+### Models
+
+Every Bose headphone and earbud model in the catalogue is recognized (the
+catalogue is upstream's, in `vendor/bose-bmap`). What can be done with one
+depends on how much is known about it, and the Device page says which of
+these it is:
+
+| | Models | What Void does |
+| --- | --- | --- |
+| **Tested** | QuietComfort Headphones (`0x4075`) | Everything in the capability matrix, each proven on the physical headphones |
+| **Documented** | QuietComfort Ultra Headphones (2nd Gen), QuietComfort Headphones (2nd Gen), QuietComfort Ultra Earbuds (2nd Gen), QuietComfort 45, QuietComfort Earbuds, Ultra Open Earbuds | Follows upstream's description of the model. Never run here. A custom mode's level is written only where its layout was checked on the model: the QC Ultra 2nd Gen headphones and earbuds. The QuietComfort Headphones (2nd Gen) are given the QC Ultra's description upstream, marked unconfirmed, so their modes are read and switched but never written into |
+| **Recognized** | Every other headphone and earbud model — QuietComfort Ultra (1st Gen), QuietComfort Ultra Earbuds (1st Gen), QuietComfort Earbuds II, 700, Sport Earbuds and the rest | Asks the questions every documented model answers the same way — name, equalizer, multipoint, its list of modes — and offers what it answers. Nothing is written into its modes |
+| Not driven | QuietComfort 35 and 35 II | Recognized, but their noise cancellation works differently and is not described: none of their controls are shown |
+
+Whatever the model, a change counts only when the device reports it, so a
+model that does not behave as described shows a change as unconfirmed, never
+as made. A feature is not shown at all when the model has none, or when the
+device answers that it has no such function. The modes are the device's own
+list — a QC Ultra's Immersion and Cinema included — under its own names.
 
 The Settings page controls starting with Windows, starting minimized, a
 system-tray icon, whether the application attaches to the headphones at launch
@@ -72,8 +101,8 @@ part of the repository. `npm run setups` does the copying by itself.
 
 ### Desktop widget (optional)
 
-A small window of its own with the three noise modes and the three equalizer
-bands, so that the main window need not be opened to change them. Switch it
+A small window of its own with the device's noise modes and the three
+equalizer bands, so that the main window need not be opened to change them. Switch it
 on in Settings → General → **Desktop widget**, or from the tray icon's menu.
 
 - Drag it by its header. It comes back where it was left.
@@ -116,7 +145,7 @@ The phone build has a widget for the home screen with the three noise modes
 — **Quiet**, **Aware**, and the custom mode under the name the headphones
 give it — and under them the equalizer: bass, mid and treble, each with its
 level and a step down and a step up. Long-press the home screen →
-**Widgets** → **Bose QC Control Center** → **Modes and equalizer**. It comes
+**Widgets** → **Void** → **Modes and equalizer**. It comes
 two rows tall; made one row tall it is the modes alone.
 
 - With **Keep running in the background** on (Settings → General), a tap
@@ -212,6 +241,14 @@ Changes one equalizer band by one step and restores it:
 
 ```bash
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b7
+```
+
+Switches mode by slot from the headphones' own list, the way every model's
+modes are switched, and back; checks the model is named (`hw_b13` only lists
+what the computer has paired, and sends nothing):
+
+```bash
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib -- --ignored --nocapture --test-threads=1 hw_b12 hw_b13
 ```
 
 Switches to the custom mode, changes its level, and restores both (needs a

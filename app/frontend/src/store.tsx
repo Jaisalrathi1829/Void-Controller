@@ -10,8 +10,17 @@ import {
 } from "react";
 import { toast } from "sonner";
 import * as ipc from "@/services/ipc";
-import type { CommandOutcome, DeviceSnapshot, PairedDevice } from "@/types/device";
+import type {
+  BatteryPart,
+  CommandOutcome,
+  DeviceCategory,
+  DeviceModel,
+  DeviceSnapshot,
+  NoiseModeOption,
+  PairedDevice,
+} from "@/types/device";
 import type { CapabilityStatus } from "@/types/capability";
+import type { PageId } from "./pages";
 
 /* ============================================================
  * Application state, backed by the Rust native layer.
@@ -102,6 +111,36 @@ interface AppState {
   capabilities: FeatureCapabilities;
   /** Full per-capability detail, including the evidence behind each status. */
   snapshot: DeviceSnapshot | null;
+
+  /** Which model the device is, or null when that cannot be told. */
+  model: DeviceModel | null;
+  /** Whether the device is headphones or earbuds; headphones when not known. */
+  kind: DeviceCategory;
+  /** Each battery's level on a device with several. Empty otherwise. */
+  batteryParts: BatteryPart[];
+  /**
+   * The noise modes the device offers, with the one it is in marked. Null
+   * until it has said which mode it is in.
+   */
+  noiseModes: NoiseModeOption[] | null;
+  /** Switches to one of the modes the device listed. */
+  selectNoiseMode: (mode: NoiseModeOption) => void;
+
+  /**
+   * Whether the device chooser is up, and why: on every start, and when the
+   * user asks to change device. Null when it is not. The main window shows
+   * it in place of everything else.
+   */
+  choosing: "start" | "change" | null;
+  /** Puts the chooser up again. */
+  changeDevice: () => void;
+  /**
+   * Makes the paired device listed under `id` the one this application is
+   * about. Resolves to whether that worked; the chooser closes if it did.
+   */
+  chooseDevice: (id: string, name: string) => Promise<boolean>;
+  /** Closes the chooser without choosing: carries on with what is there. */
+  closeChooser: () => void;
 
   /**
    * The mode the device itself last reported, or null if it has not reported
@@ -211,6 +250,25 @@ const LIVE_REFRESH_MS = 5000;
 /** Whether a capability status means the control must not be offered. */
 export function isUnavailable(cap: CapabilityStatus): boolean {
   return cap === "unknown" || cap === "unsupported";
+}
+
+/**
+ * Whether a feature is shown at all. Only what the device does not have —
+ * what its model has none of, or what it said it has no such function for —
+ * is left out; something not yet established is shown, as unavailable.
+ */
+export function isShown(cap: CapabilityStatus): boolean {
+  return cap !== "unsupported";
+}
+
+/** The pages there is something to show on, for what the device has. */
+export function shownPages(caps: FeatureCapabilities): Set<PageId> {
+  const pages = new Set<PageId>(["dashboard", "device", "noise", "equalizer", "profiles", "settings"]);
+  if (!isShown(caps.noiseControl)) pages.delete("noise");
+  if (!isShown(caps.eq)) pages.delete("equalizer");
+  // A profile is a mode and an equalizer setting; with neither, nothing.
+  if (!isShown(caps.noiseControl) && !isShown(caps.eq)) pages.delete("profiles");
+  return pages;
 }
 
 const THEME_KEY = "bose-qc.theme";
@@ -670,6 +728,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refresh]);
 
+  /* ---- choosing the device ---- */
+  const [choosing, setChoosing] = useState<"start" | "change" | null>("start");
+  const changeDevice = useCallback(() => setChoosing("change"), []);
+  const closeChooser = useCallback(() => setChoosing(null), []);
+  const chooseDevice = useCallback(
+    async (id: string, name: string) => {
+      setBusy("chooseDevice");
+      busyRef.current = true;
+      try {
+        const next = await ipc.chooseBoseDevice(id);
+        setSnapshot(next);
+        deviceErrorRef.current = null;
+        setDeviceError(null);
+        setChoosing(null);
+        pushEvent({ type: "SESSION", description: `Using ${name}`, status: "info" });
+        return true;
+      } catch (e) {
+        toast.error(`Could not use ${name}.`, { description: ipc.toIpcError(e).message });
+        return false;
+      } finally {
+        busyRef.current = false;
+        setBusy(null);
+      }
+    },
+    [pushEvent],
+  );
+
   /* ---- derived ---- */
   const connection = connectionFrom(snapshot);
   const simulated = snapshot?.source === "mock";
@@ -704,6 +789,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       : null;
   const multipoint = snapshot?.multipoint?.enabled ?? null;
   const pairedDevices = snapshot?.pairedDevices ?? null;
+  const model = snapshot?.model ?? null;
+  const kind: DeviceCategory = model?.category ?? "headphones";
+  const batteryParts = useMemo(() => snapshot?.battery?.parts ?? [], [snapshot]);
+  const noiseModes = snapshot?.noiseModes ?? null;
 
   /* ---- actions ---- */
   const setNoise = useCallback(
@@ -711,6 +800,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void requestNoise(n, { label: `Noise control (${n})`, eventType: "ANC_CHANGE" });
     },
     [requestNoise],
+  );
+
+  const selectNoiseMode = useCallback(
+    (mode: NoiseModeOption) => {
+      void report("selectNoiseMode", () => ipc.selectNoiseMode(mode.index), {
+        label: mode.name,
+        eventType: "ANC_CHANGE",
+      });
+    },
+    [report],
   );
 
   const setHardwareEq = useCallback(
@@ -906,6 +1005,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       batterySource,
       capabilities,
       snapshot,
+      model,
+      kind,
+      batteryParts,
+      noiseModes,
+      selectNoiseMode,
+      choosing,
+      changeDevice,
+      chooseDevice,
+      closeChooser,
       noise,
       setNoise,
       noiseReadAt,
@@ -963,6 +1071,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       connection, setConnection, simulated, setSimulated, nativeAvailable, connect,
       battery, charging, deviceName, batterySource, capabilities, snapshot,
+      model, kind, batteryParts, noiseModes, selectNoiseMode,
+      choosing, changeDevice, chooseDevice, closeChooser,
       noise, setNoise, noiseReadAt, deviceNotice, deviceError, allowBluetooth,
       ancLevel, setAncLevel, noiseLabel, windBlock, setWindBlock,
       volume, setVolume, muted, setMuted, audioEndpointName, volumeKnown, connectedTo,

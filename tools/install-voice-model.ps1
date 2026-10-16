@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs the Kokoro voice model used by QC Control Center's voice feedback.
+    Installs the Kokoro voice model used by Void's voice feedback.
 
 .DESCRIPTION
     Voice feedback is spoken by Kokoro, a text-to-speech model that runs
@@ -95,4 +95,4 @@ if (-not (Test-Installed)) {
 }
 
 Write-Host "`nInstalled:`n  $Dest"
-Write-Host "Open Settings > Voice Feedback in QC Control Center and press 'Check again'."
+Write-Host "Open Settings > Voice Feedback in Void and press 'Check again'."

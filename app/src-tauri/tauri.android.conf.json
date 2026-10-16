@@ -2,7 +2,7 @@
   "app": {
     "windows": [
       {
-        "title": "Bose QC Control Center",
+        "title": "Void",
         "visible": true,
         "dragDropEnabled": false
       }

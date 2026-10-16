@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { Maximize2, Pin, PinOff, X } from "lucide-react";
 import * as ipc from "@/services/ipc";
-import { AppProvider, isUnavailable, useApp, type NoiseMode } from "../../store";
-import { BatteryIndicator, Range, SectionLabel, SegmentedControl } from "../primitives";
+import { AppProvider, isShown, isUnavailable, useApp } from "../../store";
+import { NoiseModePicker } from "../NoiseModes";
+import { BatteryIndicator, Range, SectionLabel } from "../primitives";
 import { cn } from "../ui/utils";
 
 /** A small square button in the widget's header. */
@@ -58,9 +59,7 @@ export function Widget() {
     simulated,
     battery,
     charging,
-    noise,
-    noiseLabel,
-    setNoise,
+    kind,
     capabilities,
     hardwareEq,
     setHardwareEq,
@@ -73,21 +72,12 @@ export function Widget() {
   } = useApp();
 
   const connected = connection === "connected";
-  const noiseOff = isUnavailable(capabilities.noiseControl);
   const eqOff = isUnavailable(capabilities.eq);
-  const switching = busy === "setNoiseControlMode" || busy === "setNoiseControl";
-
-  const modes: { value: NoiseMode; label: string; disabled?: boolean; hint?: string }[] = [
-    { value: "quiet", label: "Quiet" },
-    { value: "aware", label: "Aware" },
-    {
-      value: "custom",
-      // By the headphones' own name for it, once they have said they are in it.
-      label: noise === "custom" && noiseLabel ? noiseLabel : "Custom",
-      disabled: isUnavailable(capabilities.customAnc),
-      hint: "These headphones have no custom mode this application can select.",
-    },
-  ];
+  // Only what the device has: a section for something it has none of is
+  // left out.
+  const noiseShown = isShown(capabilities.noiseControl);
+  const eqShown = isShown(capabilities.eq);
+  const what = kind === "earbuds" ? "Earbuds" : "Headphones";
 
   const last = events[0];
   const status = deviceNotice
@@ -147,7 +137,7 @@ export function Widget() {
             {settings.widgetOnTop ? <Pin className="size-3.5" /> : <PinOff className="size-3.5" />}
           </HeaderButton>
           <HeaderButton
-            label="Open Bose QC Control Center"
+            label="Open Void"
             onClick={() => void ipc.showMainWindow().catch(() => {})}
           >
             <Maximize2 className="size-3.5" />
@@ -162,28 +152,26 @@ export function Widget() {
 
         {connected ? (
           <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 py-3.5">
-            <section>
-              <SectionLabel>Noise control</SectionLabel>
-              <SegmentedControl
-                options={modes}
-                value={noise}
-                onChange={setNoise}
-                disabled={noiseOff || switching}
-                className="mt-2 w-full [&>button]:flex-1"
-              />
-            </section>
-            <section>
-              <SectionLabel>Equalizer</SectionLabel>
-              <div className="mt-2 space-y-2.5">
-                {band("bass", "Bass")}
-                {band("mid", "Mid")}
-                {band("treble", "Treble")}
-              </div>
-            </section>
+            {noiseShown && (
+              <section>
+                <SectionLabel>Noise control</SectionLabel>
+                <NoiseModePicker nameCustom className="mt-2" />
+              </section>
+            )}
+            {eqShown && (
+              <section>
+                <SectionLabel>Equalizer</SectionLabel>
+                <div className="mt-2 space-y-2.5">
+                  {band("bass", "Bass")}
+                  {band("mid", "Mid")}
+                  {band("treble", "Treble")}
+                </div>
+              </section>
+            )}
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-6 text-center">
-            <p className="text-sm font-medium">Headphones not connected</p>
+            <p className="text-sm font-medium">{what} not connected</p>
             <p className="text-xs text-muted-foreground">
               The modes and the equalizer appear here when they are.
             </p>

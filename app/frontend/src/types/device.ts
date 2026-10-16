@@ -59,6 +59,83 @@ export interface BatteryReading {
   /** Some devices report per-earcup or case levels. Absent unless observed. */
   charging?: boolean;
   readAt: string;
+  /**
+   * Each battery's own level on a device with several — earbuds and their
+   * case — as the device reported them. Absent otherwise.
+   */
+  parts?: BatteryPart[];
+}
+
+/** One battery of a device that has several: an earbud, or the case. */
+export interface BatteryPart {
+  /** What the model's description calls it: "Left", "Right", "Case". */
+  name: string;
+  percent: number;
+}
+
+/** What kind of thing a Bose model is. */
+export type DeviceCategory = 'headphones' | 'earbuds';
+
+/**
+ * How much is known about a model's controls.
+ *
+ * - `tested`      Run against the physical model by this project.
+ * - `documented`  Its protocol is described by people who have one; never
+ *                 run here.
+ * - `recognized`  Known to be a Bose model of its kind, with nothing written
+ *                 down about its controls. Only what it answers is offered,
+ *                 and nothing is written into its modes.
+ */
+export type ModelSupport = 'tested' | 'documented' | 'recognized';
+
+/** Which model a device is, from Bose's catalogue. */
+export interface DeviceModel {
+  /** Bose's name for the model. */
+  name: string;
+  category: DeviceCategory;
+  support: ModelSupport;
+}
+
+/** One of the noise modes the device offers, in its own order. */
+export interface NoiseModeOption {
+  /** The slot the device lists it under: what switching to it asks for. */
+  index: number;
+  /** The device's own name for it. */
+  name: string;
+  /** A fixed mode, rather than one the user set up. */
+  preset: boolean;
+  /** Its noise-cancellation level can be changed from here. */
+  adjustable: boolean;
+  /** The mode the device last said it is in. */
+  active: boolean;
+}
+
+/**
+ * A Bose device paired with this phone or computer, to choose from. By name
+ * and model only — no address.
+ */
+export interface PairedBose {
+  /** What choosing it asks for. A salted hash, never the address. */
+  id: string;
+  /** The name its owner gave it. */
+  name: string;
+  /** Null for a Bose device the catalogue does not have. */
+  model: DeviceModel | null;
+  connected: boolean;
+  /** The one this application is looking at now. */
+  current: boolean;
+}
+
+/** What Void says about how far a model has been tried. */
+export function supportNote(support: ModelSupport): string {
+  switch (support) {
+    case 'tested':
+      return 'Tested with Void.';
+    case 'documented':
+      return 'Not yet tested with Void. Its controls follow the published description of this model, and every change is checked by reading it back.';
+    case 'recognized':
+      return 'Not yet tested with Void. Only what the device answers about itself is shown, and nothing is written into its modes.';
+  }
 }
 
 export type NoiseControlMode = 'quiet' | 'aware' | 'custom' | 'off';
@@ -171,6 +248,13 @@ export interface DeviceSnapshot {
   battery: BatteryReading | null;
   noiseControl: NoiseControlState | null;
   equalizer: EqState | null;
+  /** Which model the device is. Null or absent when it cannot be told. */
+  model?: DeviceModel | null;
+  /**
+   * The noise modes the device offers, with the one it is in marked. Null or
+   * absent until it has said which mode it is in.
+   */
+  noiseModes?: NoiseModeOption[] | null;
   /** Whether multipoint is on, as the headphones last said. */
   multipoint?: MultipointState | null;
   /** What the headphones are paired with, and which of those are connected. */

@@ -1,4 +1,5 @@
 import {
+  ArrowLeftRight,
   LayoutDashboard,
   Settings,
   SlidersHorizontal,
@@ -9,7 +10,7 @@ import {
 import { motion } from "motion/react";
 import { cn } from "./ui/utils";
 import { BatteryIndicator, ConnectionBadge } from "./primitives";
-import { useApp } from "../store";
+import { shownPages, useApp } from "../store";
 import type { PageId } from "../pages";
 import wolfLogo from "@/assets/wolf-logo.png";
 
@@ -33,12 +34,14 @@ export function BottomNav({
   page: PageId;
   onNavigate: (p: PageId) => void;
 }) {
+  const { capabilities } = useApp();
+  const shown = shownPages(capabilities);
   return (
     <nav
       aria-label="Sections"
       className="flex shrink-0 border-t border-sidebar-border bg-sidebar md:hidden"
     >
-      {nav.map((item) => {
+      {nav.filter((item) => shown.has(item.id)).map((item) => {
         const active = page === item.id;
         const Icon = item.icon;
         return (
@@ -75,7 +78,8 @@ export function Sidebar({
   page: PageId;
   onNavigate: (p: PageId) => void;
 }) {
-  const { connection, battery, charging } = useApp();
+  const { connection, battery, charging, capabilities, changeDevice, model, deviceName } = useApp();
+  const shown = nav.filter((item) => shownPages(capabilities).has(item.id));
 
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
@@ -97,7 +101,7 @@ export function Sidebar({
       {/* nav */}
       <nav className="flex-1 px-3 py-2">
         <ul className="space-y-0.5">
-          {nav.map((item) => {
+          {shown.map((item) => {
             const active = page === item.id;
             const Icon = item.icon;
             return (
@@ -105,7 +109,7 @@ export function Sidebar({
                 key={item.id}
                 initial={{ opacity: 0, x: -16 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.04 * nav.indexOf(item), type: "spring", stiffness: 300, damping: 24 }}
+                transition={{ delay: 0.04 * shown.indexOf(item), type: "spring", stiffness: 300, damping: 24 }}
               >
                 <motion.button
                   onClick={() => onNavigate(item.id)}
@@ -142,6 +146,10 @@ export function Sidebar({
 
       {/* status footer */}
       <div className="m-3 space-y-3 rounded-lg border border-sidebar-border bg-card/60 p-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{deviceName}</div>
+          {model && <div className="truncate text-xs text-muted-foreground">{model.name}</div>}
+        </div>
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted-foreground">Connection</span>
           <ConnectionBadge state={connection} />
@@ -150,6 +158,12 @@ export function Sidebar({
           <span className="text-xs text-muted-foreground">Battery</span>
           <BatteryIndicator level={battery} charging={charging} />
         </div>
+        <button
+          onClick={changeDevice}
+          className="flex w-full items-center justify-center gap-2 rounded-md border border-sidebar-border px-2 py-1.5 text-xs text-muted-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        >
+          <ArrowLeftRight className="size-3.5" /> Change device
+        </button>
       </div>
     </aside>
   );

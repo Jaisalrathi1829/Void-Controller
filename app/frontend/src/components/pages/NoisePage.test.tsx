@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createUnknownCapabilities, type CapabilityStatus } from '@/types/capability';
-import type { CommandOutcome, DeviceSnapshot, NoiseControlMode } from '@/types/device';
+import type {
+  CommandOutcome,
+  DeviceSnapshot,
+  NoiseControlMode,
+  NoiseModeOption,
+} from '@/types/device';
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }));
 vi.mock('sonner', () => ({ toast }));
@@ -12,6 +17,7 @@ const ipcMock = vi.hoisted(() => ({
   setNoiseControlMode: vi.fn(),
   setNoiseCancellationLevel: vi.fn(),
   executeCommand: vi.fn(),
+  selectNoiseMode: vi.fn(),
 }));
 vi.mock('@/services/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/ipc')>()),
@@ -450,5 +456,65 @@ describe('simulated labelling', () => {
     await renderPage();
 
     expect(screen.queryByText('Simulated Device')).not.toBeInTheDocument();
+  });
+});
+
+/** A QC Ultra's list: four built-in modes and one the user set up. */
+function ultraModes(active: number): NoiseModeOption[] {
+  return [
+    { index: 0, name: 'Quiet', preset: true, adjustable: false },
+    { index: 1, name: 'Aware', preset: true, adjustable: false },
+    { index: 2, name: 'Immersion', preset: true, adjustable: false },
+    { index: 3, name: 'Cinema', preset: true, adjustable: false },
+    { index: 4, name: 'Commute', preset: false, adjustable: true },
+  ].map((m) => ({ ...m, active: m.index === active }));
+}
+
+describe('a device that lists its own modes', () => {
+  it('offers every mode it lists, under its own names, and nothing else', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot({ mode: 'custom', custom: 'ready', label: 'Immersion' }),
+      noiseModes: ultraModes(2),
+    });
+    await renderPage();
+
+    for (const name of ['Quiet', 'Aware', 'Immersion', 'Cinema', 'Commute']) {
+      expect(tab(name)).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('tab', { name: 'Custom' })).not.toBeInTheDocument();
+    expect(tab('Immersion')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('One of the modes built into your headphones.')).toBeInTheDocument();
+    // A built-in mode has no level to adjust.
+    expect(screen.queryByTestId('custom-panel')).not.toBeInTheDocument();
+  });
+
+  it('asks for a mode by the slot the device lists it under', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({ ...snapshot({ mode: 'quiet' }), noiseModes: ultraModes(0) });
+    ipcMock.selectNoiseMode.mockResolvedValue(applied);
+    await renderPage();
+
+    await userEvent.click(tab('Cinema'));
+    await waitFor(() => expect(ipcMock.selectNoiseMode).toHaveBeenCalledWith(3));
+    expect(ipcMock.setNoiseControlMode).not.toHaveBeenCalled();
+  });
+
+  it('shows the level of a mode that can be adjusted', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot({ mode: 'custom', custom: 'ready', label: 'Commute', level: 3 }),
+      noiseModes: ultraModes(4),
+    });
+    await renderPage();
+
+    expect(tab('Commute')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('custom-panel')).toBeInTheDocument();
+  });
+
+  it('shows no custom mode on a device that has none, and says nothing about one', async () => {
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ mode: 'quiet', custom: 'unsupported' }));
+    await renderPage();
+
+    expect(tab('Quiet')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Custom' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('custom-unavailable')).not.toBeInTheDocument();
   });
 });

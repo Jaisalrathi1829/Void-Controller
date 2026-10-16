@@ -1,17 +1,18 @@
 import { motion } from "motion/react";
 import { Volume2, Waves, Wind } from "lucide-react";
 import { DeviceVisual } from "../DeviceVisual";
+import { NoiseModePicker } from "../NoiseModes";
 import {
   BatteryIndicator,
+  BatteryParts,
   Button,
   CapabilityBadge,
   ConnectionBadge,
   Panel,
   Range,
   SectionLabel,
-  SegmentedControl,
 } from "../primitives";
-import { useApp, isUnavailable, type NoiseMode } from "../../store";
+import { useApp, isShown, isUnavailable, shownPages } from "../../store";
 import { hostPlatform } from "@/services/ipc";
 
 export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) {
@@ -20,8 +21,9 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
     connection,
     battery,
     charging,
-    noise,
-    setNoise,
+    batteryParts,
+    model,
+    kind,
     capabilities,
     volume,
     setVolume,
@@ -32,23 +34,14 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
     setHardwareEq,
     profiles,
     applyProfile,
-    busy,
   } = useApp();
 
   const onPhone = hostPlatform() === "android";
   const noiseDisabled = isUnavailable(capabilities.noiseControl);
-  const noiseSwitching = busy === "setNoiseControlMode" || busy === "setNoiseControl";
-  const noiseOptions: { value: NoiseMode; label: string; disabled?: boolean; hint?: string }[] = [
-    { value: "quiet", label: "Quiet" },
-    { value: "aware", label: "Aware" },
-    {
-      value: "custom",
-      label: "Custom",
-      // Shown when the headphones report it; not something this build can set.
-      disabled: isUnavailable(capabilities.customAnc),
-      hint: "Custom modes cannot be set from here yet.",
-    },
-  ];
+  // Only what this device has is on the dashboard.
+  const noiseShown = isShown(capabilities.noiseControl);
+  const eqShown = isShown(capabilities.eq);
+  const profilesShown = shownPages(capabilities).has("profiles");
 
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
@@ -60,38 +53,46 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
             <h2>{deviceName}</h2>
             <ConnectionBadge state={connection} />
           </div>
+          {model && (
+            <p className="text-sm text-muted-foreground" data-testid="model-name">
+              {model.name}
+            </p>
+          )}
           {connectedTo && (
             <p className="text-sm text-muted-foreground">
               Connected to <span className="font-medium text-foreground">{connectedTo}</span>
             </p>
           )}
           <BatteryIndicator level={battery} charging={charging} size="lg" />
+          <BatteryParts parts={batteryParts} />
           <div className="dv-enter">
-            <DeviceVisual size={320} active={connection === "connected" || connection === "simulated"} />
+            <DeviceVisual
+              size={320}
+              kind={kind}
+              active={connection === "connected" || connection === "simulated"}
+            />
           </div>
         </div>
 
         {/* Noise + volume inline */}
-        <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">
-          <div className="bg-card p-6">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Waves className="size-4 text-muted-foreground" />
-                <SectionLabel>Noise Control</SectionLabel>
+        <div
+          className={`grid grid-cols-1 gap-px bg-border ${noiseShown ? "sm:grid-cols-2" : ""}`}
+        >
+          {noiseShown && (
+            <div className="bg-card p-6">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Waves className="size-4 text-muted-foreground" />
+                  <SectionLabel>Noise Control</SectionLabel>
+                </div>
+                <CapabilityBadge cap={capabilities.noiseControl} />
               </div>
-              <CapabilityBadge cap={capabilities.noiseControl} />
+              <NoiseModePicker customHint="Custom modes cannot be set from here yet." />
+              {noiseDisabled && (
+                <p className="mt-2 text-xs text-muted-foreground">Not yet verified on your headphones.</p>
+              )}
             </div>
-            <SegmentedControl
-              options={noiseOptions}
-              value={noise}
-              onChange={setNoise}
-              disabled={noiseDisabled || noiseSwitching}
-              className="w-full [&>button]:flex-1"
-            />
-            {noiseDisabled && (
-              <p className="mt-2 text-xs text-muted-foreground">Not yet verified on your headphones.</p>
-            )}
-          </div>
+          )}
           <div className="bg-card p-6">
             <div className="mb-3 flex items-center gap-2">
               <Volume2 className="size-4 text-muted-foreground" />
@@ -125,6 +126,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
 
       {/* Right column */}
       <div className="flex flex-col gap-5">
+        {eqShown && (
         <Panel className="p-6">
           <div className="mb-4 flex items-center justify-between">
             <SectionLabel>Equalizer</SectionLabel>
@@ -145,7 +147,9 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
             Open Equalizer
           </Button>
         </Panel>
+        )}
 
+        {profilesShown && (
         <Panel className="p-6">
           <div className="mb-4 flex items-center justify-between">
             <SectionLabel>Quick Profiles</SectionLabel>
@@ -171,6 +175,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
             ))}
           </div>
         </Panel>
+        )}
       </div>
     </div>
   );

@@ -23,17 +23,19 @@ use crate::device::capability::{
 };
 use crate::device::command::CommandOutcome;
 use crate::device::state::{
-    check_device_name, is_paired_device_id, BatteryReading, BatterySource, ConnectionState,
+    check_device_name, is_paired_device_id, BatteryPart, BatteryReading, BatterySource,
+    ConnectionState,
     DeviceIdentity,
-    DeviceSnapshot, DeviceSource, EqSettings, EqState, MultipointState, NoiseControlMode,
-    NoiseControlState, PairedDeviceState, StateSource, Transport,
+    DeviceSnapshot, DeviceSource, EqSettings, EqState, ModelState, MultipointState,
+    NoiseControlMode, NoiseControlState, NoiseModeOption, PairedDeviceState, StateSource,
+    Transport,
 };
 use crate::device::traits::BoseDevice;
 use crate::device::{now_rfc3339, DeviceError, DeviceResult};
 use async_trait::async_trait;
 use control::custom::{flip_level, usable_slots, MAX_RAW_LEVEL};
 use control::link::{Confirmed, EqReading, SlotTable, TransitionProof};
-use control::noise::{describe_index, preset_for_index};
+use control::noise::{describe_index, mode_options, preset_for_index, preset_index};
 use control::unit::{ConnectionChange, MultipointChange, NameChange};
 use control::{
     BmapLink, EqChange, EqLevels, LevelChange, LinkError, LinkErrorKind, LinkStatus, LinkTiming,
@@ -97,18 +99,35 @@ fn battery_reading(
     reported: Option<&control::link::BatteryReport>,
     now: &str,
 ) -> Option<BatteryReading> {
+    // The parts' levels are only ever the device's own.
+    let parts = || {
+        reported
+            .map(|report| {
+                report
+                    .parts
+                    .iter()
+                    .map(|(name, percent)| BatteryPart {
+                        name: name.to_string(),
+                        percent: *percent,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     match (host, reported) {
         (Some(percent), _) => Some(BatteryReading {
             percent,
             source: HOST_BATTERY,
             charging: None,
             read_at: now.to_string(),
+            parts: parts(),
         }),
         (None, Some(report)) => Some(BatteryReading {
             percent: report.percent,
             source: BatterySource::VendorProtocol,
             charging: None,
             read_at: report.at.clone(),
+            parts: parts(),
         }),
         (None, None) => None,
     }
@@ -177,10 +196,17 @@ fn control_target(obs: &Observed) -> Result<ControlTarget, String> {
         );
     };
     let Some(config) = control::config_for_product(product_id) else {
-        return Err(format!(
-            "Product 0x{product_id:04X} is not a model this application has been tested against, \
-             so no control connection is opened to it."
-        ));
+        return Err(match control::models::model_for(product_id) {
+            Some(model) => format!(
+                "Void cannot drive the {} yet: its noise cancellation works differently from \
+                 the models it knows, and nothing about it has been described.",
+                model.name
+            ),
+            None => format!(
+                "Product 0x{product_id:04X} is not a Bose headphone or earbud model Void knows of, \
+                 so no control connection is opened to it."
+            ),
+        });
     };
     if !obs.advertises_bmap {
         return Err(
@@ -575,6 +601,19 @@ impl RealBoseDevice {
         }
 
         apply_control_capabilities(&mut caps, obs, link);
+        match control_target(obs) {
+            Ok(target) => mark_what_the_model_lacks(&mut caps, &target.config, link),
+            // A model Void knows and cannot drive has none of its controls
+            // here, and none is shown.
+            Err(why) if is_undrivable_model(obs) => {
+                for key in CONTROL_KEYS {
+                    let mut cap = Capability::unknown(key, why.clone());
+                    let _ = cap.mark_unsupported(why.clone());
+                    *caps.get_mut(key) = cap;
+                }
+            }
+            Err(_) => {}
+        }
         caps
     }
 
@@ -701,6 +740,47 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
         .map(|e| e.describe())
         .unwrap_or_else(|| "the control channel".to_string());
 
+    // A model whose description has no Quiet and Aware presets — one Void
+    // knows only by its own list — has its modes switched by slot, and noise
+    // control is verified by any switch the headphones confirm.
+    let has_presets = preset_index(config, Preset::Quiet).is_some()
+        && preset_index(config, Preset::Aware).is_some();
+    if !has_presets {
+        for key in PRESET_KEYS {
+            match &link.to_mode {
+                Some(switch) => {
+                    let describe = |index: u8| format!("mode {index}");
+                    let after = describe(switch.after);
+                    if let Some(proof) = HardwareProof::observed_at(
+                        key,
+                        &describe(switch.before),
+                        &after,
+                        &after,
+                        switch.at.clone(),
+                    ) {
+                        let _ = caps
+                            .get_mut(key)
+                            .verify_with_hardware(&proof, Mechanism::RfcommVendor);
+                    }
+                }
+                None => {
+                    let _ = caps.get_mut(key).mark_ready(
+                        Mechanism::RfcommVendor,
+                        format!(
+                            "The current mode is read from the headphones ({where_from}), and \
+                             their modes are the ones they list. A switch is checked by reading \
+                             the mode back; none has been confirmed this session yet."
+                        ),
+                    );
+                }
+            }
+        }
+        apply_custom_capability(caps, config, link, &where_from);
+        apply_eq_capability(caps, link, &where_from);
+        apply_unit_capabilities(caps, link, &where_from);
+        return;
+    }
+
     match (&link.to_quiet, &link.to_aware) {
         // Both directions confirmed by the headphones: this, and only this,
         // is what VERIFIED means for noise control.
@@ -748,6 +828,145 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
     apply_custom_capability(caps, config, link, &where_from);
     apply_eq_capability(caps, link, &where_from);
     apply_unit_capabilities(caps, link, &where_from);
+}
+
+/// Which model Windows says the device is, as the catalogue names it.
+fn model_state(obs: &Observed) -> Option<ModelState> {
+    obs.product_id
+        .and_then(control::models::model_for)
+        .map(|m| ModelState {
+            name: m.name.to_string(),
+            category: m.category,
+            support: m.support,
+        })
+}
+
+/// The modes the headphones offer, from their own list, and which of them
+/// they last said they are in. Nothing until they have said which mode they
+/// are in: a list with no mode marked would be a guess at which one is.
+fn noise_modes(config: &::bmap::DeviceConfig, link: &LinkStatus) -> Option<Vec<NoiseModeOption>> {
+    let confirmed = link.confirmed.as_ref()?;
+    let options = mode_options(config, link.slots.as_ref().map(|t| t.slots.as_slice()));
+    Some(
+        options
+            .into_iter()
+            .map(|o| NoiseModeOption {
+                active: o.index == confirmed.index,
+                index: o.index,
+                name: o.name,
+                preset: o.preset,
+                adjustable: o.adjustable,
+            })
+            .collect(),
+    )
+}
+
+/// The mode a switch by slot asks for: only one the headphones offer, from
+/// their own list as last read or the description's presets.
+fn listed_mode(
+    config: &::bmap::DeviceConfig,
+    link: &LinkStatus,
+    index: u8,
+) -> DeviceResult<control::noise::ModeOption> {
+    mode_options(config, link.slots.as_ref().map(|t| t.slots.as_slice()))
+        .into_iter()
+        .find(|o| o.index == index)
+        .ok_or_else(|| {
+            DeviceError::InvalidInput("That is not one of the modes the headphones list.".to_string())
+        })
+}
+
+/// Everything driven over the control link.
+const CONTROL_KEYS: [CapabilityKey; 7] = [
+    CapabilityKey::NoiseControl,
+    CapabilityKey::AwareMode,
+    CapabilityKey::CustomNoiseControl,
+    CapabilityKey::Equalizer,
+    CapabilityKey::Multipoint,
+    CapabilityKey::DeviceRename,
+    CapabilityKey::PairedDevices,
+];
+
+/// Whether the device is a headphone or earbud model the catalogue has and
+/// Void has no description to drive — the QuietComfort 35 generation.
+fn is_undrivable_model(obs: &Observed) -> bool {
+    obs.product_id.is_some_and(|id| {
+        control::models::model_for(id).is_some() && control::config_for_product(id).is_none()
+    })
+}
+
+/// Whether a reason for a feature not being read is the headphones saying
+/// they do not have it: an `ERROR` that names the function or its block as
+/// unsupported.
+fn says_not_supported(problem: &str) -> bool {
+    problem.contains("FuncNotSupp") || problem.contains("FblockNotSupp")
+}
+
+/// Marks UNSUPPORTED what this model does not have, so that it is not shown:
+/// what the headphones answered a request for by saying they have no such
+/// function, an equalizer the description has none of (it is read only from
+/// the description's address), and a custom mode's level where nothing is
+/// described for writing it. Multipoint, the name and the paired list are read
+/// at fixed addresses on every model — upstream's description of the tested
+/// headphones has no multipoint, and they have it — so for those only the
+/// headphones' own answer counts. Whatever was decided for these before is
+/// replaced.
+fn mark_what_the_model_lacks(
+    caps: &mut CapabilitySet,
+    config: &::bmap::DeviceConfig,
+    link: &LinkStatus,
+) {
+    let model = config.info.name;
+    let refused = |problem: &Option<String>| problem.as_deref().is_some_and(says_not_supported);
+    let lacks = [
+        (
+            CapabilityKey::Equalizer,
+            config.eq.is_none() || refused(&link.eq_problem),
+            format!("The {model} has no equalizer that can be set."),
+        ),
+        (
+            CapabilityKey::Multipoint,
+            refused(&link.multipoint_problem),
+            format!("The {model} has no multi-device switch."),
+        ),
+        (
+            CapabilityKey::DeviceRename,
+            refused(&link.name_problem),
+            format!("The {model} cannot be renamed from here."),
+        ),
+        (
+            CapabilityKey::PairedDevices,
+            refused(&link.paired_problem),
+            format!("The {model} does not list the devices it is paired with."),
+        ),
+        (
+            CapabilityKey::CustomNoiseControl,
+            !control::custom::can_adjust(config),
+            format!(
+                "A custom mode's level cannot be changed from here on the {model}: how it is \
+                 written has not been described for this model."
+            ),
+        ),
+    ];
+    let answered = |problem: &Option<String>| match problem {
+        Some(problem) if says_not_supported(problem) => format!(" They answered: {problem}."),
+        _ => String::new(),
+    };
+    let quoted = |key: CapabilityKey| match key {
+        CapabilityKey::Equalizer => answered(&link.eq_problem),
+        CapabilityKey::Multipoint => answered(&link.multipoint_problem),
+        CapabilityKey::DeviceRename => answered(&link.name_problem),
+        CapabilityKey::PairedDevices => answered(&link.paired_problem),
+        _ => String::new(),
+    };
+    for (key, absent, why) in lacks {
+        if absent {
+            let why = format!("{why}{}", quoted(key));
+            let mut cap = Capability::unknown(key, why.clone());
+            let _ = cap.mark_unsupported(why);
+            *caps.get_mut(key) = cap;
+        }
+    }
 }
 
 /// Multipoint and renaming. Each is READY once the headphones have reported
@@ -1174,9 +1393,18 @@ fn noise_state(
             None => NoiseControlMode::Custom,
         },
         level: slot.map(Slot::strength),
+        // The mode's own name: the list's, or for a preset the list has not
+        // given — a QC Ultra's Immersion — the description's.
         label: slot
             .map(|s| s.name.trim().to_string())
-            .filter(|name| !name.is_empty()),
+            .filter(|name| !name.is_empty())
+            .or_else(|| match preset {
+                Some(_) => None,
+                None => mode_options(config, None)
+                    .into_iter()
+                    .find(|o| o.index == confirmed.index)
+                    .map(|o| o.name),
+            }),
         source: StateSource::VendorProtocol,
         // When the headphones said it, not when it was last displayed.
         read_at: confirmed.at.clone(),
@@ -1389,6 +1617,11 @@ impl BoseDevice for RealBoseDevice {
                 (Some(_), Some(reading)) if obs.connected => Some(eq_state(reading)),
                 _ => None,
             },
+            model: model_state(&obs),
+            noise_modes: match &target {
+                Some(target) if obs.connected => noise_modes(&target.config, &link),
+                _ => None,
+            },
             multipoint: match (&target, &link.multipoint) {
                 (Some(_), Some(reading)) if obs.connected => Some(MultipointState {
                     enabled: reading.enabled,
@@ -1462,6 +1695,7 @@ impl BoseDevice for RealBoseDevice {
         self.refresh()?;
         let obs = self.observed.read().clone();
         Ok(obs.battery.map(|percent| BatteryReading {
+            parts: Vec::new(),
             percent,
             source: HOST_BATTERY,
             charging: None,
@@ -1786,6 +2020,24 @@ impl BoseDevice for RealBoseDevice {
         Ok(multipoint_outcome(&change))
     }
 
+    async fn select_noise_mode(&self, index: u8) -> DeviceResult<CommandOutcome> {
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        let config = target.config.clone();
+        let option = listed_mode(&config, &self.link_status.read(), index)?;
+        let wanted = Target::Listed {
+            index,
+            name: option.name,
+        };
+        let change = self
+            .with_link(target, move |link| link.change_to(wanted))
+            .await?
+            .map_err(device_error)?;
+        Ok(outcome_for(&change, &config))
+    }
+
     async fn set_paired_connection(
         &self,
         device: &str,
@@ -2051,16 +2303,36 @@ mod tests {
         assert_eq!(target.config.info.codename, "prince");
     }
 
-    /// A Bose model upstream knows but this application has never been run
-    /// against must not be sent anything.
+    /// Any Bose headphone or earbud model Void knows of gets a control link,
+    /// under its own description and name.
     #[test]
-    fn an_untested_bose_model_gets_no_control_link() {
+    fn another_known_bose_model_gets_a_control_link_of_its_own() {
         let obs = Observed {
             product_id: Some(0x4082),
             ..aurora()
         };
-        let why = control_target(&obs).err().unwrap();
-        assert!(why.contains("0x4082"), "{why}");
+        let target = control_target(&obs).expect("QC Ultra Headphones (2nd Gen)");
+        assert_eq!(target.product_id, 0x4082);
+        assert_eq!(target.config.info.name, "QuietComfort Ultra Headphones (2nd Gen)");
+    }
+
+    /// A model it knows but cannot drive, and a product it does not know, get
+    /// none — and are told apart.
+    #[test]
+    fn a_model_that_cannot_be_driven_or_is_not_known_gets_no_control_link() {
+        let qc35 = Observed {
+            product_id: Some(0x4020),
+            ..aurora()
+        };
+        let why = control_target(&qc35).err().unwrap();
+        assert!(why.contains("QuietComfort 35 II"), "{why}");
+
+        let unknown = Observed {
+            product_id: Some(0x1234),
+            ..aurora()
+        };
+        let why = control_target(&unknown).err().unwrap();
+        assert!(why.contains("0x1234"), "{why}");
     }
 
     #[test]
@@ -2363,18 +2635,19 @@ mod tests {
         assert!(rename.evidence.contains("Nova"), "{}", rename.evidence);
     }
 
-    /// Headphones with no multipoint, or a name in some other shape, are not
-    /// switched or renamed, and the reason given is theirs.
+    /// Headphones that say they have no multipoint do not get it shown; a
+    /// name in some other shape is not renamed, and is not called absent.
+    /// Either way the reason given is theirs.
     #[test]
     fn what_the_headphones_would_not_report_is_left_alone() {
         let link = LinkStatus {
-            multipoint_problem: Some("Device error 2: FuncNotSupp".into()),
+            multipoint_problem: Some("Device error 4: FuncNotSupp".into()),
             name_problem: Some("the name reply began with 0x01".into()),
             ..open_link(0)
         };
         let caps = caps(&aurora(), &link);
         let multipoint = caps.get(CapabilityKey::Multipoint);
-        assert_eq!(multipoint.status, CapabilityStatus::Unknown);
+        assert_eq!(multipoint.status, CapabilityStatus::Unsupported);
         assert!(multipoint.evidence.contains("FuncNotSupp"), "{}", multipoint.evidence);
         let rename = caps.get(CapabilityKey::DeviceRename);
         assert_eq!(rename.status, CapabilityStatus::Unknown);
@@ -2432,15 +2705,16 @@ mod tests {
         assert!(cap.evidence.contains("bass +4, mid -2, treble +3"), "{}", cap.evidence);
     }
 
+    /// An equalizer the headphones say they do not have is not shown.
     #[test]
     fn an_equalizer_the_headphones_will_not_report_is_left_alone() {
         let link = LinkStatus {
-            eq_problem: Some("Device error 3: FuncNotSupp".into()),
+            eq_problem: Some("Device error 4: FuncNotSupp".into()),
             ..open_link(0)
         };
         let caps = caps(&aurora(), &link);
         let cap = caps.get(CapabilityKey::Equalizer);
-        assert_eq!(cap.status, CapabilityStatus::Unknown);
+        assert_eq!(cap.status, CapabilityStatus::Unsupported);
         assert!(cap.evidence.contains("FuncNotSupp"), "{}", cap.evidence);
         // Noise control does not depend on it.
         assert_eq!(
@@ -2782,6 +3056,152 @@ mod tests {
         assert!(matches!(err(LinkErrorKind::NoEndpoint), DeviceError::InvalidResponse(_)));
         assert!(matches!(err(LinkErrorKind::UnexpectedFraming), DeviceError::InvalidResponse(_)));
         assert!(matches!(err(LinkErrorKind::Device), DeviceError::Rejected(_)));
+    }
+
+    // --- other models ---------------------------------------------------------
+
+    fn observed_as(product_id: u16) -> Observed {
+        Observed {
+            product_id: Some(product_id),
+            ..aurora()
+        }
+    }
+
+    /// The tested headphones offer what their list says, with the mode they
+    /// are in marked.
+    #[test]
+    fn the_modes_offered_are_the_ones_listed_with_the_current_one_marked() {
+        let link = LinkStatus {
+            slots: slots(6),
+            ..open_link(2)
+        };
+        let modes = noise_modes(&prince(), &link).unwrap();
+        let shown: Vec<(u8, &str, bool, bool, bool)> = modes
+            .iter()
+            .map(|m| (m.index, m.name.as_str(), m.preset, m.adjustable, m.active))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (0, "Quiet", true, false, false),
+                (1, "Aware", true, false, false),
+                (2, "Focus", false, true, true),
+            ]
+        );
+        assert!(noise_modes(&prince(), &LinkStatus::default()).is_none(), "no mode read, no list");
+    }
+
+    #[test]
+    fn a_mode_not_listed_is_refused_before_anything_is_sent() {
+        let link = LinkStatus {
+            slots: slots(6),
+            ..open_link(0)
+        };
+        assert_eq!(listed_mode(&prince(), &link, 2).unwrap().name, "Focus");
+        for index in [3, 4, 9] {
+            let err = listed_mode(&prince(), &link, index).unwrap_err();
+            assert!(matches!(err, DeviceError::InvalidInput(_)), "{index}: {err:?}");
+        }
+        let ultra = control::config_for_product(0x4082).unwrap();
+        assert_eq!(listed_mode(&ultra, &open_link(0), 3).unwrap().name, "Cinema");
+    }
+
+    #[test]
+    fn the_model_is_named_and_placed_from_the_catalogue() {
+        let tested = model_state(&aurora()).unwrap();
+        assert_eq!(tested.name, "QuietComfort Headphones");
+        assert_eq!(tested.category, control::models::Category::Headphones);
+        assert_eq!(tested.support, control::models::Support::Tested);
+
+        let earbuds = model_state(&observed_as(0x4062)).unwrap();
+        assert_eq!(earbuds.name, "QuietComfort Ultra Earbuds (2nd Gen)");
+        assert_eq!(earbuds.category, control::models::Category::Earbuds);
+        assert_eq!(earbuds.support, control::models::Support::Documented);
+
+        assert!(model_state(&observed_as(0x4085)).is_none(), "a speaker");
+        assert!(model_state(&observed_as(0x1234)).is_none());
+    }
+
+    /// A QC Ultra has a custom mode's level that can be written; a QC45 does
+    /// not have one described, and it is not shown.
+    #[test]
+    fn a_custom_level_is_shown_only_where_it_can_be_written() {
+        let ultra = caps(&observed_as(0x4082), &open_link(0));
+        assert_ne!(
+            ultra.get(CapabilityKey::CustomNoiseControl).status,
+            CapabilityStatus::Unsupported
+        );
+        let qc45 = caps(&observed_as(0x4039), &open_link(0));
+        let cap = qc45.get(CapabilityKey::CustomNoiseControl);
+        assert_eq!(cap.status, CapabilityStatus::Unsupported);
+        assert!(cap.evidence.contains("QuietComfort 45"), "{}", cap.evidence);
+    }
+
+    /// A model known only by the catalogue: its modes are switched from its
+    /// own list, verified by any switch it confirms, and nothing written into
+    /// a mode is offered.
+    #[test]
+    fn a_recognized_model_is_driven_by_its_own_list() {
+        let ultra_gen1 = observed_as(0x4066);
+        let caps_now = caps(&ultra_gen1, &open_link(0));
+        assert_eq!(caps_now.get(CapabilityKey::NoiseControl).status, CapabilityStatus::Ready);
+        assert_eq!(
+            caps_now.get(CapabilityKey::CustomNoiseControl).status,
+            CapabilityStatus::Unsupported
+        );
+
+        let switched = LinkStatus {
+            to_mode: transition(0, 2, "2026-10-16T08:00:00Z"),
+            ..open_link(2)
+        };
+        let cap = caps(&ultra_gen1, &switched);
+        let noise = cap.get(CapabilityKey::NoiseControl);
+        assert_eq!(noise.status, CapabilityStatus::Verified);
+        assert!(noise.evidence.contains("2026-10-16T08:00:00Z"), "{}", noise.evidence);
+    }
+
+    /// A model Void knows and cannot drive shows none of the controls; one
+    /// whose product id is not known has them left undecided.
+    #[test]
+    fn a_model_that_cannot_be_driven_shows_no_controls() {
+        let qc35 = caps(&observed_as(0x4020), &open_link(0));
+        for key in CONTROL_KEYS {
+            let cap = qc35.get(key);
+            assert_eq!(cap.status, CapabilityStatus::Unsupported, "{key:?}");
+            assert!(cap.evidence.contains("QuietComfort 35 II"), "{}", cap.evidence);
+        }
+        let unknown = caps(&observed_as(0x1234), &open_link(0));
+        assert_eq!(unknown.get(CapabilityKey::NoiseControl).status, CapabilityStatus::Unknown);
+    }
+
+    /// A preset other than Quiet and Aware goes by its own name, whether or
+    /// not the list has been read.
+    #[test]
+    fn a_qc_ultra_preset_is_named_as_itself() {
+        let ultra = control::config_for_product(0x4082).unwrap();
+        let state = noise_state(&ultra, &confirmed(2).unwrap(), None);
+        assert_eq!(state.mode, NoiseControlMode::Custom);
+        assert_eq!(state.label.as_deref(), Some("Immersion"));
+        assert_eq!(state.level, None);
+        let quiet = noise_state(&ultra, &confirmed(0).unwrap(), None);
+        assert_eq!((quiet.mode, quiet.label), (NoiseControlMode::Quiet, None));
+    }
+
+    /// A model with no equalizer in its description does not get one shown.
+    #[test]
+    fn an_equalizer_the_model_has_none_of_is_not_shown() {
+        let earbuds = caps(&observed_as(0x402F), &open_link(0));
+        let config = control::config_for_product(0x402F).unwrap();
+        if config.eq.is_none() {
+            assert_eq!(earbuds.get(CapabilityKey::Equalizer).status, CapabilityStatus::Unsupported);
+        } else {
+            assert_ne!(earbuds.get(CapabilityKey::Equalizer).status, CapabilityStatus::Unsupported);
+        }
+        // The tested headphones' is.
+        assert_ne!(
+            caps(&aurora(), &open_link(0)).get(CapabilityKey::Equalizer).status,
+            CapabilityStatus::Unsupported
+        );
     }
 
     // --- the backend as a whole, without hardware ---------------------------
@@ -3539,6 +3959,82 @@ mod hardware_tests {
     /// A device that is not there must be reported as not there. No mode is
     /// shown for it, a request to change mode fails without a connection
     /// being attempted, and nothing is transmitted.
+    /// Changes the mode and puts it back. The model is named from the
+    /// catalogue, the modes are the headphones' own list with the current one
+    /// marked, and a switch by slot — the path every model's modes go
+    /// through — is confirmed by read-back both ways.
+    #[tokio::test]
+    #[ignore = "requires the physical headphones; CHANGES the mode and puts it back"]
+    async fn hw_b12_switches_by_slot_from_the_listed_modes() {
+        let dev = RealBoseDevice::default();
+        let snap = connected_snapshot(&dev).await;
+        let model = snap.model.clone().expect("the model is named");
+        println!("
+  model: {} ({:?}, {:?})", model.name, model.category, model.support);
+        assert_eq!(model.name, "QuietComfort Headphones");
+        assert_eq!(model.support, control::models::Support::Tested);
+
+        let modes = snap.noise_modes.clone().expect("the modes are listed");
+        for m in &modes {
+            println!(
+                "    [{}] {:<12} preset={} adjustable={} active={}",
+                m.index, m.name, m.preset, m.adjustable, m.active
+            );
+        }
+        let initial = modes.iter().find(|m| m.active).expect("one mode is marked").index;
+        assert_eq!(modes.iter().filter(|m| m.active).count(), 1);
+        print_wire(&dev);
+
+        let away = if initial == 1 { 0 } else { 1 };
+        for (step, target) in [away, initial].into_iter().enumerate() {
+            println!("
+  step {}: select slot {target}", step + 1);
+            let outcome = dev.select_noise_mode(target).await;
+            println!("    outcome: {outcome:?}");
+            let wire = print_wire(&dev);
+            let outcome = outcome.expect("the request failed outright");
+            assert!(outcome.is_confirmed(), "slot {target} not confirmed: {outcome:?}");
+            assert!(
+                !wire.iter().any(|l| is_tx(l) && is_slot_write(l)),
+                "a switch writes no mode configuration"
+            );
+            let snap = connected_snapshot(&dev).await;
+            let now = snap.noise_modes.expect("listed").into_iter().find(|m| m.active);
+            println!("    headphones now report slot {:?}", now.as_ref().map(|m| m.index));
+            assert_eq!(now.map(|m| m.index), Some(target));
+        }
+
+        // A slot the headphones do not list is refused before anything is sent.
+        let err = dev.select_noise_mode(9).await.unwrap_err();
+        assert!(matches!(err, DeviceError::InvalidInput(_)), "{err:?}");
+        assert!(print_wire(&dev).iter().all(|l| !is_tx(l) || is_read(l)));
+    }
+
+    /// Read-only, and nothing over Bluetooth: the paired list names the
+    /// headphones by their own name and identifies their model.
+    #[test]
+    #[ignore = "requires the physical headphones to be paired"]
+    fn hw_b13_the_paired_list_identifies_the_model() {
+        let listed = super::super::choice::choices(super::super::choice::paired(), None);
+        for d in &listed {
+            println!(
+                "  {:<24} connected={:<5} model={:?}",
+                d.name,
+                d.connected,
+                d.model.as_ref().map(|m| (&m.name, m.category, m.support))
+            );
+        }
+        let ours = listed
+            .iter()
+            .find(|d| d.model.as_ref().is_some_and(|m| m.name == "QuietComfort Headphones"))
+            .expect("the QuietComfort Headphones are listed with their model");
+        assert_eq!(ours.model.as_ref().unwrap().category, control::models::Category::Headphones);
+        assert!(crate::device::state::is_paired_device_id(&ours.id));
+        let seen = super::super::choice::sighting_for(super::super::choice::paired(), &ours.id)
+            .expect("chosen by the id it was listed under");
+        assert_eq!(seen.name, ours.name);
+    }
+
     #[tokio::test]
     #[ignore = "requires the headphones to be paired but NOT connected"]
     async fn hw_c1_disconnected_headphones_are_reported_as_such() {
@@ -3582,6 +4078,7 @@ mod battery_tests {
 
     fn reported(percent: u8) -> BatteryReport {
         BatteryReport {
+            parts: Vec::new(),
             percent,
             at: "2026-10-11T16:40:00Z".to_string(),
         }

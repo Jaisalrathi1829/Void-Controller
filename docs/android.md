@@ -132,7 +132,7 @@ A widget for the home screen with the three noise modes — **Quiet**,
 **Aware**, and the custom mode under the headphones' own name for it
 ("Focus") — and under them the equalizer: bass, mid and treble, each with the
 level the headphones report and a step down and a step up. Long-press an
-empty part of the home screen → **Widgets** → **Bose QC Control Center** →
+empty part of the home screen → **Widgets** → **Void** →
 **Modes and equalizer**.
 
 It is four cells wide and two tall to begin with. Made one cell tall it is

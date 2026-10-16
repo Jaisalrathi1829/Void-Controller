@@ -89,7 +89,7 @@ export function TrayMenu({
       </div>
 
       <div className="border-t border-border p-1.5">
-        <Action icon={Settings} label="Open Control Center" onClick={onOpen} />
+        <Action icon={Settings} label="Open Void" onClick={onOpen} />
         <Action icon={RefreshCw} label="Reconnect" onClick={reconnect} />
         <Action icon={Power} label="Disconnect" onClick={disconnect} danger />
       </div>

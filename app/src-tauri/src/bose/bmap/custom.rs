@@ -39,50 +39,134 @@ pub fn flip_level(level: u8) -> u8 {
     MAX_RAW_LEVEL - level.min(MAX_RAW_LEVEL)
 }
 
-/// Where a mode configuration's fields sit: in the STATUS a device sends, and
-/// in the SETGET payload it accepts.
+/// Where a mode configuration's fields sit in the STATUS a device sends.
 ///
-/// Upstream's parser and builder encode these offsets but do not export them,
-/// and the guard on writes needs them. They are transcribed from upstream's
-/// notes for the model and were checked against the test unit before any
-/// write was implemented.
+/// Upstream's parsers and builders encode these offsets but do not export
+/// them, and the guard on writes needs them. They are transcribed from
+/// upstream's notes for each layout; the QuietComfort Headphones' were checked
+/// against the test unit before any write was implemented.
 struct Layout {
     status_len: usize,
-    setget_len: usize,
     status_name: Range<usize>,
+    /// Where the level sits, for a layout in which it is understood.
+    status_level: Option<usize>,
+    /// How a write is laid out — only for a layout whose writes have been
+    /// checked on the model, here or by upstream. Without one, the modes are
+    /// read and switched between, and nothing in them is changed.
+    write: Option<WriteLayout>,
+}
+
+/// Where a mode configuration's fields sit in a SETGET, and in the STATUS
+/// beside it, for the guard that lets a write change the level and nothing
+/// else.
+struct WriteLayout {
+    setget_len: usize,
     setget_name: Range<usize>,
-    status_level: usize,
     setget_level: usize,
-    status_auto: usize,
-    setget_auto: usize,
-    status_spatial: usize,
-    setget_spatial: usize,
-    status_wind: usize,
-    setget_wind: usize,
+    /// `(STATUS, SETGET)` offsets of every other setting a write carries.
+    auto: (usize, usize),
+    spatial: (usize, usize),
+    wind: (usize, usize),
+    anc: Option<(usize, usize)>,
 }
 
 /// QuietComfort Headphones ("prince"): 47-byte STATUS, 39-byte SETGET.
+/// Checked on the test unit.
 const PRINCE: Layout = Layout {
     status_len: 47,
-    setget_len: 39,
     status_name: 6..38,
-    setget_name: 3..35,
-    status_level: 42,
-    setget_level: 35,
-    status_auto: 43,
-    setget_auto: 36,
-    status_spatial: 44,
-    setget_spatial: 37,
-    status_wind: 46,
-    setget_wind: 38,
+    status_level: Some(42),
+    write: Some(WriteLayout {
+        setget_len: 39,
+        setget_name: 3..35,
+        setget_level: 35,
+        auto: (43, 36),
+        spatial: (44, 37),
+        wind: (46, 38),
+        anc: None,
+    }),
 };
 
-/// The layout for a model, if it is one whose layout has been checked here.
+/// The same STATUS, read only: QuietComfort 45 ("duran"), whose layout
+/// upstream inferred from the QuietComfort Headphones' and never checked on
+/// the model itself.
+const PRINCE_READ: Layout = Layout {
+    status_len: 47,
+    status_name: 6..38,
+    status_level: Some(42),
+    write: None,
+};
+
+/// QuietComfort Ultra, second generation ("wolverine", and the earbuds
+/// "edith"): 48-byte STATUS, 40-byte SETGET with an ANC switch at the end.
+/// Checked by upstream on the model; not here.
+const ULTRA2: Layout = Layout {
+    status_len: 48,
+    status_name: 6..38,
+    status_level: Some(42),
+    write: Some(WriteLayout {
+        setget_len: 40,
+        setget_name: 3..35,
+        setget_level: 35,
+        auto: (43, 36),
+        spatial: (44, 37),
+        wind: (45, 38),
+        anc: Some((47, 39)),
+    }),
+};
+
+/// The same STATUS, read only: Ultra Open Earbuds ("serena"), whose writes
+/// upstream has not described.
+const ULTRA2_READ: Layout = Layout {
+    status_len: 48,
+    status_name: 6..38,
+    status_level: Some(42),
+    write: None,
+};
+
+/// QuietComfort Earbuds ("lando"): 44-byte STATUS with the name and flags
+/// understood and the rest not. Read only; upstream found writes refused.
+const LANDO: Layout = Layout {
+    status_len: 44,
+    status_name: 6..38,
+    status_level: None,
+    write: None,
+};
+
+/// The layout for a model, if it is one whose layout is described.
 fn layout_for(config: &DeviceConfig) -> Option<&'static Layout> {
     match config.info.codename {
         "prince" => Some(&PRINCE),
+        "duran" => Some(&PRINCE_READ),
+        "wolverine" | "edith" => Some(&ULTRA2),
+        // The QuietComfort Headphones (2nd Gen): upstream gives them the QC
+        // Ultra (2nd Gen)'s description and marks that as unconfirmed. Read
+        // in that layout; nothing written with it.
+        "serena" | "unconfirmed" => Some(&ULTRA2_READ),
+        "lando" => Some(&LANDO),
         _ => None,
     }
+}
+
+/// For a model with no description: the read-only layout whose length the
+/// device's own reply has. It decides where the name is read from, and
+/// nothing is ever written with it.
+fn layout_by_length(len: usize) -> Option<&'static Layout> {
+    match len {
+        47 => Some(&PRINCE_READ),
+        48 => Some(&ULTRA2_READ),
+        44 => Some(&LANDO),
+        _ => None,
+    }
+}
+
+/// Whether a custom mode's level can be changed on this model: a layout whose
+/// writes have been checked, upstream's builder for it, and slots that are
+/// editable.
+pub fn can_adjust(config: &DeviceConfig) -> bool {
+    layout_for(config).is_some_and(|l| l.write.is_some())
+        && config.build_mode_config.is_some()
+        && !config.editable_slots.is_empty()
 }
 
 fn unsupported_model(config: &DeviceConfig) -> BmapError {
@@ -101,7 +185,11 @@ pub struct Slot {
     pub raw_level: u8,
     pub wind_block: bool,
     pub editable: bool,
+    /// The device says the slot holds a mode, rather than being free.
+    pub configured: bool,
     pub spatial: u8,
+    /// The ANC switch some layouts carry in a mode.
+    pub anc_toggle: bool,
     pub prompt: (u8, u8),
     /// The STATUS payload this was parsed from, kept so a write can be
     /// checked against exactly what the device said.
@@ -141,7 +229,12 @@ pub fn usable_slots<'a>(config: &DeviceConfig, slots: &'a [Slot]) -> Vec<&'a Slo
 /// fields out of it by offset would be guessing.
 pub fn read_slots<T: Transport>(conn: &BmapConnection<T>) -> BmapResult<Vec<Slot>> {
     let config = conn.config();
-    let layout = layout_for(config).ok_or_else(|| unsupported_model(config))?;
+    // A model with no described layout has its mode list read with the one
+    // whose length the device answers with — see `layout_by_length`.
+    let mut layout = layout_for(config);
+    if layout.is_none() && !super::models::is_generic(config) {
+        return Err(unsupported_model(config));
+    }
     let (Some(list), Some(mode_config), Some(parser)) = (
         config.get_all_modes,
         config.mode_config,
@@ -163,6 +256,21 @@ pub fn read_slots<T: Transport>(conn: &BmapConnection<T>) -> BmapResult<Vec<Slot
         if !from_config || reply.op != Operator::Status {
             continue;
         }
+        let layout = match layout {
+            Some(layout) => layout,
+            None => {
+                let found = layout_by_length(reply.payload.len()).ok_or_else(|| BmapError::Device {
+                    message: format!(
+                        "a mode configuration carried {} bytes, which is no layout described for \
+                         any model",
+                        reply.payload.len()
+                    ),
+                    code: 0,
+                })?;
+                layout = Some(found);
+                found
+            }
+        };
         if reply.payload.len() != layout.status_len {
             return Err(BmapError::Device {
                 message: format!(
@@ -180,7 +288,10 @@ pub fn read_slots<T: Transport>(conn: &BmapConnection<T>) -> BmapResult<Vec<Slot
         // The layout table above and upstream's parser must agree on where
         // the level lives. If an update to either ever moved it, the guard on
         // writes would be comparing the wrong bytes — so stop here instead.
-        if reply.payload[layout.status_level] != parsed.cnc_level {
+        if layout
+            .status_level
+            .is_some_and(|at| reply.payload[at] != parsed.cnc_level)
+        {
             return Err(BmapError::Device {
                 message: "the mode-configuration layout does not match the parser".into(),
                 code: 0,
@@ -192,7 +303,9 @@ pub fn read_slots<T: Transport>(conn: &BmapConnection<T>) -> BmapResult<Vec<Slot
             raw_level: parsed.cnc_level,
             wind_block: parsed.wind_block,
             editable: parsed.editable,
+            configured: parsed.configured,
             spatial: parsed.spatial,
+            anc_toggle: parsed.anc_toggle,
             prompt: (parsed.prompt_b1, parsed.prompt_b2),
             raw: reply.payload.clone(),
         });
@@ -244,35 +357,40 @@ impl LevelChange {
 /// Checks that `payload` would change nothing on the device but the level.
 fn check_minimal_edit(
     layout: &Layout,
+    write: &WriteLayout,
     slot: &Slot,
     payload: &[u8],
     requested_raw: u8,
 ) -> Result<(), String> {
     let held = &slot.raw;
-    if held.len() != layout.status_len || payload.len() != layout.setget_len {
+    if held.len() != layout.status_len || payload.len() != write.setget_len {
         return Err("the configuration is not the documented size".into());
     }
     if payload[0] != held[0] || payload[1..3] != held[1..3] {
         return Err("the mode index or voice prompt would change".into());
     }
-    if payload[layout.setget_name.clone()] != held[layout.status_name.clone()] {
+    if payload[write.setget_name.clone()] != held[layout.status_name.clone()] {
         return Err(format!(
             "the name {:?} cannot be written back byte for byte",
             slot.name
         ));
     }
-    if payload[layout.setget_auto] != held[layout.status_auto] {
+    let same = |(status, setget): (usize, usize)| payload[setget] == held[status];
+    if !same(write.auto) {
         return Err(
             "the mode uses automatic noise cancellation, which would be switched off".into(),
         );
     }
-    if payload[layout.setget_spatial] != held[layout.status_spatial] {
+    if !same(write.spatial) {
         return Err("the spatial-audio setting would change".into());
     }
-    if payload[layout.setget_wind] != held[layout.status_wind] {
+    if !same(write.wind) {
         return Err("the wind-block setting would change".into());
     }
-    if payload[layout.setget_level] != requested_raw {
+    if write.anc.is_some_and(|anc| !same(anc)) {
+        return Err("the mode's noise-cancellation switch would change".into());
+    }
+    if payload[write.setget_level] != requested_raw {
         return Err("the level was not encoded where it is documented".into());
     }
     Ok(())
@@ -324,6 +442,7 @@ pub fn set_level<T: Transport>(
     }
     let config = conn.config();
     let layout = layout_for(config).ok_or_else(|| unsupported_model(config))?;
+    let write = layout.write.as_ref().ok_or_else(|| unsupported_model(config))?;
     let (Some(mode_config), Some(builder)) = (config.mode_config, config.build_mode_config) else {
         return Err(unsupported_model(config));
     };
@@ -382,11 +501,11 @@ pub fn set_level<T: Transport>(
         requested_raw,
         slot.spatial,
         slot.wind_block,
-        false,
+        slot.anc_toggle,
         slot.prompt.0,
         slot.prompt.1,
     );
-    check_minimal_edit(layout, &slot, &payload, requested_raw).map_err(|why| {
+    check_minimal_edit(layout, write, &slot, &payload, requested_raw).map_err(|why| {
         BmapError::Unsupported(format!(
             "the level of {:?} was not changed, because writing it would alter more than the \
              level: {why}",
@@ -556,10 +675,46 @@ pub(crate) mod testing {
             raw_level,
             wind_block: false,
             editable,
+            configured: editable && !name.is_empty(),
             spatial: 0,
+            anc_toggle: false,
             prompt: (0, if editable { 0x0D } else { index + 1 }),
             raw: status_payload(index, name, raw_level, editable),
         }
+    }
+
+    /// A 48-byte mode configuration STATUS payload in the QC Ultra (2nd
+    /// generation) layout.
+    pub fn ultra_payload(index: u8, name: &str, raw_level: u8, editable: bool, anc: bool) -> Vec<u8> {
+        let configured = !editable || !name.is_empty();
+        let mut p = vec![0u8; 48];
+        p[0] = index;
+        p[2] = if editable { 0x0D } else { index + 1 };
+        p[3] = editable as u8;
+        p[4] = configured as u8;
+        p[5] = 1;
+        p[6..6 + name.len()].copy_from_slice(name.as_bytes());
+        p[42] = raw_level;
+        p[47] = anc as u8;
+        p
+    }
+
+    /// A mode list in that layout: four presets and two custom slots.
+    pub fn ultra_mode_list(custom_name: &str, custom_raw: u8) -> Vec<u8> {
+        let frame = |payload: Vec<u8>| {
+            let mut f = vec![0x1F, 0x06, 0x03, payload.len() as u8];
+            f.extend(payload);
+            f
+        };
+        let mut burst = vec![0x1F, 0x01, 0x07, 0x00];
+        burst.extend(frame(ultra_payload(0, "Quiet", 0, false, true)));
+        burst.extend(frame(ultra_payload(1, "Aware", 10, false, false)));
+        burst.extend(frame(ultra_payload(2, "Immersion", 0, false, true)));
+        burst.extend(frame(ultra_payload(3, "Cinema", 0, false, true)));
+        burst.extend(frame(ultra_payload(4, custom_name, custom_raw, true, true)));
+        burst.extend(frame(ultra_payload(5, "", 0, true, false)));
+        burst.extend([0x1F, 0x01, 0x06, 0x00]);
+        burst
     }
 }
 
@@ -746,15 +901,97 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Models whose layout has not been checked here get nothing read by
-    /// offset, whatever upstream's parser would accept.
+    // --- other models' layouts -------------------------------------------------
+
+    fn ultra_list(name: &str, raw: u8) -> BmapResult<Vec<u8>> {
+        Ok(ultra_mode_list(name, raw))
+    }
+
+    /// The QC Ultra layout: four presets and the custom slots, each read with
+    /// its own offsets.
     #[test]
-    fn an_unchecked_model_is_unsupported() {
-        let (result, frames) = run_on(devices::qc_ultra2(), vec![list("Focus", 6)], |c| {
-            read_slots(c)
+    fn the_qc_ultra_layout_is_read_with_its_own_offsets() {
+        let (slots, _) = run_on(devices::qc_ultra2(), vec![ultra_list("Commute", 4)], |c| {
+            read_slots(c).unwrap()
+        });
+        let names: Vec<&str> = slots.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Quiet", "Aware", "Immersion", "Cinema", "Commute", ""]);
+        let commute = &slots[4];
+        assert!(commute.editable && commute.configured && commute.anc_toggle);
+        assert_eq!(commute.raw_level, 4);
+        assert!(!slots[2].editable, "a preset");
+    }
+
+    /// One model's layout is not read as another's.
+    #[test]
+    fn a_reply_in_another_models_layout_is_refused() {
+        let (result, _) = run_on(devices::qc_ultra2(), vec![list("Focus", 6)], |c| read_slots(c));
+        assert!(result.is_err(), "47-byte configurations from a 48-byte model");
+        let (result, _) = run(vec![ultra_list("Commute", 4)], |c| read_slots(c));
+        assert!(result.is_err(), "48-byte configurations from a 47-byte model");
+    }
+
+    /// A described model with no layout here gets nothing read by offset.
+    #[test]
+    fn a_model_with_no_layout_here_is_unsupported() {
+        let mut config = devices::qc_prince();
+        config.info.codename = "somebody-else";
+        let (result, frames) = run_on(config, vec![list("Focus", 6)], |c| read_slots(c));
+        assert!(matches!(result.unwrap_err(), BmapError::Unsupported(_)));
+        assert!(frames.is_empty(), "nothing is even asked");
+    }
+
+    /// A recognized model with nothing described is read in whichever layout
+    /// its reply has the length of — and only for reading.
+    #[test]
+    fn a_recognized_model_is_read_in_the_layout_its_reply_has() {
+        let generic = || super::super::models::generic_config("Some Bose model", "unknown");
+        let (slots, _) = run_on(generic(), vec![list("Focus", 6)], |c| read_slots(c).unwrap());
+        assert_eq!(slots[2].name, "Focus");
+        let (slots, _) = run_on(generic(), vec![ultra_list("Commute", 4)], |c| read_slots(c).unwrap());
+        assert_eq!(slots[4].name, "Commute");
+        assert!(!can_adjust(&generic()), "nothing written into a mode of an undescribed model");
+    }
+
+    #[test]
+    fn only_layouts_checked_on_the_model_can_be_written() {
+        assert!(can_adjust(&devices::qc_prince()), "checked here");
+        assert!(can_adjust(&devices::qc_ultra2()), "checked by upstream");
+        assert!(can_adjust(&devices::qc_ultra2_earbuds()));
+        assert!(!can_adjust(&devices::qc45()), "upstream inferred it and never checked it");
+        let qc2 = super::super::models::config_for(0x4083).unwrap();
+        assert!(!can_adjust(&qc2), "another model's description, unconfirmed");
+        assert!(can_adjust(&super::super::models::config_for(0x4082).unwrap()));
+        assert!(!can_adjust(&devices::ultra_open()));
+        assert!(!can_adjust(&devices::qc_earbuds()));
+    }
+
+    /// A QC Ultra write carries every other setting of the mode back as it
+    /// was — the ANC switch included, which the older layout does not have.
+    #[test]
+    fn a_qc_ultra_level_write_changes_the_level_and_nothing_else() {
+        let ack = Ok(vec![0x1F, 0x06, 0x03, 0x01, 0x04]);
+        let (change, frames) = run_on(
+            devices::qc_ultra2(),
+            vec![mode(4), ultra_list("Commute", 4), ack, ultra_list("Commute", 7)],
+            |c| set_level(c, 4, 7, VerifyPolicy::instant(3)).unwrap(),
+        );
+        assert_eq!(change.verdict, Verdict::Verified);
+        let write = frames.iter().find(|f| is_write(f)).expect("one write");
+        let payload = &write[4..];
+        assert_eq!(payload.len(), 40);
+        assert_eq!(payload[35], 7, "the level");
+        assert_eq!(payload[39], 1, "the ANC switch, as the mode had it");
+        assert_eq!(&payload[3..10], b"Commute");
+    }
+
+    #[test]
+    fn a_model_whose_writes_are_not_described_is_not_written() {
+        let (result, frames) = run_on(devices::qc45(), vec![mode(2), list("Focus", 6)], |c| {
+            set_level(c, 2, 3, VerifyPolicy::instant(3))
         });
         assert!(matches!(result.unwrap_err(), BmapError::Unsupported(_)));
-        assert!(frames.is_empty(), "nothing is even asked of an unchecked model");
+        assert!(!frames.iter().any(|f| is_write(f)));
     }
 
     // --- changing the level -------------------------------------------------

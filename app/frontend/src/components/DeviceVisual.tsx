@@ -79,6 +79,49 @@ function HeadphoneMark({ active }: { active: boolean }) {
   );
 }
 
+/** A pair of earbuds, drawn the same way: generic, not any one product. */
+function EarbudsMark({ active }: { active: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 200 200"
+      className={cn("size-full transition-opacity duration-700", !active && "opacity-60")}
+      role="img"
+      aria-label="Earbuds"
+    >
+      <defs>
+        <linearGradient id="dv-bud" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--chart-4)" stopOpacity="0.95" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.75" />
+        </linearGradient>
+      </defs>
+      {[
+        { x: 60, turn: -18, tip: 22 },
+        { x: 140, turn: 18, tip: -22 },
+      ].map(({ x, turn, tip }) => (
+        <g key={x} transform={`rotate(${turn} ${x} 110)`}>
+          {/* ear tip */}
+          <ellipse cx={x + tip} cy="72" rx="17" ry="13" fill="url(#dv-bud)" fillOpacity="0.7" />
+          {/* body */}
+          <ellipse cx={x} cy="112" rx="35" ry="42" fill="url(#dv-bud)" />
+          <ellipse cx={x} cy="121" rx="22" ry="26" fill="black" fillOpacity="0.2" />
+          <ellipse cx={x - 8} cy="92" rx="14" ry="10" fill="white" fillOpacity="0.16" />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/** Headphones or earbuds, whichever the device is. */
+export function DeviceMark({
+  kind = "headphones",
+  active = true,
+}: {
+  kind?: "headphones" | "earbuds";
+  active?: boolean;
+}) {
+  return kind === "earbuds" ? <EarbudsMark active={active} /> : <HeadphoneMark active={active} />;
+}
+
 /** The arc of light that travels round the ring: dark, then warm, then white. */
 const ARC =
   "conic-gradient(from 0deg, transparent 0deg, transparent 250deg, rgba(255,138,76,0.55) 320deg, #ffffff 355deg, rgba(180,120,255,0.55) 360deg)";
@@ -112,10 +155,13 @@ function rim(width: number, soft = false): CSSProperties {
 export function DeviceVisual({
   size = 320,
   active = true,
+  kind = "headphones",
   className,
 }: {
   size?: number;
   active?: boolean;
+  /** What is drawn in the middle. */
+  kind?: "headphones" | "earbuds";
   className?: string;
 }) {
   const ring = size * 0.8; // picture diameter
@@ -211,7 +257,7 @@ export function DeviceVisual({
       >
         <div className="absolute inset-0 rounded-full bg-gradient-to-br from-surface-2 to-card" />
         <div className="absolute inset-0 p-[14%]">
-          <HeadphoneMark active={active} />
+          <DeviceMark kind={kind} active={active} />
         </div>
         {/* subtle inner sheen */}
         <div className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-tr from-transparent via-transparent to-white/15" />

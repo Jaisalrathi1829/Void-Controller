@@ -1,13 +1,7 @@
-import { Info, TriangleAlert, Waves, Wind } from "lucide-react";
-import {
-  CapabilityBadge,
-  Panel,
-  Range,
-  SectionLabel,
-  SegmentedControl,
-  Toggle,
-} from "../primitives";
-import { useApp, type NoiseMode, capabilityMeta, isUnavailable } from "../../store";
+import { Info, TriangleAlert } from "lucide-react";
+import { CapabilityBadge, Panel, Range, SectionLabel, Toggle } from "../primitives";
+import { NoiseModePicker, describeMode, isSwitchingMode } from "../NoiseModes";
+import { useApp, type NoiseMode, capabilityMeta, isShown, isUnavailable } from "../../store";
 
 const descriptions: Record<NoiseMode, string> = {
   quiet: "Maximum noise cancellation for focus and quiet environments.",
@@ -25,7 +19,6 @@ function clockTime(iso: string | null): string | null {
 export function NoisePage() {
   const {
     noise,
-    setNoise,
     noiseReadAt,
     noiseLabel,
     deviceNotice,
@@ -37,40 +30,29 @@ export function NoisePage() {
     snapshot,
     simulated,
     busy,
+    noiseModes,
   } = useApp();
   const cap = capabilities.noiseControl;
   const customCap = capabilities.customAnc;
   const disabled = isUnavailable(cap);
   const customUnavailable = isUnavailable(customCap);
-  const switching = busy === "setNoiseControlMode" || busy === "setNoiseControl";
+  const switching = isSwitchingMode(busy);
   const adjusting = busy === "setNoiseControlLevel";
+  // The mode the device listed itself as in, where it has given its list.
+  const activeMode = noiseModes?.find((m) => m.active) ?? null;
 
   // Why each capability is in its current state, in the backend's own words.
   const evidence = snapshot?.capabilities.noiseControl.evidence;
   const customEvidence = snapshot?.capabilities.customNoiseControl.evidence;
 
-  const noiseOptions: {
-    value: NoiseMode;
-    label: string;
-    icon: React.ReactNode;
-    disabled?: boolean;
-    hint?: string;
-  }[] = [
-    { value: "quiet", label: "Quiet", icon: <Waves className="size-4" /> },
-    { value: "aware", label: "Aware", icon: <Info className="size-4" /> },
-    {
-      value: "custom",
-      label: "Custom",
-      icon: <Wind className="size-4" />,
-      // The headphones can be *in* a custom mode even when one cannot be
-      // requested from here, and that is still shown as active.
-      disabled: customUnavailable,
-      hint: customEvidence ?? "Custom modes cannot be set from here.",
-    },
-  ];
-
   const readAt = clockTime(noiseReadAt);
-  const inCustom = noise === "custom" && !disabled;
+  // The level is shown for a mode whose level can be changed from here: one
+  // the device's list marks so, or without a list, a custom mode. A built-in
+  // mode such as Immersion has no level to show.
+  const inCustom =
+    !disabled &&
+    isShown(customCap) &&
+    (activeMode ? activeMode.adjustable : noise === "custom");
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -80,20 +62,19 @@ export function NoisePage() {
           <CapabilityBadge cap={cap} />
         </div>
 
-        <SegmentedControl
-          options={noiseOptions}
-          value={noise}
-          onChange={setNoise}
-          disabled={disabled || switching || adjusting}
-          className="w-full [&>button]:flex-1"
+        <NoiseModePicker
+          icons
+          customHint={customEvidence ?? "Custom modes cannot be set from here."}
         />
 
         <p className="mt-3 text-sm text-muted-foreground">
           {disabled
             ? capabilityMeta[cap].note
-            : noise
-              ? descriptions[noise]
-              : "The device has not reported its current mode, so none is shown as active."}
+            : activeMode
+              ? describeMode(activeMode)
+              : noise
+                ? descriptions[noise]
+                : "The device has not reported its current mode, so none is shown as active."}
         </p>
 
         {!disabled && noise && readAt && !simulated && (
@@ -125,7 +106,7 @@ export function NoisePage() {
           </div>
         )}
 
-        {!disabled && customUnavailable && customEvidence && (
+        {!disabled && customUnavailable && isShown(customCap) && customEvidence && (
           <p className="mt-3 text-xs text-muted-foreground" data-testid="custom-unavailable">
             Custom: {customEvidence}
           </p>

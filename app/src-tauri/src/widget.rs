@@ -136,7 +136,7 @@ fn build(app: &AppHandle) -> Result<(), String> {
     let settings = state.settings().get();
 
     let window = WebviewWindowBuilder::new(app, WIDGET_WINDOW, WebviewUrl::App("index.html".into()))
-        .title("Bose QC Control Center — widget")
+        .title("Void — widget")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .maximizable(false)

@@ -21,7 +21,7 @@ use crate::device::command::CommandOutcome;
 use crate::device::state::{
     BatteryReading, BatterySource, ConnectionState, DeviceIdentity, DeviceSnapshot, DeviceSource,
     check_device_name, EqSettings, EqState, MultipointState, NoiseControlMode,
-    NoiseControlState, PairedDeviceState, StateSource, Transport,
+    NoiseControlState, NoiseModeOption, PairedDeviceState, StateSource, Transport,
 };
 use crate::device::traits::BoseDevice;
 use crate::device::{now_rfc3339, DeviceError, DeviceResult};
@@ -238,6 +238,7 @@ impl BoseDevice for MockBoseDevice {
             identity: connected.then(|| self.identity()),
             capabilities: self.capabilities().await,
             battery: connected.then(|| BatteryReading {
+                parts: Vec::new(),
                 percent: battery,
                 source: BatterySource::Simulated,
                 charging: Some(charging),
@@ -254,6 +255,26 @@ impl BoseDevice for MockBoseDevice {
                 settings: eq,
                 source: StateSource::Simulated,
                 read_at: now.clone(),
+            }),
+            // The simulated headphones are no model in the catalogue.
+            model: None,
+            // The simulated headphones' three modes, under the names the
+            // interface shows for them.
+            noise_modes: connected.then(|| {
+                [
+                    (0, "Quiet", NoiseControlMode::Quiet),
+                    (1, "Aware", NoiseControlMode::Aware),
+                    (2, "Custom", NoiseControlMode::Custom),
+                ]
+                .into_iter()
+                .map(|(index, name, mode)| NoiseModeOption {
+                    index,
+                    name: name.to_string(),
+                    preset: mode != NoiseControlMode::Custom,
+                    adjustable: mode == NoiseControlMode::Custom,
+                    active: mode == noise_mode,
+                })
+                .collect()
             }),
             multipoint: connected.then(|| MultipointState {
                 enabled: multipoint,
@@ -311,6 +332,7 @@ impl BoseDevice for MockBoseDevice {
         }
         let s = self.state.lock();
         Ok(Some(BatteryReading {
+            parts: Vec::new(),
             percent: s.battery_percent,
             source: BatterySource::Simulated,
             charging: Some(s.charging),
@@ -419,6 +441,20 @@ impl BoseDevice for MockBoseDevice {
         self.require_connected()?;
         self.state.lock().multipoint = enabled;
         Ok(CommandOutcome::applied())
+    }
+
+    async fn select_noise_mode(&self, index: u8) -> DeviceResult<CommandOutcome> {
+        let mode = match index {
+            0 => NoiseControlMode::Quiet,
+            1 => NoiseControlMode::Aware,
+            2 => NoiseControlMode::Custom,
+            _ => {
+                return Err(DeviceError::InvalidInput(
+                    "that is not one of the simulated headphones' modes".to_string(),
+                ))
+            }
+        };
+        self.set_noise_control(mode).await
     }
 
     async fn set_paired_connection(

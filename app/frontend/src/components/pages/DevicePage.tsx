@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  ArrowLeftRight,
   Bluetooth,
   Check,
   Eye,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import {
   BatteryIndicator,
+  BatteryParts,
   Button,
   CapabilityBadge,
   ConnectionBadge,
@@ -20,10 +22,15 @@ import {
   Toggle,
 } from "../primitives";
 import { Modal } from "../Modal";
-import { isUnavailable, useApp } from "../../store";
+import { isShown, isUnavailable, useApp } from "../../store";
 import { cn } from "../ui/utils";
 import { hostPlatform } from "@/services/ipc";
-import { checkDeviceName, MAX_DEVICE_NAME_BYTES, type PairedDevice } from "@/types/device";
+import {
+  checkDeviceName,
+  MAX_DEVICE_NAME_BYTES,
+  supportNote,
+  type PairedDevice,
+} from "@/types/device";
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -56,7 +63,7 @@ function DeviceNameRow() {
       <InfoRow label="Device name">
         <span className="inline-flex items-center gap-2">
           {deviceName}
-          {canRename ? (
+          {!isShown(capabilities.rename) ? null : canRename ? (
             <button
               onClick={() => {
                 // The label that marks a simulated device is not part of its name.
@@ -172,6 +179,8 @@ function MultiDevicePanel() {
   const cannotConnect = connection !== "connected" || isUnavailable(capabilities.connections);
   const why = snapshot?.capabilities.multipoint.evidence;
   const devices = pairedDevices ?? [];
+  const switchShown = isShown(capabilities.multipoint);
+  const devicesShown = isShown(capabilities.connections);
 
   const change = async (device: PairedDevice, on: boolean) => {
     setPending({ id: device.id, on });
@@ -194,6 +203,8 @@ function MultiDevicePanel() {
 
   return (
     <Panel className="p-6" data-testid="multi-device">
+      {switchShown && (
+      <>
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-base font-semibold">Multi-device connection</h3>
         <div className="flex shrink-0 items-center gap-3">
@@ -216,8 +227,11 @@ function MultiDevicePanel() {
             : "Off: the headphones stay connected to one device at a time."}
         {switching && " Switching, then checking what the headphones report…"}
       </p>
+      </>
+      )}
 
-      <div className="mt-5 border-t border-border pt-4">
+      {devicesShown && (
+      <div className={cn(switchShown && "mt-5 border-t border-border pt-4")}>
         <div className="text-sm font-medium text-muted-foreground">Devices</div>
         {pairedDevices === null ? (
           <p className="mt-3 text-sm text-muted-foreground" data-testid="paired-unknown">
@@ -279,6 +293,7 @@ function MultiDevicePanel() {
           </ul>
         )}
       </div>
+      )}
 
       <Modal
         open={confirmOff}
@@ -357,8 +372,13 @@ export function DevicePage() {
     events,
     connectedTo,
     busy,
+    model,
+    batteryParts,
+    capabilities,
+    changeDevice,
   } = useApp();
   const [showId, setShowId] = useState(false);
+  const multiDeviceShown = isShown(capabilities.multipoint) || isShown(capabilities.connections);
   const onPhone = hostPlatform() === "android";
 
   const timeline = events.filter((e) => CONNECTION_EVENT_TYPES.has(e.type)).slice(0, 8);
@@ -372,7 +392,17 @@ export function DevicePage() {
             say. What it had that they did not — a way to reconnect — is on
             the Connection row. */}
         <Panel className="p-6">
-          <SectionLabel>Device Information</SectionLabel>
+          <div className="flex items-center justify-between gap-3">
+            <SectionLabel>Device Information</SectionLabel>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<ArrowLeftRight className="size-3.5" />}
+              onClick={changeDevice}
+            >
+              Change device
+            </Button>
+          </div>
           <div className="mt-3">
             <InfoRow label="Connection">
               <span className="inline-flex flex-wrap items-center justify-end gap-2">
@@ -405,8 +435,30 @@ export function DevicePage() {
                 <span className="text-muted-foreground">None</span>
               )}
             </InfoRow>
-            <InfoRow label="Battery"><BatteryIndicator level={battery} charging={charging} /></InfoRow>
+            <InfoRow label="Battery">
+              <span className="inline-flex flex-col items-end gap-1">
+                <BatteryIndicator level={battery} charging={charging} />
+                <BatteryParts parts={batteryParts} className="justify-end text-xs" />
+              </span>
+            </InfoRow>
             <DeviceNameRow />
+            {/* Which model it is, from Bose's catalogue, and how far Void
+                has been tried with that model. */}
+            <InfoRow label="Model">
+              {model ? (
+                <span className="inline-flex flex-col items-end gap-0.5">
+                  <span>{model.name}</span>
+                  <span
+                    className="max-w-xs text-xs text-muted-foreground"
+                    data-testid="model-support"
+                  >
+                    {supportNote(model.support)}
+                  </span>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">Not identified</span>
+              )}
+            </InfoRow>
             <InfoRow label="Device ID">
               {snapshot?.identity ? (
                 <span className="selectable inline-flex items-center gap-2 font-mono">
@@ -432,7 +484,7 @@ export function DevicePage() {
           </div>
         </Panel>
 
-        <MultiDevicePanel />
+        {multiDeviceShown && <MultiDevicePanel />}
       </div>
 
       <Panel className="p-6">

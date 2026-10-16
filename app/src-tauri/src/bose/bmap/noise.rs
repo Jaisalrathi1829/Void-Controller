@@ -14,6 +14,7 @@
 //!
 //! Only the third is ever described as success.
 
+use super::custom::Slot;
 use bmap::device::DeviceConfig;
 use bmap::error::{BmapError, BmapResult};
 use bmap::protocol::{bmap_packet, parse_all_responses, Operator};
@@ -52,13 +53,18 @@ pub enum Target {
     /// A user-configured mode, by the slot the device lists it under. The
     /// name is the device's own and is only ever used to describe the request.
     Slot { index: u8, name: String },
+    /// Any mode the device lists — a preset such as Immersion, or a custom
+    /// one — by the slot it lists it under. The caller has checked the index
+    /// against the device's own list (see [`mode_options`]); a mode the
+    /// device does not have is refused by the device.
+    Listed { index: u8, name: String },
 }
 
 impl Target {
     pub fn label(&self) -> String {
         match self {
             Self::Preset(p) => p.label().to_string(),
-            Self::Slot { name, .. } => format!("{name:?}"),
+            Self::Slot { name, .. } | Self::Listed { name, .. } => format!("{name:?}"),
         }
     }
 
@@ -73,6 +79,7 @@ impl Target {
                 BmapError::Unsupported(format!("{} has no {} preset", config.info.name, p.label()))
             }),
             Self::Slot { index, .. } if config.editable_slots.contains(index) => Ok(*index),
+            Self::Listed { index, .. } => Ok(*index),
             Self::Slot { index, .. } => Err(BmapError::Unsupported(format!(
                 "slot {index} is not a custom-mode slot on {}",
                 config.info.name
@@ -107,6 +114,101 @@ pub fn describe_index(config: &DeviceConfig, index: u8) -> String {
         Some(p) => p.label().to_string(),
         None => format!("custom slot {index}"),
     }
+}
+
+/// One of the modes a device offers, as it is shown to choose from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeOption {
+    /// The slot the device lists it under: what a switch asks for.
+    pub index: u8,
+    /// The device's own name for it, or for a preset it did not name, the
+    /// description's.
+    pub name: String,
+    /// One of the device's fixed modes, rather than one the user set up.
+    pub preset: bool,
+    /// Its noise-cancellation level can be changed from here.
+    pub adjustable: bool,
+}
+
+/// A preset's key as a person reads it: "quiet" → "Quiet".
+fn preset_title(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Whether a slot's name is a real one rather than how a free slot reads.
+fn is_named(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && !name.eq_ignore_ascii_case("none")
+}
+
+/// The modes a device offers, lowest slot first.
+///
+/// From the device's own list where it has given one: every fixed mode it
+/// lists — a preset in the model's description, or a slot the device marks
+/// as not editable — and every custom slot it marks as set up, each under its
+/// own name. Free slots are left out. A preset the description has and the
+/// list did not show is offered under the description's name. Without a list,
+/// the description's presets are all there is to offer.
+///
+/// A mode is adjustable when its level can be changed from here: a custom
+/// slot on a model whose writes are described ([`super::custom::can_adjust`]).
+pub fn mode_options(config: &DeviceConfig, slots: Option<&[Slot]>) -> Vec<ModeOption> {
+    let described = |index: u8| {
+        config
+            .preset_modes
+            .iter()
+            .find(|(_, mode)| mode.idx == index)
+            .map(|(key, _)| preset_title(key))
+    };
+    let mut options: Vec<ModeOption> = Vec::new();
+    if let Some(slots) = slots.filter(|s| !s.is_empty()) {
+        let adjustable_model = super::custom::can_adjust(config);
+        for slot in slots {
+            if options.iter().any(|o| o.index == slot.index) {
+                continue;
+            }
+            let preset = described(slot.index);
+            if preset.is_some() || !slot.editable {
+                let name = if is_named(&slot.name) {
+                    slot.name.trim().to_string()
+                } else {
+                    match preset {
+                        Some(name) => name,
+                        None => continue,
+                    }
+                };
+                options.push(ModeOption {
+                    index: slot.index,
+                    name,
+                    preset: true,
+                    adjustable: false,
+                });
+            } else if slot.configured && is_named(&slot.name) {
+                options.push(ModeOption {
+                    index: slot.index,
+                    name: slot.name.trim().to_string(),
+                    preset: false,
+                    adjustable: adjustable_model && slot.is_usable(config),
+                });
+            }
+        }
+    }
+    for (key, mode) in config.preset_modes {
+        if !options.iter().any(|o| o.index == mode.idx) {
+            options.push(ModeOption {
+                index: mode.idx,
+                name: preset_title(key),
+                preset: true,
+                adjustable: false,
+            });
+        }
+    }
+    options.sort_by_key(|o| o.index);
+    options
 }
 
 /// Whether the device acknowledged the switch request.
@@ -297,7 +399,9 @@ pub fn change_to<T: Transport>(
 
     let request = match target {
         Target::Preset(preset) => conn.set_mode(preset.key(), false),
-        Target::Slot { index, .. } => request_slot(conn, raw, *index),
+        Target::Slot { index, .. } | Target::Listed { index, .. } => {
+            request_slot(conn, raw, *index)
+        }
     };
     let ack = match request {
         Ok(()) => Ack::Acknowledged,
@@ -389,6 +493,115 @@ pub fn change_to<T: Transport>(
         after,
         verdict,
     })
+}
+
+#[cfg(test)]
+mod mode_option_tests {
+    use super::*;
+    use crate::bose::bmap::custom::testing::slot;
+    use bmap::devices;
+
+    fn names(options: &[ModeOption]) -> Vec<(u8, &str, bool, bool)> {
+        options
+            .iter()
+            .map(|o| (o.index, o.name.as_str(), o.preset, o.adjustable))
+            .collect()
+    }
+
+    /// The tested headphones, as their list read on the unit: two presets,
+    /// "Focus" in slot 2, slot 3 free.
+    #[test]
+    fn the_quietcomfort_headphones_offer_quiet_aware_and_their_custom_mode() {
+        let slots = [
+            slot(0, "Quiet", 0, false),
+            slot(1, "Aware", 10, false),
+            slot(2, "Focus", 6, true),
+            slot(3, "", 0, true),
+        ];
+        let options = mode_options(&devices::qc_prince(), Some(&slots));
+        assert_eq!(
+            names(&options),
+            [(0, "Quiet", true, false), (1, "Aware", true, false), (2, "Focus", false, true)]
+        );
+    }
+
+    /// A QC Ultra lists four presets; a custom mode on it can be adjusted.
+    #[test]
+    fn a_qc_ultra_offers_its_four_presets_and_its_custom_modes() {
+        let mut slots = vec![
+            slot(0, "Quiet", 0, false),
+            slot(1, "Aware", 10, false),
+            slot(2, "Immersion", 0, false),
+            slot(3, "Cinema", 0, false),
+            slot(4, "Commute", 3, true),
+            slot(5, "", 0, true),
+        ];
+        slots[5].configured = false;
+        let options = mode_options(&devices::qc_ultra2(), Some(&slots));
+        assert_eq!(
+            names(&options),
+            [
+                (0, "Quiet", true, false),
+                (1, "Aware", true, false),
+                (2, "Immersion", true, false),
+                (3, "Cinema", true, false),
+                (4, "Commute", false, true),
+            ]
+        );
+    }
+
+    /// A custom mode is offered on a model whose writes are not described,
+    /// and offered as one that cannot be adjusted.
+    #[test]
+    fn a_custom_mode_whose_level_cannot_be_written_is_offered_but_not_adjustable() {
+        let slots = [slot(0, "Quiet", 0, false), slot(1, "Aware", 10, false), slot(2, "Focus", 6, true)];
+        let options = mode_options(&devices::qc45(), Some(&slots));
+        assert_eq!(options[2].name, "Focus");
+        assert!(!options[2].adjustable);
+    }
+
+    /// A model with nothing described: the device's own names, and which
+    /// are fixed by the device's own flag.
+    #[test]
+    fn a_recognized_model_offers_what_its_list_says_by_its_names() {
+        let config = crate::bose::bmap::models::generic_config("Some Bose model", "unknown");
+        let slots = [
+            slot(0, "Quiet", 0, false),
+            slot(1, "Aware", 10, false),
+            slot(2, "Immersion", 0, false),
+            slot(3, "Gym", 4, true),
+            slot(4, "None", 0, true),
+        ];
+        let options = mode_options(&config, Some(&slots));
+        assert_eq!(
+            names(&options),
+            [
+                (0, "Quiet", true, false),
+                (1, "Aware", true, false),
+                (2, "Immersion", true, false),
+                (3, "Gym", false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_list_the_described_presets_are_offered() {
+        let options = mode_options(&devices::qc_ultra2(), None);
+        assert_eq!(
+            options.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(),
+            ["Quiet", "Aware", "Immersion", "Cinema"]
+        );
+        let generic = crate::bose::bmap::models::generic_config("Some Bose model", "unknown");
+        assert!(mode_options(&generic, None).is_empty(), "nothing to offer without its list");
+    }
+
+    /// A preset the list does not name keeps the description's name.
+    #[test]
+    fn an_unnamed_preset_is_called_what_the_description_calls_it() {
+        let slots = [slot(0, "", 0, false), slot(1, "Aware", 10, false)];
+        let options = mode_options(&devices::qc_prince(), Some(&slots));
+        assert_eq!(options[0].name, "Quiet");
+    }
 }
 
 #[cfg(test)]

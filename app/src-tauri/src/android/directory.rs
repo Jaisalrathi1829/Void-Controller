@@ -463,13 +463,14 @@ mod probe_tests {
     }
 
     /// A device that answers with a different model's id is reported as that
-    /// model. Whether it is supported is decided elsewhere, by the allowlist.
+    /// model, and gets that model's description.
     #[test]
     fn another_models_id_is_reported_as_it_is() {
         let ultra = ScriptedStream::new().on_send(vec![data(&[0x00, 0x03, 0x03, 0x03, 0x40, 0x82, 0x01])]);
         let mut device = Device::new(vec![(Route::SerialPortService, Ok(ultra))]);
         let id = ask(&mut device).unwrap();
         assert_eq!(id, 0x4082);
-        assert!(crate::bose::bmap::config_for_product(id).is_none(), "and gets no control link");
+        let config = crate::bose::bmap::config_for_product(id).expect("a known model");
+        assert_eq!(config.info.name, "QuietComfort Ultra Headphones (2nd Gen)");
     }
 }

@@ -259,7 +259,7 @@ describe("the widget's own buttons", () => {
 
   it('opens the main window', async () => {
     await renderWidget();
-    await userEvent.click(screen.getByRole('button', { name: 'Open Bose QC Control Center' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open Void' }));
     expect(ipcMock.showMainWindow).toHaveBeenCalledTimes(1);
   });
 

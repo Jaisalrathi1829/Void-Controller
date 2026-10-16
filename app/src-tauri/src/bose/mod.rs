@@ -11,6 +11,7 @@
 //! `vendor/bose-bmap/VENDORED.md` and `docs/protocol-notes.md`.
 
 pub mod bmap;
+pub mod choice;
 pub mod mock;
 pub mod real;
 

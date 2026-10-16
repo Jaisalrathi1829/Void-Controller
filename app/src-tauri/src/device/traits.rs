@@ -85,6 +85,11 @@ pub trait BoseDevice: Send + Sync {
     async fn set_noise_control(&self, mode: NoiseControlMode)
         -> DeviceResult<CommandOutcome>;
 
+    /// Switches to one of the modes the device lists, by its slot. Same
+    /// verification requirement as `set_noise_control`. A slot that is not
+    /// one of the device's modes is refused before anything is sent.
+    async fn select_noise_mode(&self, index: u8) -> DeviceResult<CommandOutcome>;
+
     /// Sets the noise-cancellation strength of the active mode, 0-10 where 10
     /// is the most. Same verification requirement as `set_noise_control`:
     /// `Applied` only when the device then reports that level.

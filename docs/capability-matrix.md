@@ -60,6 +60,31 @@ Nothing is carried over on trust.
 application sends nothing for it. Documented is not demonstrated, so those rows
 stay `UNKNOWN`.
 
+## Other models
+
+Everything above is the tested model, the QuietComfort Headphones (`0x4075`).
+Since 2026-10-16 the application also drives the other Bose headphone and
+earbud models in upstream's catalogue — see the README's *Models* — and none
+of them has been run here. For one of them a feature's status is worked out
+the same way, from what that device answers in the session, with these
+differences:
+
+| | Documented models | Recognized models |
+| --- | --- | --- |
+| Where the addresses come from | Upstream's description of the model | The addresses every documented model of the current generation shares |
+| Noise control | Quiet and Aware by the description's presets; any other listed mode by its slot | By slot, from the device's own list; `VERIFIED` by any switch it confirms |
+| Custom mode's level | Written only for the QC Ultra (2nd Gen) headphones and earbuds, whose layout upstream checked on them. `UNSUPPORTED` — not shown — on the rest | `UNSUPPORTED`: nothing is written into a mode |
+| A feature the device answers `FuncNotSupp` or `FblockNotSupp` for | `UNSUPPORTED`, not shown | the same |
+| An equalizer the description has none of | `UNSUPPORTED`, not shown | — |
+
+Multipoint, the name and the paired list are read at fixed addresses on every
+model, whatever the description says: upstream's description of the tested
+headphones has no multipoint, and they have it. For those, only the device's
+own answer makes a feature `UNSUPPORTED`.
+
+The QuietComfort 35 and 35 II are recognized and not driven: every control is
+`UNSUPPORTED` on them, with the reason.
+
 ## Mechanism notes
 
 ### Windows volume — what "VERIFIED" means here, precisely

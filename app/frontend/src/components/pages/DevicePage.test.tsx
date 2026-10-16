@@ -548,3 +548,69 @@ describe('a name for the headphones', () => {
     }
   });
 });
+
+describe('the model', () => {
+  it('is named, with how far it has been tried', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot(),
+      model: { name: 'QuietComfort Ultra Headphones (2nd Gen)', category: 'headphones', support: 'documented' },
+    });
+    await renderPage();
+
+    expect(screen.getByText('QuietComfort Ultra Headphones (2nd Gen)')).toBeInTheDocument();
+    expect(screen.getByTestId('model-support')).toHaveTextContent('Not yet tested with Void.');
+  });
+
+  it('says so for the tested model', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot(),
+      model: { name: 'QuietComfort Headphones', category: 'headphones', support: 'tested' },
+    });
+    await renderPage();
+    expect(screen.getByTestId('model-support')).toHaveTextContent('Tested with Void.');
+  });
+
+  it('shows each battery of a pair of earbuds', async () => {
+    ipcMock.getSnapshot.mockResolvedValue({
+      ...snapshot(),
+      model: { name: 'QuietComfort Ultra Earbuds (2nd Gen)', category: 'earbuds', support: 'documented' },
+      battery: {
+        percent: 70,
+        source: 'vendor-protocol',
+        readAt: '2026-10-16T08:00:00Z',
+        parts: [
+          { name: 'Right', percent: 80 },
+          { name: 'Left', percent: 70 },
+        ],
+      },
+    });
+    await renderPage();
+    const parts = screen.getByTestId('battery-parts');
+    expect(parts).toHaveTextContent('Right80%');
+    expect(parts).toHaveTextContent('Left70%');
+  });
+});
+
+describe('what the device does not have', () => {
+  it('has no multi-device panel when it has neither the switch nor the list', async () => {
+    ipcMock.getSnapshot.mockResolvedValue(
+      snapshot({ multipointCap: 'unsupported', connectionsCap: 'unsupported', multipoint: null, paired: null }),
+    );
+    await renderPage();
+    expect(screen.queryByTestId('multi-device')).not.toBeInTheDocument();
+  });
+
+  it('keeps the list when only the switch is missing', async () => {
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ multipointCap: 'unsupported', multipoint: null }));
+    await renderPage();
+    expect(screen.queryByRole('switch', { name: 'Multi-device connection' })).not.toBeInTheDocument();
+    expect(deviceList()).toBeInTheDocument();
+  });
+
+  it('offers no rename on a device that cannot be renamed', async () => {
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ renameCap: 'unsupported' }));
+    await renderPage();
+    expect(screen.queryByRole('button', { name: 'Rename headphones' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('rename-unavailable')).not.toBeInTheDocument();
+  });
+});

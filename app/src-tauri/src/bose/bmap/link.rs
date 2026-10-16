@@ -74,6 +74,10 @@ pub struct EqReading {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatteryReport {
     pub percent: u8,
+    /// Each part's level, named as the model's description names it, on a
+    /// device that reports several: earbuds and their case. A part that
+    /// reported no level (`FF`) is left out.
+    pub parts: Vec<(&'static str, u8)>,
     pub at: String,
 }
 
@@ -207,6 +211,10 @@ pub struct LinkStatus {
     pub last_custom_slot: Option<u8>,
     /// A confirmed switch into a custom slot.
     pub to_custom: Option<TransitionProof>,
+    /// The latest switch to any mode that the headphones confirmed. What
+    /// noise control is verified by on a model without Quiet and Aware
+    /// presets in its description.
+    pub to_mode: Option<TransitionProof>,
     /// A confirmed change to a custom mode's level.
     pub level: Option<LevelProof>,
     /// The equalizer as last reported by the device.
@@ -607,19 +615,31 @@ impl<C: Connector> BmapLink<C> {
     pub fn read_battery(&mut self, force: bool) -> Result<u8, LinkError> {
         self.ensure_open(force)?;
         let session = self.session.as_ref().expect("session ensured above");
-        let result = session.conn.battery();
+        let result = session.conn.battery_status();
         self.collect_wire_log();
 
-        match result {
-            Ok(percent) if percent <= 100 => {
+        match result.map(|status| (status.aggregate, status.readings)) {
+            Ok((percent, readings)) if percent <= 100 => {
+                let parts = self
+                    .config
+                    .battery_components
+                    .iter()
+                    .filter_map(|(id, name)| {
+                        readings
+                            .iter()
+                            .find(|r| r.component_id == *id && r.level <= 100)
+                            .map(|r| (*name, r.level))
+                    })
+                    .collect();
                 self.status.battery = Some(BatteryReport {
                     percent,
+                    parts,
                     at: (self.now_text)(),
                 });
                 Ok(percent)
             }
             // A number that is not a percentage is not a level to show.
-            Ok(percent) => {
+            Ok((percent, _)) => {
                 self.status.battery = None;
                 Err(LinkError::new(
                     LinkErrorKind::UnexpectedFraming,
@@ -1006,10 +1026,24 @@ impl<C: Connector> BmapLink<C> {
                 after: change.requested_index,
                 at: (self.now_text)(),
             };
+            self.status.to_mode = Some(proof.clone());
             match &target {
                 Target::Preset(Preset::Quiet) => self.status.to_quiet = Some(proof),
                 Target::Preset(Preset::Aware) => self.status.to_aware = Some(proof),
                 Target::Slot { .. } => self.status.to_custom = Some(proof),
+                // A mode asked for from the list is whichever it is: Quiet or
+                // Aware where the description says so, a custom mode where
+                // it is one of the editable slots, and otherwise only a mode.
+                Target::Listed { index, .. } => {
+                    match noise::preset_for_index(&self.config, *index) {
+                        Some(Preset::Quiet) => self.status.to_quiet = Some(proof),
+                        Some(Preset::Aware) => self.status.to_aware = Some(proof),
+                        None if self.config.editable_slots.contains(index) => {
+                            self.status.to_custom = Some(proof)
+                        }
+                        None => {}
+                    }
+                }
             }
         }
 
@@ -1680,10 +1714,35 @@ mod tests {
         let stream = session(vec![vec![status(0)], vec![battery_status(10)]]);
         let mut l = link(vec![Ok(stream.clone())]);
         assert_eq!(l.read_battery(false).unwrap(), 10);
-        assert_eq!(l.status().battery.unwrap().percent, 10);
+        let report = l.status().battery.unwrap();
+        assert_eq!(report.percent, 10);
+        assert!(report.parts.is_empty(), "one battery, no parts");
         // One question, and nothing that writes.
         let sent = stream.sent();
         assert_eq!(sent.last().unwrap(), &vec![0x02, 0x02, 0x01, 0x00]);
+    }
+
+    /// Earbuds report each bud and the case, four bytes a part: level, two
+    /// bytes, the part's id. A part with no level (`FF`) is left out.
+    #[test]
+    fn earbuds_report_each_part_by_name() {
+        let reply = data(&[
+            0x02, 0x02, 0x03, 0x10, //
+            80, 0xFF, 0xFF, 1, // right
+            70, 0xFF, 0xFF, 2, // left
+            0xFF, 0xFF, 0xFF, 3, // the case, not reported
+            70, 0xFF, 0xFF, 4, // the pair
+        ]);
+        let stream = session(vec![vec![status(0)], vec![reply]]);
+        let mut l = BmapLink::new(
+            QueueConnector::new(vec![Ok(stream)]),
+            devices::qc_ultra2_earbuds(),
+            timing(Duration::ZERO),
+            || "2026-10-16T00:00:00Z".to_string(),
+        );
+        assert_eq!(l.read_battery(false).unwrap(), 70);
+        let report = l.status().battery.unwrap();
+        assert_eq!(report.parts, vec![("Right", 80), ("Left", 70)]);
     }
 
     #[test]

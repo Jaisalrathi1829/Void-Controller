@@ -1,4 +1,4 @@
-//! Bose QC Control Center — native layer.
+//! Void — native layer.
 //!
 //! Architecture note: the frontend has no Bluetooth surface. It calls the
 //! `#[tauri::command]` handlers below, each of which takes typed parameters
@@ -747,6 +747,11 @@ async fn run_command(state: &AppState, command: DeviceCommand) -> UiResult<Comma
             outcome?
         }
         DeviceCommand::SetEqualizer { settings } => dev.set_equalizer(settings).await?,
+        DeviceCommand::SelectNoiseMode { index } => {
+            let outcome = dev.select_noise_mode(index).await;
+            observe_reported_mode(state, dev.as_ref());
+            outcome?
+        }
         DeviceCommand::SetMultipoint { enabled } => dev.set_multipoint(enabled).await?,
         DeviceCommand::SetPairedDeviceConnection { device, connected } => {
             dev.set_paired_connection(&device, connected).await?
@@ -994,6 +999,46 @@ fn get_bluetooth_availability() -> bluetooth::BluetoothAvailability {
     {
         bluetooth::BluetoothAvailability::unavailable("Not running on Windows or Android.")
     }
+}
+
+/// The Bose headphones and earbuds paired with this machine, with the model
+/// each is, to choose from. Only enumerates what the system knows; nothing is
+/// sent to any device.
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
+fn list_bose_devices(state: tauri::State<'_, AppState>) -> Vec<bose::choice::PairedBose> {
+    let current = state.settings().get().preferred_device_id;
+    let mut listed = bose::choice::choices(bose::choice::paired(), current.as_deref());
+    // The current device goes by the name it gave itself, where it has.
+    if let Some(own) = state.settings().get().reported_device_name {
+        for device in listed.iter_mut().filter(|d| d.current && !own.trim().is_empty()) {
+            device.name = own.clone();
+        }
+    }
+    listed
+}
+
+/// Makes the paired device listed under `id` the one this application is
+/// about, and attaches to it: an explicit choice by the user.
+#[tauri::command]
+async fn use_bose_device(state: tauri::State<'_, AppState>, id: String) -> UiResult<DeviceSnapshot> {
+    if !device::state::is_paired_device_id(&id) {
+        return Err(UiError {
+            message: "That is not a device this application listed.".to_string(),
+            kind: "invalid-input".to_string(),
+        });
+    }
+    let seen = bose::choice::sighting_for(bose::choice::paired(), &id).ok_or_else(|| UiError {
+        message: "That device is no longer paired with this computer.".to_string(),
+        kind: "not-connected".to_string(),
+    })?;
+    state.remember_device(&seen);
+    state.attach();
+    state.switch_to(DeviceSource::Real);
+    let dev = state.current();
+    let snapshot = dev.snapshot().await?;
+    state.voice().observe_snapshot(&snapshot);
+    Ok(attach_system(snapshot))
 }
 
 /// Read-only enumeration of Bluetooth devices Windows knows about.
@@ -1249,13 +1294,15 @@ pub fn run() {
             set_noise_control_mode,
             get_bluetooth_availability,
             list_bluetooth_devices,
+            list_bose_devices,
+            use_bose_device,
             list_audio_endpoints,
             open_bluetooth_settings,
             request_bluetooth_permission,
             show_main_window,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Bose QC Control Center")
+        .expect("error while building Void")
         .run(|app, event| {
             // Stop speaking and release the model before the process goes.
             if let tauri::RunEvent::Exit = event {
