@@ -13,6 +13,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
@@ -142,6 +144,7 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
         private val SPP: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val CONNECT_TIMEOUT_SECONDS = 8L
         private const val PERMISSION_REQUEST = 7001
+        private const val LOCATION_REQUEST = 7002
         private const val BATTERY_CHANGED = "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED"
         private const val BATTERY_EXTRA = "android.bluetooth.device.extra.BATTERY_LEVEL"
         /** Marks the end of the stream in [inbox]. Compared by identity. */
@@ -490,6 +493,88 @@ class AuroraPlugin(private val activity: Activity) : Plugin(activity) {
             result.put("radioEnabled", enabled)
             result.put("devices", devices)
             invoke.resolve(result)
+        }
+    }
+
+    // --- "Find my buds": where the phone was --------------------------------
+
+    private fun hasLocation(): Boolean =
+        granted(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            granted(Manifest.permission.ACCESS_COARSE_LOCATION)
+
+    /** Asks for the location permission, if it has not been given. */
+    @Command
+    fun askLocation(invoke: Invoke) {
+        main.post {
+            if (!hasLocation()) {
+                ActivityCompat.requestPermissions(
+                    activity,
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ),
+                    LOCATION_REQUEST,
+                )
+            }
+            invoke.resolve()
+        }
+    }
+
+    /**
+     * The phone's location as Android last knew it, from whichever provider
+     * has the most recent. Asks no provider for a new fix and sends nothing
+     * anywhere.
+     */
+    @SuppressLint("MissingPermission")
+    @Command
+    fun lastLocation(invoke: Invoke) {
+        val result = JSObject()
+        val allowed = hasLocation()
+        result.put("permission", allowed)
+        if (allowed) {
+            try {
+                val manager =
+                    activity.applicationContext.getSystemService(Context.LOCATION_SERVICE)
+                        as LocationManager
+                var best: Location? = null
+                for (provider in manager.getProviders(true)) {
+                    val fix = try {
+                        manager.getLastKnownLocation(provider)
+                    } catch (e: SecurityException) {
+                        null
+                    } ?: continue
+                    if (best == null || fix.time > best.time) best = fix
+                }
+                best?.let {
+                    result.put("latitude", it.latitude)
+                    result.put("longitude", it.longitude)
+                    if (it.hasAccuracy()) result.put("accuracy", it.accuracy.toDouble())
+                    result.put("time", it.time)
+                }
+            } catch (e: Exception) {
+                Log.i(TAG, "no location to give: ${e.message}")
+            }
+        }
+        invoke.resolve(result)
+    }
+
+    @InvokeArg
+    class MapArgs {
+        var latitude: Double = 0.0
+        var longitude: Double = 0.0
+    }
+
+    /** Opens a place in the phone's maps application. */
+    @Command
+    fun openMap(invoke: Invoke) {
+        val args = invoke.parseArgs(MapArgs::class.java)
+        try {
+            val at = "${args.latitude},${args.longitude}"
+            val uri = Uri.parse("geo:$at?q=" + Uri.encode("$at(Your earbuds)"))
+            activity.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            invoke.resolve()
+        } catch (e: Exception) {
+            invoke.reject("There is no maps application to open it in: ${e.message}")
         }
     }
 

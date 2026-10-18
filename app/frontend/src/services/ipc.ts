@@ -18,9 +18,12 @@ import type {
   CommandOutcome,
   NoiseControlState,
   PairedBose,
+  LastSeen,
 } from '@/types/device';
 import type { DiscoveredDevice, BluetoothAvailability } from '@/types/bluetooth';
 import { BrowserSimulatedDevice } from '@/mock/browserDevice';
+import { BrowserSimulatedPlayer } from '@/mock/browserPlayer';
+import type { MediaAction, NowPlayingView, PlaybackControl } from '@/types/media';
 
 export type DeviceCommand =
   | { kind: 'refreshSnapshot' }
@@ -41,6 +44,9 @@ export type DeviceCommand =
   | { kind: 'selectNoiseMode'; index: number }
   | { kind: 'setEqualizer'; settings: { bass: number; mid: number; treble: number } }
   | { kind: 'setMultipoint'; enabled: boolean }
+  | { kind: 'setShortcut'; action: number }
+  | { kind: 'setAutoPause'; enabled: boolean }
+  | { kind: 'setAutoAnswer'; enabled: boolean }
   | { kind: 'setDeviceName'; name: string }
   | { kind: 'setPairedDeviceConnection'; device: string; connected: boolean };
 
@@ -79,6 +85,36 @@ export function hostPlatform(): HostPlatform {
 }
 
 const browserFallback = new BrowserSimulatedDevice();
+const browserPlayer = new BrowserSimulatedPlayer();
+
+/**
+ * What is playing: on this computer, from Windows' media sessions (never on
+ * a phone), and through the headphones — which device they play from, and
+ * whether it plays.
+ */
+export async function getNowPlaying(): Promise<NowPlayingView> {
+  if (!hasNativeLayer()) return browserPlayer.view(hostPlatform() === 'android');
+  return invokeNative<NowPlayingView>('get_now_playing');
+}
+
+/**
+ * Play/pause, next or previous, passed on through the headphones to the
+ * device they play from. Applied only for play or pause they then report.
+ */
+export async function headphonesPlayback(control: PlaybackControl): Promise<CommandOutcome> {
+  if (!hasNativeLayer()) return browserPlayer.headphonesControl(control);
+  return invokeNative<CommandOutcome>('headphones_playback', { control });
+}
+
+/**
+ * Asks the playing application to play, pause, skip, seek, shuffle or
+ * repeat. Resolves to whether it agreed; what it then does is read back by
+ * the next `getNowPlaying`.
+ */
+export async function mediaControl(action: MediaAction): Promise<boolean> {
+  if (!hasNativeLayer()) return browserPlayer.control(action);
+  return invokeNative<boolean>('media_control', { action });
+}
 
 async function invokeNative<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
@@ -206,6 +242,7 @@ export const SETTING_KEYS = [
   'voiceUseDefaultOutput',
   'desktopWidget',
   'widgetOnTop',
+  'rememberLastSeen',
 ] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -498,6 +535,26 @@ export async function listBoseDevices(): Promise<PairedBose[]> {
 export async function chooseBoseDevice(id: string): Promise<DeviceSnapshot> {
   if (!hasNativeLayer()) return browserFallback.choose(id);
   return invokeNative<DeviceSnapshot>('use_bose_device', { id });
+}
+
+/**
+ * "Find my buds": when, and on a phone where, the earbuds were last
+ * connected — if that is being noted. `null` otherwise.
+ */
+export async function getLastSeen(): Promise<LastSeen | null> {
+  if (!hasNativeLayer()) return browserFallback.lastSeen();
+  return invokeNative<LastSeen | null>('get_last_seen');
+}
+
+/** Opens the noted place in the phone's maps application. */
+export async function openLastSeenMap(): Promise<void> {
+  if (!hasNativeLayer()) {
+    throw {
+      kind: 'unsupported',
+      message: 'Maps are opened by the phone application.',
+    } satisfies IpcError;
+  }
+  return invokeNative<void>('open_last_seen_map');
 }
 
 /** The highest mode slot any model lists. The native side checks the same. */

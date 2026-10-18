@@ -103,6 +103,28 @@ pub struct MultipointReading {
     pub at: String,
 }
 
+/// The touch shortcut, as the earbuds last reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutReading {
+    pub shortcut: super::controls::Shortcut,
+    pub at: String,
+}
+
+/// A setting that is on or off, as the device last reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagReading {
+    pub on: bool,
+    pub at: String,
+}
+
+/// A change to a setting that the device confirmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingProof {
+    pub before: String,
+    pub after: String,
+    pub at: String,
+}
+
 /// A switch of multipoint the headphones confirmed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultipointProof {
@@ -254,6 +276,18 @@ pub struct LinkStatus {
     pub multipoint_problem: Option<String>,
     /// A confirmed switch of multipoint.
     pub multipoint_change: Option<MultipointProof>,
+    /// The touch shortcut, on earbuds; and why it could not be read.
+    pub shortcut: Option<ShortcutReading>,
+    pub shortcut_problem: Option<String>,
+    pub shortcut_change: Option<SettingProof>,
+    /// Auto play/pause when taken out, on earbuds.
+    pub auto_pause: Option<FlagReading>,
+    pub auto_pause_problem: Option<String>,
+    pub auto_pause_change: Option<SettingProof>,
+    /// Auto-answer when put in, on earbuds.
+    pub auto_answer: Option<FlagReading>,
+    pub auto_answer_problem: Option<String>,
+    pub auto_answer_change: Option<SettingProof>,
     /// The paired devices, as the headphones last listed them.
     pub paired: Option<PairedReading>,
     /// Set when the list could not be read as observed.
@@ -308,6 +342,15 @@ pub struct BmapLink<C: Connector> {
     unit_asked: Option<Instant>,
     /// When one of those that had a problem was last asked about again.
     unit_problems_asked: Option<Instant>,
+    /// Whether the earbuds' controls — the touch shortcut, auto play/pause
+    /// and auto-answer — are read. Earbuds only: headphones are not asked.
+    reads_controls: bool,
+    /// The source the headphones last named, for what they are playing.
+    playing_named: super::playing::Named,
+    /// Set when the device has said it does not tell what it plays, or has
+    /// not answered twice in a row: it is not asked again until it is back.
+    playing_absent: bool,
+    playing_timeouts: u8,
     status: LinkStatus,
     attempts: Vec<Attempt>,
     wire_log: Vec<WireEvent>,
@@ -327,6 +370,10 @@ impl<C: Connector> BmapLink<C> {
             slots_asked: None,
             unit_asked: None,
             unit_problems_asked: None,
+            reads_controls: false,
+            playing_named: None,
+            playing_absent: false,
+            playing_timeouts: 0,
             status: LinkStatus::default(),
             attempts: Vec::new(),
             wire_log: Vec::new(),
@@ -335,6 +382,11 @@ impl<C: Connector> BmapLink<C> {
 
     pub fn config(&self) -> &DeviceConfig {
         &self.config
+    }
+
+    /// Whether to read the earbuds' controls along with the name and the rest.
+    pub fn set_reads_controls(&mut self, on: bool) {
+        self.reads_controls = on;
     }
 
     pub fn status(&self) -> LinkStatus {
@@ -411,8 +463,17 @@ impl<C: Connector> BmapLink<C> {
         self.status.multipoint_problem = None;
         self.status.paired = None;
         self.status.paired_problem = None;
+        self.status.shortcut = None;
+        self.status.shortcut_problem = None;
+        self.status.auto_pause = None;
+        self.status.auto_pause_problem = None;
+        self.status.auto_answer = None;
+        self.status.auto_answer_problem = None;
         self.unit_asked = None;
         self.unit_problems_asked = None;
+        self.playing_named = None;
+        self.playing_absent = false;
+        self.playing_timeouts = 0;
         self.status.last_failure = None;
         self.last_open_failure = None;
     }
@@ -818,7 +879,10 @@ impl<C: Connector> BmapLink<C> {
                 .map_or(true, |asked| asked.elapsed() >= UNIT_PROBLEM_RETRY);
         let had_problem = self.status.name_problem.is_some()
             || self.status.multipoint_problem.is_some()
-            || self.status.paired_problem.is_some();
+            || self.status.paired_problem.is_some()
+            || self.status.shortcut_problem.is_some()
+            || self.status.auto_pause_problem.is_some()
+            || self.status.auto_answer_problem.is_some();
         if retry && had_problem {
             self.unit_problems_asked = Some(Instant::now());
         }
@@ -855,6 +919,10 @@ impl<C: Connector> BmapLink<C> {
             }
         }
 
+        if self.reads_controls {
+            self.read_controls(retry, &at)?;
+        }
+
         if self.status.paired_problem.is_none() || retry {
             // What came before goes to the wire log; what the next exchange
             // puts there does not, because it is other devices' Bluetooth
@@ -877,6 +945,166 @@ impl<C: Connector> BmapLink<C> {
             }
         }
         Ok(())
+    }
+
+    /// Reads the earbuds' touch shortcut, auto play/pause and auto-answer,
+    /// each unless it had a problem and it is not yet time to ask again.
+    fn read_controls(&mut self, retry: bool, at: &str) -> Result<(), LinkError> {
+        use super::controls;
+
+        if self.status.shortcut_problem.is_none() || retry {
+            let session = self.session.as_ref().expect("the link did not fail");
+            match controls::read_shortcut(&session.transport) {
+                Ok(shortcut) => {
+                    self.status.shortcut = Some(ShortcutReading {
+                        shortcut,
+                        at: at.to_string(),
+                    });
+                    self.status.shortcut_problem = None;
+                }
+                Err(e) if is_link_failure(&e) => return Err(self.fail(e)),
+                Err(e) => {
+                    self.status.shortcut = None;
+                    self.status.shortcut_problem = Some(e.to_string());
+                    self.unit_problems_asked.get_or_insert_with(Instant::now);
+                }
+            }
+        }
+        for (addr, pause) in [(controls::AUTO_PAUSE, true), (controls::AUTO_ANSWER, false)] {
+            let problem = if pause {
+                &self.status.auto_pause_problem
+            } else {
+                &self.status.auto_answer_problem
+            };
+            if problem.is_some() && !retry {
+                continue;
+            }
+            let session = self.session.as_ref().expect("the link did not fail");
+            let read = controls::read_flag(&session.transport, addr);
+            let (reading, problem) = match read {
+                Ok(on) => (
+                    Some(FlagReading {
+                        on,
+                        at: at.to_string(),
+                    }),
+                    None,
+                ),
+                Err(e) if is_link_failure(&e) => return Err(self.fail(e)),
+                Err(e) => {
+                    self.unit_problems_asked.get_or_insert_with(Instant::now);
+                    (None, Some(e.to_string()))
+                }
+            };
+            if pause {
+                self.status.auto_pause = reading;
+                self.status.auto_pause_problem = problem;
+            } else {
+                self.status.auto_answer = reading;
+                self.status.auto_answer_problem = problem;
+            }
+        }
+        self.collect_wire_log();
+        Ok(())
+    }
+
+    /// Sets the touch shortcut's action, and reports what the earbuds then
+    /// said.
+    pub fn set_shortcut(
+        &mut self,
+        action: u8,
+    ) -> Result<super::controls::SettingChange<u8>, LinkError> {
+        use super::controls;
+        self.touch(true)?;
+        let session = self.session.as_ref().expect("touch left a session open");
+        let result = controls::set_shortcut(&session.transport, action, self.timing.verify);
+        self.collect_wire_log();
+        let change = match result {
+            Ok(change) => change,
+            Err(e @ BmapError::InvalidArg(_)) => {
+                return Err(LinkError::new(LinkErrorKind::Unsupported, e.to_string()))
+            }
+            Err(e @ BmapError::Device { .. }) => {
+                self.status.shortcut = None;
+                self.status.shortcut_problem = Some(e.to_string());
+                return Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!("The shortcut could not be read as documented, so it was not changed. {e}"),
+                ));
+            }
+            Err(e) => return Err(self.fail(e)),
+        };
+        if let (Some(after), Some(reading)) = (change.after, self.status.shortcut.as_mut()) {
+            reading.shortcut.action = after;
+            reading.at = (self.now_text)();
+        }
+        if change.is_verified_change() {
+            self.status.shortcut_change = Some(SettingProof {
+                before: controls::action_name(change.before).to_string(),
+                after: controls::action_name(change.requested).to_string(),
+                at: (self.now_text)(),
+            });
+        }
+        Ok(change)
+    }
+
+    /// Sets auto play/pause (`pause`) or auto-answer, and reports what the
+    /// earbuds then said.
+    pub fn set_wear_setting(
+        &mut self,
+        pause: bool,
+        enabled: bool,
+    ) -> Result<super::controls::SettingChange<bool>, LinkError> {
+        use super::controls;
+        self.touch(true)?;
+        let addr = if pause {
+            controls::AUTO_PAUSE
+        } else {
+            controls::AUTO_ANSWER
+        };
+        let session = self.session.as_ref().expect("touch left a session open");
+        let result = controls::set_flag(&session.transport, addr, enabled, self.timing.verify);
+        self.collect_wire_log();
+        let change = match result {
+            Ok(change) => change,
+            Err(e @ BmapError::Device { .. }) => {
+                if pause {
+                    self.status.auto_pause = None;
+                    self.status.auto_pause_problem = Some(e.to_string());
+                } else {
+                    self.status.auto_answer = None;
+                    self.status.auto_answer_problem = Some(e.to_string());
+                }
+                return Err(LinkError::new(
+                    LinkErrorKind::UnexpectedFraming,
+                    format!("The setting could not be read as documented, so it was not changed. {e}"),
+                ));
+            }
+            Err(e) => return Err(self.fail(e)),
+        };
+        let on_off = |on: bool| if on { "on" } else { "off" }.to_string();
+        let now = (self.now_text)();
+        let reading = change.after.map(|on| FlagReading { on, at: now.clone() });
+        let proof = change.is_verified_change().then(|| SettingProof {
+            before: on_off(change.before),
+            after: on_off(change.requested),
+            at: now,
+        });
+        if pause {
+            if reading.is_some() {
+                self.status.auto_pause = reading;
+            }
+            if proof.is_some() {
+                self.status.auto_pause_change = proof;
+            }
+        } else {
+            if reading.is_some() {
+                self.status.auto_answer = reading;
+            }
+            if proof.is_some() {
+                self.status.auto_answer_change = proof;
+            }
+        }
+        Ok(change)
     }
 
     /// Renames the headphones and reports what they then called themselves.
@@ -1002,6 +1230,73 @@ impl<C: Connector> BmapLink<C> {
             }
         }
         Ok(change)
+    }
+
+    /// What the headphones are playing from, and whether it plays.
+    /// Read-only. `None` when they have no source, or do not say.
+    ///
+    /// A device that answers that it does not say — no such function, or
+    /// not without signing in — or does not answer twice in a row, is not
+    /// asked again until it has gone and come back.
+    pub fn read_playing(&mut self) -> Result<Option<super::playing::Playing>, LinkError> {
+        if self.playing_absent {
+            return Ok(None);
+        }
+        self.ensure_open(false)?;
+        let session = self.session.as_ref().expect("session ensured above");
+        let result = super::playing::read_playing(&session.transport, &mut self.playing_named);
+        self.collect_wire_log();
+
+        match result {
+            Ok(playing) => {
+                self.playing_timeouts = 0;
+                Ok(playing)
+            }
+            Err(e @ BmapError::Timeout(_)) => {
+                self.playing_timeouts += 1;
+                if self.playing_timeouts >= 2 {
+                    self.playing_absent = true;
+                }
+                Err(self.fail(e))
+            }
+            Err(e) if is_link_failure(&e) => Err(self.fail(e)),
+            Err(BmapError::Auth(_)) | Err(BmapError::Device { code: 3 | 4, .. }) => {
+                self.playing_absent = true;
+                Ok(None)
+            }
+            Err(e) => Err(LinkError::new(
+                LinkErrorKind::UnexpectedFraming,
+                format!("What the headphones are playing could not be read as observed. {e}"),
+            )),
+        }
+    }
+
+    /// Play, pause, next or previous, passed on through the headphones to
+    /// what they are playing from. Play and pause are read back.
+    pub fn control_playback(
+        &mut self,
+        request: super::playing::PlaybackRequest,
+    ) -> Result<super::playing::PlaybackChange, LinkError> {
+        if self.playing_absent {
+            return Err(LinkError::new(
+                LinkErrorKind::Unsupported,
+                "These headphones do not say what they are playing.",
+            ));
+        }
+        self.ensure_open(false)?;
+        let session = self.session.as_ref().expect("session ensured above");
+        let result = super::playing::control_playback(
+            &session.transport,
+            request,
+            self.timing.verify,
+            self.timing.pause,
+        );
+        self.collect_wire_log();
+        match result {
+            Ok(change) => Ok(change),
+            Err(e) if is_link_failure_or_timeout(&e) => Err(self.fail(e)),
+            Err(e) => Err(LinkError::from_bmap(e)),
+        }
     }
 
     /// Switches multipoint and reports what the headphones then said.
@@ -2560,5 +2855,119 @@ mod tests {
         assert_eq!(l.read_battery(false).unwrap(), 76);
         let report = l.status().battery.unwrap();
         assert_eq!(report.parts, vec![("Right", 81), ("Left", 76), ("Case", 54)]);
+    }
+
+    // --- the earbuds' controls -----------------------------------------------
+
+    #[test]
+    fn earbuds_controls_are_read_with_the_rest() {
+        use super::super::controls::{testing::*, AUTO_ANSWER, AUTO_PAUSE};
+        let none: &[[u8; 6]] = &[];
+        let stream = session(vec![
+            vec![status(0)],
+            vec![name_status("Buds")],
+            vec![multipoint_status(true)],
+            vec![data(&shortcut_status(3))],
+            vec![data(&flag_status(AUTO_PAUSE, true))],
+            vec![data(&flag_status(AUTO_ANSWER, false))],
+            vec![paired_list(none)],
+        ]);
+        let mut l = link_for(generic(), stream);
+        l.set_reads_controls(true);
+        l.read_unit(false).unwrap();
+        let st = l.status();
+        let shortcut = st.shortcut.unwrap().shortcut;
+        assert_eq!(shortcut.action, 3);
+        assert_eq!(shortcut.offered, Some(vec![3, 14, 16]));
+        assert!(st.auto_pause.unwrap().on);
+        assert!(!st.auto_answer.unwrap().on);
+    }
+
+    /// Headphones — the tested ones among them — are not asked for the
+    /// earbuds' controls at all.
+    #[test]
+    fn headphones_are_not_asked_for_earbud_controls() {
+        let none: &[[u8; 6]] = &[];
+        let stream = session(vec![
+            vec![status(0)],
+            vec![name_status("Aurora")],
+            vec![multipoint_status(true)],
+            vec![paired_list(none)],
+        ]);
+        let mut l = link(vec![Ok(stream.clone())]);
+        l.read_unit(false).unwrap();
+        let asked: Vec<(u8, u8)> = stream.sent().iter().map(|f| (f[0], f[1])).collect();
+        for addr in [(1, 9), (1, 24), (1, 27)] {
+            assert!(!asked.contains(&addr), "{addr:?} was asked");
+        }
+        assert!(l.status().shortcut.is_none());
+    }
+
+    // --- what the headphones play from -----------------------------------------
+
+    mod playing {
+        use super::super::super::playing::testing::{control_processing, source_status, state_status};
+        use super::super::super::playing::{Control, PlayState, PlaybackRequest, PlayingFrom};
+        use super::super::super::unit::testing::paired_info;
+        use super::*;
+
+        const PHONE: [u8; 6] = [0x34, 0xF0, 0x43, 0xC9, 0xE0, 0xF6];
+
+        #[test]
+        fn the_source_is_named_once_on_a_link() {
+            let stream = session(vec![
+                vec![status(1)],
+                vec![data(&source_status(PHONE))],
+                vec![data(&paired_info(PHONE, 0x01, "Phone"))],
+                vec![data(&state_status(PlayState::Playing))],
+                vec![data(&source_status(PHONE))],
+                vec![data(&state_status(PlayState::Paused))],
+            ]);
+            let mut l = link(vec![Ok(stream.clone())]);
+            let first = l.read_playing().unwrap().unwrap();
+            assert_eq!(
+                first.from,
+                PlayingFrom::Device {
+                    name: "Phone".into(),
+                    this_device: false
+                }
+            );
+            assert_eq!(l.read_playing().unwrap().unwrap().state, PlayState::Paused);
+            let named = stream.sent().iter().filter(|f| (f[0], f[1]) == (4, 5)).count();
+            assert_eq!(named, 1);
+        }
+
+        #[test]
+        fn headphones_that_say_no_are_not_asked_again() {
+            let stream = session(vec![
+                vec![status(1)],
+                vec![data(&[0x05, 0x01, 0x04, 0x01, 0x04])],
+            ]);
+            let mut l = link(vec![Ok(stream.clone())]);
+            assert_eq!(l.read_playing().unwrap(), None);
+            assert_eq!(l.read_playing().unwrap(), None);
+            let asked = stream.sent().iter().filter(|f| f[0] == 5).count();
+            assert_eq!(asked, 1, "asked once");
+            let refused = l.control_playback(PlaybackRequest::PlayPause).unwrap_err();
+            assert_eq!(refused.kind, LinkErrorKind::Unsupported);
+
+            // Gone and back: asked again.
+            l.device_gone();
+            assert!(!l.playing_absent);
+        }
+
+        #[test]
+        fn play_pause_through_the_link_is_read_back() {
+            let stream = session(vec![
+                vec![status(1)],
+                vec![data(&state_status(PlayState::Paused))],
+                vec![data(&control_processing(Control::Play))],
+                vec![data(&state_status(PlayState::Playing))],
+            ]);
+            let mut l = link(vec![Ok(stream.clone())]);
+            let change = l.control_playback(PlaybackRequest::PlayPause).unwrap();
+            assert_eq!(change.control, Control::Play);
+            assert!(change.is_confirmed());
+        }
     }
 }

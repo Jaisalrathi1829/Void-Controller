@@ -100,6 +100,21 @@ list — a QC Ultra's Immersion and Cinema included — under its own names.
   connected the same cautious way as a recognized one, under the name it
   gives itself.
 
+**Earbuds only**, on the Device page:
+
+- **Touch controls** — what a touch shortcut does (`[1.9]`), offered only
+  from the actions the earbuds themselves list for it.
+- **In-ear detection** — pause when taken out (`[1.24]`) and answer calls
+  when put in (`[1.27]`), each shown only where the earbuds answer for it.
+- **Find my buds** — off until switched on. Notes when the earbuds were last
+  connected, and on the phone where the phone was then (as Android last knew
+  it, with the location permission), and opens that place in the phone's
+  maps application. Kept on the device; nothing sent anywhere.
+
+None of these has been run on any earbuds. The ear-tip fit test is not
+offered: no function for it is documented, and finding one would mean
+sending undocumented requests to the earbuds.
+
 **Per model**, as the application's own rules give it (`cargo test --lib
 print_model_table -- --ignored --nocapture` prints this table). "Described":
 upstream's description of the model; "Recognized": known to be the model,
@@ -149,6 +164,29 @@ project — the Windows installer and the Android phone package, each under one
 name that the next build replaces, with a `README.txt` saying when each was
 built. That folder is the place to look for something to install; it is not
 part of the repository. `npm run setups` does the copying by itself.
+
+### Now playing
+
+What is playing on the computer — any application that reports to Windows'
+media sessions, the same ones the volume flyout shows: a music app, a browser
+tab, a video player — with its artwork, the application, what it is playing
+on (the headphones' own name when they are the output), a position bar that
+moves smoothly and can be dragged to seek, and the controls the application
+allows: previous, play/pause, next, and shuffle and repeat where it has them.
+On the dashboard, and as a compact row on the desktop widget. Read once a
+second while on screen; a control shows as done only when the application
+reports it.
+
+**Playing on another device.** When the headphones are playing from another
+device they are connected to — a phone, say — the card shows that device by
+the name the headphones give it ("Jaisal's S24 Ultra"), whether it is
+playing or paused, and previous, play/pause and next, passed on to it
+through the headphones. The phone application shows the same for the
+computer. The song's name, artwork and position are not shown for another
+device: the headphones keep the track for the Bose app's signed-in
+connection, and Void does not get around that (protocol-notes,
+Experiment 17). Play and pause show as done when the headphones then report
+it; a skip cannot be confirmed.
 
 ### Desktop widget (optional)
 

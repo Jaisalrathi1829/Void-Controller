@@ -12,6 +12,8 @@ pub mod bluetooth;
 pub mod bose;
 pub mod device;
 pub mod host;
+pub mod last_seen;
+pub mod media;
 pub mod settings;
 #[cfg(desktop)]
 pub mod tray;
@@ -231,6 +233,7 @@ pub struct SettingsView {
     pub voice_use_default_output: bool,
     pub desktop_widget: bool,
     pub widget_on_top: bool,
+    pub remember_last_seen: bool,
     /// Switches that cannot be used in this build, each with the reason.
     pub unavailable: BTreeMap<SettingKey, String>,
 }
@@ -280,6 +283,7 @@ impl SettingsView {
             voice_use_default_output: stored.voice_use_default_output,
             desktop_widget: stored.desktop_widget,
             widget_on_top: stored.widget_on_top,
+            remember_last_seen: stored.remember_last_seen,
             unavailable,
         }
     }
@@ -562,6 +566,18 @@ fn set_setting(
                 .update(|s| s.set(key, value))
                 .map_err(platform_error)?;
         }
+        SettingKey::RememberLastSeen => {
+            // On a phone the place needs the location permission: asked for
+            // when this is switched on. Without it only the time is noted.
+            #[cfg(target_os = "android")]
+            if value {
+                let _ = android::bridge::ask_location();
+            }
+            state
+                .settings()
+                .update(|s| s.set(key, value))
+                .map_err(platform_error)?;
+        }
         SettingKey::DesktopWidget | SettingKey::WidgetOnTop => {
             #[cfg(mobile)]
             return Err(UiError {
@@ -753,6 +769,9 @@ async fn run_command(state: &AppState, command: DeviceCommand) -> UiResult<Comma
             outcome?
         }
         DeviceCommand::SetMultipoint { enabled } => dev.set_multipoint(enabled).await?,
+        DeviceCommand::SetShortcut { action } => dev.set_shortcut(action).await?,
+        DeviceCommand::SetAutoPause { enabled } => dev.set_auto_pause(enabled).await?,
+        DeviceCommand::SetAutoAnswer { enabled } => dev.set_auto_answer(enabled).await?,
         DeviceCommand::SetPairedDeviceConnection { device, connected } => {
             dev.set_paired_connection(&device, connected).await?
         }
@@ -846,12 +865,22 @@ async fn run_command(state: &AppState, command: DeviceCommand) -> UiResult<Comma
             }
         }
 
-        // Media transport goes through the Windows session model, which is a
-        // separate integration and not implemented yet.
+        // Media transport goes to whatever is playing, through Windows'
+        // media sessions.
         DeviceCommand::MediaPlayPause
         | DeviceCommand::MediaNext
         | DeviceCommand::MediaPrevious => {
-            CommandOutcome::unsupported("Media transport control is not implemented yet.")
+            let action = match command {
+                DeviceCommand::MediaNext => media::MediaAction::Next,
+                DeviceCommand::MediaPrevious => media::MediaAction::Previous,
+                _ => media::MediaAction::PlayPause,
+            };
+            match tauri::async_runtime::spawn_blocking(move || media::control(action)).await {
+                Ok(Ok(true)) => CommandOutcome::applied(),
+                Ok(Ok(false)) => CommandOutcome::unsupported("The playing application declined."),
+                Ok(Err(why)) => CommandOutcome::unsupported(why),
+                Err(e) => CommandOutcome::unsupported(e.to_string()),
+            }
         }
     };
 
@@ -998,6 +1027,89 @@ fn get_bluetooth_availability() -> bluetooth::BluetoothAvailability {
     #[cfg(not(any(windows, target_os = "android")))]
     {
         bluetooth::BluetoothAvailability::unavailable("Not running on Windows or Android.")
+    }
+}
+
+/// What is playing: on this computer, from Windows' media sessions (never
+/// on a phone), and through the headphones — which of the devices they are
+/// connected to they are playing from, and whether it plays. Each is read
+/// on its own: one that cannot be read is `None` and does not hide the other.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NowPlayingView {
+    local: Option<media::NowPlaying>,
+    headphones: Option<device::state::HeadphonesPlaying>,
+}
+
+#[tauri::command]
+async fn get_now_playing(state: tauri::State<'_, AppState>) -> UiResult<NowPlayingView> {
+    let local = tauri::async_runtime::spawn_blocking(media::now_playing);
+    let headphones = state.current().playing().await.ok().flatten();
+    let local = local.await.ok().and_then(Result::ok).flatten();
+    Ok(NowPlayingView { local, headphones })
+}
+
+/// Play/pause, next or previous, passed on through the headphones to the
+/// device they are playing from.
+#[tauri::command]
+async fn headphones_playback(
+    state: tauri::State<'_, AppState>,
+    control: device::command::PlaybackControl,
+) -> UiResult<CommandOutcome> {
+    state
+        .current()
+        .control_playback(control)
+        .await
+        .map_err(Into::into)
+}
+
+/// Asks the playing application to play, pause, skip, seek, shuffle or
+/// repeat. Resolves to whether it agreed.
+#[tauri::command]
+async fn media_control(action: media::MediaAction) -> UiResult<bool> {
+    tauri::async_runtime::spawn_blocking(move || media::control(action))
+        .await
+        .map_err(|e| platform_error(e.to_string()))?
+        .map_err(platform_error)
+}
+
+/// When, and on a phone where, the earbuds were last connected — if that
+/// is being noted. Nothing is asked of any device.
+#[tauri::command]
+fn get_last_seen(state: tauri::State<'_, AppState>) -> Option<settings::LastSeen> {
+    let stored = state.settings().get();
+    stored.remember_last_seen.then_some(stored.last_seen).flatten()
+}
+
+/// Opens the place the earbuds were last connected in the phone's maps
+/// application. Takes nothing: the place is the one noted.
+#[cfg_attr(desktop, tauri::command)]
+#[cfg_attr(mobile, tauri::command(async))]
+fn open_last_seen_map(state: tauri::State<'_, AppState>) -> UiResult<()> {
+    let place = state
+        .settings()
+        .get()
+        .last_seen
+        .and_then(|l| l.place)
+        .ok_or_else(|| UiError {
+            message: "No place has been noted.".to_string(),
+            kind: "unsupported".to_string(),
+        })?;
+    #[cfg(target_os = "android")]
+    {
+        android::bridge::open_map(
+            f64::from(place.latitude_e6) / 1e6,
+            f64::from(place.longitude_e6) / 1e6,
+        )
+        .map_err(platform_error)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = place;
+        Err(UiError {
+            message: "Places are only noted on a phone.".to_string(),
+            kind: "unsupported".to_string(),
+        })
     }
 }
 
@@ -1299,6 +1411,11 @@ pub fn run() {
             list_bluetooth_devices,
             list_bose_devices,
             use_bose_device,
+            get_last_seen,
+            open_last_seen_map,
+            get_now_playing,
+            media_control,
+            headphones_playback,
             list_audio_endpoints,
             open_bluetooth_settings,
             request_bluetooth_permission,

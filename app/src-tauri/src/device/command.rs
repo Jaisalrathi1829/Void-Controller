@@ -11,6 +11,16 @@ use super::state::{check_device_name, is_paired_device_id, EqSettings, NoiseCont
 use super::{DeviceError, DeviceResult};
 use serde::{Deserialize, Serialize};
 
+/// Play/pause, next or previous, passed on through the headphones to the
+/// device they are playing from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlaybackControl {
+    PlayPause,
+    Next,
+    Previous,
+}
+
 /// The highest mode slot any model lists. The QC Ultra's run to 10.
 pub const MAX_MODE_INDEX: u8 = 15;
 
@@ -70,6 +80,22 @@ pub enum DeviceCommand {
     SetMultipoint {
         enabled: bool,
     },
+    /// What an earbud's touch shortcut does: one of the actions the snapshot
+    /// listed for it. Checked against the earbuds' own list before sending.
+    #[serde(rename_all = "camelCase")]
+    SetShortcut {
+        action: u8,
+    },
+    /// Whether the earbuds pause when taken out.
+    #[serde(rename_all = "camelCase")]
+    SetAutoPause {
+        enabled: bool,
+    },
+    /// Whether the earbuds answer a call when put in.
+    #[serde(rename_all = "camelCase")]
+    SetAutoAnswer {
+        enabled: bool,
+    },
     /// What the headphones are called. Text, checked before anything sees
     /// it: see [`check_device_name`].
     #[serde(rename_all = "camelCase")]
@@ -123,6 +149,13 @@ impl DeviceCommand {
             Self::SetDeviceName { name } => {
                 check_device_name(name).map_err(DeviceError::InvalidInput)?;
             }
+            Self::SetShortcut { action } => {
+                if *action > 31 {
+                    return Err(DeviceError::InvalidInput(format!(
+                        "action {action} is not one a shortcut can be set to"
+                    )));
+                }
+            }
             Self::SelectNoiseMode { index } => {
                 if *index > MAX_MODE_INDEX {
                     return Err(DeviceError::InvalidInput(format!(
@@ -156,6 +189,9 @@ impl DeviceCommand {
                 | Self::SelectNoiseMode { .. }
                 | Self::SetEqualizer { .. }
                 | Self::SetMultipoint { .. }
+                | Self::SetShortcut { .. }
+                | Self::SetAutoPause { .. }
+                | Self::SetAutoAnswer { .. }
                 | Self::SetDeviceName { .. }
                 | Self::SetPairedDeviceConnection { .. }
                 | Self::MediaPlayPause
@@ -189,6 +225,9 @@ impl DeviceCommand {
             Self::SelectNoiseMode { .. } => "select_noise_mode",
             Self::SetEqualizer { .. } => "set_equalizer",
             Self::SetMultipoint { .. } => "set_multipoint",
+            Self::SetShortcut { .. } => "set_shortcut",
+            Self::SetAutoPause { .. } => "set_auto_pause",
+            Self::SetAutoAnswer { .. } => "set_auto_answer",
             Self::SetDeviceName { .. } => "set_device_name",
             Self::SetPairedDeviceConnection { .. } => "set_paired_device_connection",
         }

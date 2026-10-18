@@ -58,6 +58,7 @@ function settings(over: Partial<AppSettings> = {}): AppSettings {
     voiceUseDefaultOutput: false,
     desktopWidget: false,
     widgetOnTop: true,
+    rememberLastSeen: false,
     voiceId: 'af_bella',
     voiceSpeedPercent: 100,
     voiceVolumePercent: 80,

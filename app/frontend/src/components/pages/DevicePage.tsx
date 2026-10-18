@@ -22,6 +22,7 @@ import {
   Toggle,
 } from "../primitives";
 import { Modal } from "../Modal";
+import { EarbudControlsPanel, FindMyBudsPanel } from "../EarbudPanels";
 import { isShown, isUnavailable, useApp } from "../../store";
 import { cn } from "../ui/utils";
 import { hostPlatform } from "@/services/ipc";
@@ -485,6 +486,10 @@ export function DevicePage() {
         </Panel>
 
         {multiDeviceShown && <MultiDevicePanel />}
+        {/* Earbuds only: their touch shortcut, in-ear detection, and where
+            they were last connected. */}
+        <EarbudControlsPanel />
+        <FindMyBudsPanel />
       </div>
 
       <Panel className="p-6">

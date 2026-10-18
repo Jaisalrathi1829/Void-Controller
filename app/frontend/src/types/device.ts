@@ -73,6 +73,43 @@ export interface BatteryPart {
   percent: number;
 }
 
+/** An action a touch shortcut can be set to. */
+export interface ShortcutOption {
+  action: number;
+  name: string;
+}
+
+/** An earbud's touch shortcut, as the earbuds last reported it. */
+export interface ShortcutState {
+  /** Which control: "Shortcut", "Left earbud", ... */
+  control: string;
+  /** "Press and hold", ... */
+  gesture: string;
+  action: number;
+  actionName: string;
+  /** The actions the earbuds list for it. Empty: shown, not changed. */
+  options: ShortcutOption[];
+  readAt: string;
+}
+
+/** What earbuds do when taken out or put in. Null where they have no such setting. */
+export interface WearState {
+  autoPause: boolean | null;
+  autoAnswer: boolean | null;
+}
+
+/** "Find my buds": when, and on a phone where, the earbuds were last connected. */
+export interface LastSeen {
+  deviceName: string;
+  at: string;
+  place: {
+    latitudeE6: number;
+    longitudeE6: number;
+    accuracyM: number | null;
+    at: string;
+  } | null;
+}
+
 /** What kind of thing a Bose model is. */
 export type DeviceCategory = 'headphones' | 'earbuds';
 
@@ -257,6 +294,10 @@ export interface DeviceSnapshot {
   noiseModes?: NoiseModeOption[] | null;
   /** Whether multipoint is on, as the headphones last said. */
   multipoint?: MultipointState | null;
+  /** The touch shortcut, on earbuds. */
+  shortcut?: ShortcutState | null;
+  /** In-ear detection settings, on earbuds. */
+  wear?: WearState | null;
   /** What the headphones are paired with, and which of those are connected. */
   pairedDevices?: PairedDevice[] | null;
   systemAudio: SystemAudioState | null;

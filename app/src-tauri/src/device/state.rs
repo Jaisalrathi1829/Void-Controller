@@ -207,6 +207,69 @@ pub struct NoiseModeOption {
     pub active: bool,
 }
 
+/// An action a touch shortcut can be set to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutOption {
+    /// What setting it asks for.
+    pub action: u8,
+    pub name: String,
+}
+
+/// What the headphones are playing from — one of the devices they are
+/// connected to — and whether it is playing, as they last said. The track
+/// itself is not known: the headphones keep it for the Bose app's signed-in
+/// connection (protocol-notes, Experiment 17).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadphonesPlaying {
+    /// The headphones, as the system calls them.
+    pub headphones: String,
+    /// What the headphones call the device playing. `None` for the cable,
+    /// or a device they did not name.
+    pub device: Option<String>,
+    /// The device playing is the one this application is running on.
+    pub this_device: bool,
+    /// Playing from the cable.
+    pub cable: bool,
+    pub state: SourcePlayState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourcePlayState {
+    Playing,
+    Paused,
+    Stopped,
+}
+
+/// An earbud's touch shortcut, as the earbuds last reported it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutState {
+    /// Which control it is: "Shortcut", "Left earbud", ...
+    pub control: String,
+    /// The gesture: "Press and hold", ...
+    pub gesture: String,
+    pub action: u8,
+    pub action_name: String,
+    /// The actions the earbuds say it can be set to. Empty when they did not
+    /// say, and then it is only shown.
+    pub options: Vec<ShortcutOption>,
+    pub read_at: String,
+}
+
+/// What earbuds do when they are taken out or put in, as they last said.
+/// Each is `None` where the earbuds have no such setting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WearState {
+    /// Pause when taken out, play when put back.
+    pub auto_pause: Option<bool>,
+    /// Answer a call when put in.
+    pub auto_answer: Option<bool>,
+}
+
 /// Whether the headphones will stay connected to two devices at once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -313,6 +376,12 @@ pub struct DeviceSnapshot {
     /// they have not said, or have no such thing.
     #[serde(default)]
     pub multipoint: Option<MultipointState>,
+    /// The touch shortcut, on earbuds that have one.
+    #[serde(default)]
+    pub shortcut: Option<ShortcutState>,
+    /// In-ear detection settings, on earbuds that have them.
+    #[serde(default)]
+    pub wear: Option<WearState>,
     /// The devices the headphones are paired with and which are connected,
     /// as they last listed them. `None` when they have not.
     #[serde(default)]
@@ -342,6 +411,8 @@ impl DeviceSnapshot {
             model: None,
             noise_modes: None,
             multipoint: None,
+            shortcut: None,
+            wear: None,
             paired_devices: None,
             system_audio: None,
             host_name: None,

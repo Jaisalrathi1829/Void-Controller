@@ -16,6 +16,7 @@
 //! | [`noise`] | Mode switching confirmed by reading the mode back. |
 //! | [`custom`] | The user-configurable modes: listing them, and adjusting the active one's level. |
 //! | [`eq`] | The three-band hardware equalizer, read strictly and written with read-back. |
+//! | [`playing`] | What the headphones are playing, from which connected device, and play/pause/skip passed on to it. |
 //! | [`link`] | One controlled connection at a time; reconnect, backoff, last confirmed state. |
 //! | [`winsock`] | The RFCOMM socket. The only platform-specific code. |
 //!
@@ -24,12 +25,14 @@
 //! frames are built by upstream's codec from upstream's model configuration.
 
 pub mod anr;
+pub mod controls;
 pub mod custom;
 pub mod endpoint;
 pub mod eq;
 pub mod link;
 pub mod models;
 pub mod noise;
+pub mod playing;
 pub mod stream;
 pub mod unit;
 

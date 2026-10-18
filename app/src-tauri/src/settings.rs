@@ -64,6 +64,34 @@ pub struct StoredSettings {
     /// Where the widget was last put, in screen pixels. Checked against the
     /// screens that are actually there before it is used.
     pub widget_position: Option<(i32, i32)>,
+    /// "Find my buds": note when, and on a phone where, the earbuds were last
+    /// connected. Off until switched on.
+    pub remember_last_seen: bool,
+    /// The note, when there is one.
+    pub last_seen: Option<LastSeen>,
+}
+
+/// When the earbuds were last connected, and where the phone was then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastSeen {
+    /// What they were called.
+    pub device_name: String,
+    /// The last moment they were seen connected, or the moment they went.
+    pub at: String,
+    pub place: Option<Place>,
+}
+
+/// A place, in millionths of a degree, as the phone last knew it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Place {
+    pub latitude_e6: i32,
+    pub longitude_e6: i32,
+    /// How far off it may be, in metres, where the phone said.
+    pub accuracy_m: Option<u32>,
+    /// When the phone had this location.
+    pub at: String,
 }
 
 /// Speaking rates offered, as percentages of the model's natural pace.
@@ -103,6 +131,9 @@ impl Default for StoredSettings {
             desktop_widget: false,
             widget_on_top: true,
             widget_position: None,
+            // Where someone has been is not noted unless they ask for it.
+            remember_last_seen: false,
+            last_seen: None,
         }
     }
 }
@@ -143,6 +174,7 @@ pub enum SettingKey {
     VoiceUseDefaultOutput,
     DesktopWidget,
     WidgetOnTop,
+    RememberLastSeen,
 }
 
 impl StoredSettings {
@@ -165,6 +197,13 @@ impl StoredSettings {
             SettingKey::VoiceUseDefaultOutput => self.voice_use_default_output = value,
             SettingKey::DesktopWidget => self.desktop_widget = value,
             SettingKey::WidgetOnTop => self.widget_on_top = value,
+            SettingKey::RememberLastSeen => {
+                self.remember_last_seen = value;
+                // Switched off, what was noted goes with it.
+                if !value {
+                    self.last_seen = None;
+                }
+            }
         }
     }
 }
@@ -307,7 +346,7 @@ mod tests {
         }
     }
 
-    fn flags(s: &StoredSettings) -> [bool; 14] {
+    fn flags(s: &StoredSettings) -> [bool; 15] {
         [
             s.start_minimized,
             s.minimize_to_tray,
@@ -323,6 +362,7 @@ mod tests {
             s.voice_use_default_output,
             s.desktop_widget,
             s.widget_on_top,
+            s.remember_last_seen,
         ]
     }
 
@@ -343,6 +383,7 @@ mod tests {
             SettingKey::VoiceUseDefaultOutput,
             SettingKey::DesktopWidget,
             SettingKey::WidgetOnTop,
+            SettingKey::RememberLastSeen,
         ];
         let mut seen = std::collections::HashSet::new();
         for key in keys {
@@ -436,5 +477,28 @@ mod tests {
         assert_eq!(parse("\"minimizeToTray\"").unwrap(), SettingKey::MinimizeToTray);
         assert!(parse("\"preferredDeviceId\"").is_err());
         assert!(parse("\"somethingElse\"").is_err());
+    }
+
+    /// Switched off, "Find my buds" forgets what it noted.
+    #[test]
+    fn switching_find_my_buds_off_forgets_the_note() {
+        let mut s = StoredSettings::default();
+        assert!(!s.remember_last_seen, "off until asked for");
+        s.set(SettingKey::RememberLastSeen, true);
+        s.last_seen = Some(LastSeen {
+            device_name: "Buds".into(),
+            at: "2026-10-17T10:00:00Z".into(),
+            place: Some(Place {
+                latitude_e6: 28_613_900,
+                longitude_e6: 77_209_000,
+                accuracy_m: Some(12),
+                at: "2026-10-17T09:59:00Z".into(),
+            }),
+        });
+        let text = serde_json::to_string(&s).unwrap();
+        let back: StoredSettings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, s, "kept across a restart");
+        s.set(SettingKey::RememberLastSeen, false);
+        assert!(s.last_seen.is_none());
     }
 }

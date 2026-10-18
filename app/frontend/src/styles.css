@@ -300,3 +300,81 @@ html.widget #root {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Now playing: three bars that move while something plays. Transform only,
+   so they run on the compositor and cost nothing else. */
+.np-bars > span {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: bottom;
+  transform: scaleY(0.3);
+  transition: transform 0.3s ease;
+}
+.np-bars-on > span {
+  animation: np-bar 0.9s ease-in-out infinite;
+}
+.np-bars-on > span:nth-child(2) {
+  animation-delay: -0.3s;
+  animation-duration: 0.75s;
+}
+.np-bars-on > span:nth-child(3) {
+  animation-delay: -0.6s;
+  animation-duration: 1.05s;
+}
+@keyframes np-bar {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .np-bars-on > span {
+    animation: none;
+    transform: scaleY(0.7);
+  }
+}
+
+/* A new track's details: fade and rise into place. */
+.np-enter {
+  animation: np-enter 0.26s ease-out;
+}
+@keyframes np-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .np-enter {
+    animation: none;
+  }
+}
+
+/* The now-playing card for another device: a soft light that drifts while
+   it plays. Transform only; still when motion is reduced. */
+.np-glow {
+  transition: opacity 0.6s ease;
+  opacity: 0.55;
+}
+.np-glow-on {
+  opacity: 1;
+  animation: np-drift 9s ease-in-out infinite alternate;
+}
+@keyframes np-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(140px, -24px, 0) scale(1.15);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .np-glow-on {
+    animation: none;
+  }
+}

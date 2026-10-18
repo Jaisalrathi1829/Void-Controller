@@ -19,6 +19,9 @@ const ipcMock = vi.hoisted(() => ({
   getVoiceStatus: vi.fn(),
   onVoiceStatus: vi.fn(),
   showMainWindow: vi.fn(),
+  getNowPlaying: vi.fn(),
+  mediaControl: vi.fn(),
+  headphonesPlayback: vi.fn(),
 }));
 vi.mock('@/services/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/ipc')>()),
@@ -71,6 +74,9 @@ let settingsChanged: ((s: AppSettings) => void) | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ipcMock.getNowPlaying.mockResolvedValue({ local: null, headphones: null });
+  ipcMock.mediaControl.mockResolvedValue(true);
+  ipcMock.headphonesPlayback.mockResolvedValue({ kind: 'applied', verifiedAt: 'now' });
   settingsChanged = undefined;
   ipcMock.getSnapshot.mockResolvedValue(snapshot());
   ipcMock.getSettings.mockResolvedValue(settings());
@@ -154,6 +160,59 @@ describe('what the widget shows', () => {
     expect(screen.getByText('Headphones not connected')).toBeInTheDocument();
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+  });
+
+  // What the computer is playing shows whether or not the headphones are
+  // connected, and its controls go to the playing application.
+  it('shows what is playing, with its controls', async () => {
+    ipcMock.getSnapshot.mockResolvedValue(snapshot({ connection: 'disconnected', noiseControl: null, equalizer: null, battery: null }));
+    ipcMock.getNowPlaying.mockResolvedValue({
+      headphones: null,
+      local: {
+      title: 'Honest',
+      artist: 'The Chainsmokers',
+      album: '',
+      app: 'Amazon Music',
+      artwork: null,
+      state: 'playing',
+      positionMs: 16000,
+      durationMs: 208000,
+      sampledAtMs: Date.now(),
+      canPlayPause: true,
+      canNext: true,
+      canPrevious: true,
+      canSeek: true,
+      shuffle: null,
+      repeat: null,
+      },
+    });
+    await renderWidget();
+    expect(await screen.findByText('Honest')).toBeInTheDocument();
+    expect(screen.getByText('The Chainsmokers')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(ipcMock.mediaControl).toHaveBeenCalledWith({ kind: 'next' });
+  });
+
+  // Playing from a phone through the headphones: the phone, whether it
+  // plays, and controls passed on through the headphones — no track.
+  it('shows what the headphones play from another device, with controls through them', async () => {
+    ipcMock.getNowPlaying.mockResolvedValue({
+      local: null,
+      headphones: {
+        headphones: 'Aurora',
+        device: "Jaisal's S24 Ultra",
+        thisDevice: false,
+        cable: false,
+        state: 'playing',
+      },
+    });
+    await renderWidget();
+    expect(await screen.findByText("Jaisal's S24 Ultra")).toBeInTheDocument();
+    expect(screen.getByText('Playing · through Aurora')).toBeInTheDocument();
+    expect(screen.queryByRole('slider', { name: 'Position' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(ipcMock.headphonesPlayback).toHaveBeenCalledWith('playPause');
+    expect(ipcMock.mediaControl).not.toHaveBeenCalled();
   });
 
   // The simulated device is labelled wherever it appears, however small.

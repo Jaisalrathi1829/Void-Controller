@@ -349,6 +349,12 @@ pub fn spawn(app: AppHandle) {
             }
 
             let step = watch.observe(sighting.as_ref());
+            // "Find my buds": when, and on a phone where, they were last
+            // connected — only if that has been asked for.
+            {
+                let state = app.state::<crate::AppState>();
+                crate::last_seen::observe(&state, sighting.as_ref(), &step);
+            }
 
             // With auto reconnect off, headphones that leave are let go of:
             // when they return, the application waits to be asked.

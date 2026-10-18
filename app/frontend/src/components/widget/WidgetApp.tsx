@@ -3,6 +3,8 @@ import { Maximize2, Pin, PinOff, X } from "lucide-react";
 import * as ipc from "@/services/ipc";
 import { AppProvider, isShown, isUnavailable, useApp } from "../../store";
 import { NoiseModePicker } from "../NoiseModes";
+import { NowPlayingRow, PlayingElsewhereRow } from "../nowplaying/NowPlayingCard";
+import { useNowPlaying } from "../nowplaying/useNowPlaying";
 import { BatteryIndicator, Range, SectionLabel } from "../primitives";
 import { cn } from "../ui/utils";
 
@@ -73,6 +75,9 @@ export function Widget() {
 
   const connected = connection === "connected";
   const eqOff = isUnavailable(capabilities.eq);
+  // What is playing — on this computer, or through the headphones from
+  // another device — whether or not the headphones are connected here.
+  const { shown, control: mediaControl, controlElsewhere, passing } = useNowPlaying();
   // Only what the device has: a section for something it has none of is
   // left out.
   const noiseShown = isShown(capabilities.noiseControl);
@@ -149,6 +154,17 @@ export function Widget() {
             <X className="size-4" />
           </HeaderButton>
         </header>
+
+        <section className="border-b border-border px-4 py-3" aria-label="Now playing">
+          {shown?.kind === "elsewhere" ? (
+            <PlayingElsewhereRow hp={shown.hp} busy={passing} onControl={(c) => void controlElsewhere(c)} />
+          ) : (
+            <NowPlayingRow
+              np={shown?.kind === "local" ? shown.np : null}
+              onControl={(a) => void mediaControl(a)}
+            />
+          )}
+        </section>
 
         {connected ? (
           <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 py-3.5">

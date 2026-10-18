@@ -129,6 +129,40 @@ pub fn open_bluetooth_settings() -> Result<(), String> {
     run("openBluetoothSettings", ())
 }
 
+/// The phone's location as Android last knew it, and whether this
+/// application may have it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastLocation {
+    pub permission: bool,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// Metres.
+    pub accuracy: Option<f64>,
+    /// When the phone had it, in milliseconds since 1970.
+    pub time: Option<i64>,
+}
+
+pub fn last_location() -> Result<LastLocation, String> {
+    call("lastLocation", ())
+}
+
+/// Asks for the location permission, if it has not been given.
+pub fn ask_location() -> Result<(), String> {
+    run("askLocation", ())
+}
+
+#[derive(Serialize)]
+struct MapArgs {
+    latitude: f64,
+    longitude: f64,
+}
+
+/// Opens a place in the phone's maps application.
+pub fn open_map(latitude: f64, longitude: f64) -> Result<(), String> {
+    run("openMap", MapArgs { latitude, longitude })
+}
+
 /// Writes one line to Android's log, for whoever is watching it with `adb
 /// logcat -s Aurora`. For the few events worth a line — a model identified,
 /// a connection refused — and never for anything that happens many times a

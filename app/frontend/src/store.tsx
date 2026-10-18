@@ -13,6 +13,9 @@ import * as ipc from "@/services/ipc";
 import type {
   BatteryPart,
   CommandOutcome,
+  LastSeen,
+  ShortcutState,
+  WearState,
   DeviceCategory,
   DeviceModel,
   DeviceSnapshot,
@@ -81,6 +84,12 @@ export interface FeatureCapabilities {
   rename: Capability;
   /** Connecting and disconnecting the devices the headphones are paired with. */
   connections: Capability;
+  /** An earbud's touch shortcut. */
+  touchControls: Capability;
+  /** Earbuds pausing when taken out. */
+  inEarDetection: Capability;
+  /** Earbuds answering a call when put in. */
+  autoAnswer: Capability;
 }
 
 export type ThemePref = "system" | "light" | "dark";
@@ -125,6 +134,18 @@ interface AppState {
   noiseModes: NoiseModeOption[] | null;
   /** Switches to one of the modes the device listed. */
   selectNoiseMode: (mode: NoiseModeOption) => void;
+
+  /** An earbud's touch shortcut, as the earbuds last reported it. */
+  shortcut: ShortcutState | null;
+  setShortcut: (action: number) => void;
+  /** In-ear detection settings, as the earbuds last reported them. */
+  wear: WearState | null;
+  setAutoPause: (on: boolean) => void;
+  setAutoAnswer: (on: boolean) => void;
+  /** "Find my buds": the last note, if that is being noted. */
+  lastSeen: LastSeen | null;
+  refreshLastSeen: () => void;
+  openLastSeenMap: () => void;
 
   /**
    * Whether the device chooser is up, and why: on every start, and when the
@@ -307,6 +328,9 @@ function mapCapabilities(snapshot: DeviceSnapshot | null): FeatureCapabilities {
       multipoint: unknown,
       rename: unknown,
       connections: unknown,
+      touchControls: unknown,
+      inEarDetection: unknown,
+      autoAnswer: unknown,
     };
   }
   const c = snapshot.capabilities;
@@ -320,6 +344,9 @@ function mapCapabilities(snapshot: DeviceSnapshot | null): FeatureCapabilities {
     multipoint: c.multipoint.status,
     rename: c.deviceRename.status,
     connections: c.pairedDevices.status,
+    touchControls: c.touchControls.status,
+    inEarDetection: c.inEarDetection.status,
+    autoAnswer: c.autoAnswer.status,
   };
 }
 
@@ -796,6 +823,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const kind: DeviceCategory = model?.category ?? "headphones";
   const batteryParts = useMemo(() => snapshot?.battery?.parts ?? [], [snapshot]);
   const noiseModes = snapshot?.noiseModes ?? null;
+  const shortcut = snapshot?.shortcut ?? null;
+  const wear = snapshot?.wear ?? null;
 
   /* ---- actions ---- */
   const setNoise = useCallback(
@@ -804,6 +833,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [requestNoise],
   );
+
+  const setShortcut = useCallback(
+    (action: number) => {
+      void run({ kind: "setShortcut", action }, { label: "Touch control", eventType: "SHORTCUT" });
+    },
+    [run],
+  );
+
+  const setAutoPause = useCallback(
+    (on: boolean) => {
+      void run(
+        { kind: "setAutoPause", enabled: on },
+        { label: `Pause when taken out ${on ? "on" : "off"}`, eventType: "WEAR" },
+      );
+    },
+    [run],
+  );
+
+  const setAutoAnswer = useCallback(
+    (on: boolean) => {
+      void run(
+        { kind: "setAutoAnswer", enabled: on },
+        { label: `Answer calls when put in ${on ? "on" : "off"}`, eventType: "WEAR" },
+      );
+    },
+    [run],
+  );
+
+  /* ---- "Find my buds" ---- */
+  const [lastSeen, setLastSeen] = useState<LastSeen | null>(null);
+  const refreshLastSeen = useCallback(() => {
+    ipc
+      .getLastSeen()
+      .then(setLastSeen)
+      .catch(() => setLastSeen(null));
+  }, []);
+  useEffect(() => {
+    refreshLastSeen();
+  }, [refreshLastSeen, settings.rememberLastSeen, snapshot?.connection]);
+  const openLastSeenMap = useCallback(() => {
+    ipc.openLastSeenMap().catch(() => {});
+  }, []);
 
   const selectNoiseMode = useCallback(
     (mode: NoiseModeOption) => {
@@ -1013,6 +1084,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       batteryParts,
       noiseModes,
       selectNoiseMode,
+      shortcut,
+      setShortcut,
+      wear,
+      setAutoPause,
+      setAutoAnswer,
+      lastSeen,
+      refreshLastSeen,
+      openLastSeenMap,
       choosing,
       changeDevice,
       chooseDevice,
@@ -1075,6 +1154,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       connection, setConnection, simulated, setSimulated, nativeAvailable, connect,
       battery, charging, deviceName, batterySource, capabilities, snapshot,
       model, kind, batteryParts, noiseModes, selectNoiseMode,
+      shortcut, setShortcut, wear, setAutoPause, setAutoAnswer,
+      lastSeen, refreshLastSeen, openLastSeenMap,
       choosing, changeDevice, chooseDevice, closeChooser,
       noise, setNoise, noiseReadAt, deviceNotice, deviceError, allowBluetooth,
       ancLevel, setAncLevel, noiseLabel, windBlock, setWindBlock,

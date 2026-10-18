@@ -17,6 +17,9 @@ import {
   checkDeviceName,
   type BatteryPart,
   type CommandOutcome,
+  type LastSeen,
+  type ShortcutState,
+  type WearState,
   type DeviceModel,
   type DeviceSnapshot,
   type EqSettings,
@@ -45,6 +48,10 @@ interface SimulatedProfile {
   parts?: BatteryPart[];
   /** Features this model does not have, and are not shown. */
   lacks: CapabilityKey[];
+  /** A touch shortcut and its actions, on earbuds. */
+  shortcut?: { action: number; options: { action: number; name: string }[] };
+  /** In-ear detection, on earbuds. */
+  wear?: { autoPause: boolean; autoAnswer: boolean };
   /** Noise cancellation as levels (the QuietComfort 35 generation): the
    * indices are the levels' values, and none is Quiet or Aware. */
   levels?: boolean;
@@ -98,6 +105,17 @@ const PROFILES: [SimulatedProfile, ...SimulatedProfile[]] = [
       { name: 'Left', percent: 76 },
       { name: 'Case', percent: 54 },
     ],
+    shortcut: {
+      action: 1,
+      options: [
+        { action: 1, name: 'Voice assistant' },
+        { action: 3, name: 'Battery level' },
+        { action: 17, name: 'Switch modes' },
+        { action: 19, name: 'Immersive audio' },
+        { action: 14, name: 'Off' },
+      ],
+    },
+    wear: { autoPause: true, autoAnswer: false },
     // No custom mode is set up on them, and they list no paired devices.
     lacks: ['customNoiseControl', 'pairedDevices'],
   },
@@ -128,6 +146,9 @@ function simulatedCapabilities(lacks: CapabilityKey[]): DeviceCapabilities {
     'multipoint',
     'deviceRename',
     'pairedDevices',
+    'touchControls',
+    'inEarDetection',
+    'autoAnswer',
   ] as const) {
     const absent = lacks.includes(key);
     caps[key] = {
@@ -158,6 +179,34 @@ export class BrowserSimulatedDevice {
   private otherConnected = true;
   private name = PROFILES[0].name;
   private mutations = 0;
+  /** Each made-up earbuds' shortcut and in-ear detection, as changed. */
+  private shortcutAction = new Map<string, number>();
+  private wearSettings = new Map<string, WearState>();
+
+  /** The simulation notes nowhere it has been. */
+  async lastSeen(): Promise<LastSeen | null> {
+    return null;
+  }
+
+  private shortcutState(now: string): ShortcutState | null {
+    const s = this.profile.shortcut;
+    if (!s) return null;
+    const action = this.shortcutAction.get(this.profile.id) ?? s.action;
+    return {
+      control: 'Shortcut',
+      gesture: 'Press and hold',
+      action,
+      actionName: s.options.find((o) => o.action === action)?.name ?? 'Other action',
+      options: s.options,
+      readAt: now,
+    };
+  }
+
+  private wearState(): WearState | null {
+    const w = this.profile.wear;
+    if (!w) return null;
+    return this.wearSettings.get(this.profile.id) ?? w;
+  }
 
   /** The made-up devices, as a paired list would show them. */
   async paired(): Promise<PairedBose[]> {
@@ -225,7 +274,12 @@ export class BrowserSimulatedDevice {
           }
         : null,
       capabilities: this.connected
-        ? simulatedCapabilities(this.profile.lacks)
+        ? simulatedCapabilities([
+            ...this.profile.lacks,
+            // Only earbuds with them have a touch shortcut and in-ear detection.
+            ...(this.profile.shortcut ? [] : (['touchControls'] as const)),
+            ...(this.profile.wear ? [] : (['inEarDetection', 'autoAnswer'] as const)),
+          ])
         : createUnknownCapabilities('Simulated device is disconnected.'),
       battery: this.connected
         ? {
@@ -249,6 +303,8 @@ export class BrowserSimulatedDevice {
         : null,
       equalizer: this.connected ? { ...this.eq, source: 'simulated', readAt: now } : null,
       model: this.connected ? this.profile.model : null,
+      shortcut: this.connected ? this.shortcutState(now) : null,
+      wear: this.connected ? this.wearState() : null,
       noiseModes: this.connected ? this.noiseModes() : null,
       multipoint: this.connected
         ? { enabled: this.multipoint, source: 'simulated', readAt: now }
@@ -347,6 +403,31 @@ export class BrowserSimulatedDevice {
           return { kind: 'rejected', reason: 'EQ gains must be within -10..10 dB.' };
         }
         this.eq = command.settings;
+        return { kind: 'applied', verifiedAt: new Date().toISOString() };
+      }
+
+      case 'setShortcut': {
+        if (!this.connected) return { kind: 'rejected', reason: 'No device is connected.' };
+        const s = this.profile.shortcut;
+        if (!s) return { kind: 'unsupported', reason: 'The simulated device has no touch shortcut.' };
+        if (!s.options.some((o) => o.action === command.action)) {
+          return { kind: 'rejected', reason: 'Not one of the actions the earbuds list.' };
+        }
+        this.shortcutAction.set(this.profile.id, command.action);
+        return { kind: 'applied', verifiedAt: new Date().toISOString() };
+      }
+
+      case 'setAutoPause':
+      case 'setAutoAnswer': {
+        if (!this.connected) return { kind: 'rejected', reason: 'No device is connected.' };
+        const now = this.wearState();
+        if (!now) return { kind: 'unsupported', reason: 'The simulated device has no in-ear detection.' };
+        this.wearSettings.set(
+          this.profile.id,
+          command.kind === 'setAutoPause'
+            ? { ...now, autoPause: command.enabled }
+            : { ...now, autoAnswer: command.enabled },
+        );
         return { kind: 'applied', verifiedAt: new Date().toISOString() };
       }
 

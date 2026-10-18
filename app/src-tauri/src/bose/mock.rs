@@ -157,6 +157,16 @@ impl MockBoseDevice {
                 .mark_ready(Mechanism::None, NOTE)
                 .expect("fresh capability set permits transition");
         }
+        // Headphones: none of the earbuds' controls.
+        for key in [
+            CapabilityKey::TouchControls,
+            CapabilityKey::InEarDetection,
+            CapabilityKey::AutoAnswer,
+        ] {
+            let _ = caps
+                .get_mut(key)
+                .mark_unsupported("The simulated headphones are not earbuds.");
+        }
         caps
     }
 
@@ -258,6 +268,9 @@ impl BoseDevice for MockBoseDevice {
             }),
             // The simulated headphones are no model in the catalogue.
             model: None,
+            // Headphones: no touch shortcut, no in-ear detection.
+            shortcut: None,
+            wear: None,
             // The simulated headphones' three modes, under the names the
             // interface shows for them.
             noise_modes: connected.then(|| {
@@ -441,6 +454,24 @@ impl BoseDevice for MockBoseDevice {
         self.require_connected()?;
         self.state.lock().multipoint = enabled;
         Ok(CommandOutcome::applied())
+    }
+
+    async fn set_shortcut(&self, _action: u8) -> DeviceResult<CommandOutcome> {
+        Ok(CommandOutcome::unsupported(
+            "The simulated headphones have no touch shortcut.",
+        ))
+    }
+
+    async fn set_auto_pause(&self, _enabled: bool) -> DeviceResult<CommandOutcome> {
+        Ok(CommandOutcome::unsupported(
+            "The simulated headphones have no in-ear detection.",
+        ))
+    }
+
+    async fn set_auto_answer(&self, _enabled: bool) -> DeviceResult<CommandOutcome> {
+        Ok(CommandOutcome::unsupported(
+            "The simulated headphones have no in-ear detection.",
+        ))
     }
 
     async fn select_noise_mode(&self, index: u8) -> DeviceResult<CommandOutcome> {

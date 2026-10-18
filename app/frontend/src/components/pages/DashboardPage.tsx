@@ -2,6 +2,8 @@ import { motion } from "motion/react";
 import { Volume2, Waves, Wind } from "lucide-react";
 import { DeviceVisual } from "../DeviceVisual";
 import { NoiseModePicker } from "../NoiseModes";
+import { NowPlayingCard, PlayingElsewhereCard } from "../nowplaying/NowPlayingCard";
+import { useNowPlaying } from "../nowplaying/useNowPlaying";
 import {
   BatteryIndicator,
   BatteryParts,
@@ -37,6 +39,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
   } = useApp();
 
   const onPhone = hostPlatform() === "android";
+  // What is playing: on this computer, and through the headphones from
+  // whichever device they play from. A phone's own media is not read; on a
+  // phone only the headphones' reading is shown, and only when there is one.
+  const { shown, control: mediaControl, controlElsewhere, passing } = useNowPlaying();
   const noiseDisabled = isUnavailable(capabilities.noiseControl);
   // Only what this device has is on the dashboard.
   const noiseShown = isShown(capabilities.noiseControl);
@@ -126,6 +132,13 @@ export function DashboardPage({ onNavigate }: { onNavigate: (p: any) => void }) 
 
       {/* Right column */}
       <div className="flex flex-col gap-5">
+        {shown?.kind === "elsewhere" ? (
+          <PlayingElsewhereCard hp={shown.hp} busy={passing} onControl={(c) => void controlElsewhere(c)} />
+        ) : shown?.kind === "local" ? (
+          <NowPlayingCard np={shown.np} onControl={(a) => void mediaControl(a)} />
+        ) : (
+          !onPhone && <NowPlayingCard np={null} onControl={(a) => void mediaControl(a)} />
+        )}
         {eqShown && (
         <Panel className="p-6">
           <div className="mb-4 flex items-center justify-between">

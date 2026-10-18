@@ -21,12 +21,13 @@ use super::bmap as control;
 use crate::device::capability::{
     Capability, CapabilityKey, CapabilitySet, HardwareProof, Mechanism,
 };
-use crate::device::command::CommandOutcome;
+use crate::device::command::{CommandOutcome, PlaybackControl};
 use crate::device::state::{
     check_device_name, is_paired_device_id, BatteryPart, BatteryReading, BatterySource,
     ConnectionState,
-    DeviceIdentity,
+    DeviceIdentity, HeadphonesPlaying, SourcePlayState,
     DeviceSnapshot, DeviceSource, EqSettings, EqState, ModelState, MultipointState,
+    ShortcutOption, ShortcutState, WearState,
     NoiseControlMode, NoiseControlState, NoiseModeOption, PairedDeviceState, StateSource,
     Transport,
 };
@@ -463,6 +464,22 @@ impl RealBoseDevice {
     /// are attached, found and connected at this moment. The outer error is
     /// why nothing can be sent at all; the inner one is why there is no
     /// control connection for this model.
+    /// Auto play/pause (`pause`) or auto-answer, on earbuds.
+    async fn set_wear_setting(&self, pause: bool, enabled: bool) -> DeviceResult<CommandOutcome> {
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        if !is_earbuds(target.product_id) {
+            return Ok(CommandOutcome::unsupported("In-ear detection is offered for earbuds."));
+        }
+        let change = self
+            .with_link(target, move |link| link.set_wear_setting(pause, enabled))
+            .await?
+            .map_err(device_error)?;
+        Ok(setting_outcome(&change))
+    }
+
     fn control_target_now(&self) -> DeviceResult<Result<ControlTarget, String>> {
         if !self.is_attached() {
             return Err(DeviceError::NotConnected);
@@ -508,15 +525,19 @@ impl RealBoseDevice {
                 *slot = None;
             }
 
-            let ctl = slot.get_or_insert_with(|| Control {
-                address: target.address,
-                product_id: target.product_id,
-                link: BmapLink::new(
+            let ctl = slot.get_or_insert_with(|| {
+                let mut link = BmapLink::new(
                     PlatformConnector::new(target.address),
                     target.config,
                     LinkTiming::standard(),
                     now_rfc3339,
-                ),
+                );
+                link.set_reads_controls(is_earbuds(target.product_id));
+                Control {
+                    address: target.address,
+                    product_id: target.product_id,
+                    link,
+                }
             });
 
             let result = op(&mut ctl.link);
@@ -607,7 +628,12 @@ impl RealBoseDevice {
 
         apply_control_capabilities(&mut caps, obs, link);
         match control_target(obs) {
-            Ok(target) => mark_what_the_model_lacks(&mut caps, &target.config, link),
+            Ok(target) => mark_what_the_model_lacks(
+                &mut caps,
+                &target.config,
+                link,
+                is_earbuds(target.product_id),
+            ),
             // A model Void knows and cannot drive has none of its controls
             // here, and none is shown.
             Err(why) if is_undrivable_model(obs) => {
@@ -855,6 +881,14 @@ fn apply_control_capabilities(caps: &mut CapabilitySet, obs: &Observed, link: &L
     apply_unit_capabilities(caps, link, &where_from);
 }
 
+/// Whether a product is earbuds — or one the catalogue does not have, which
+/// may be. Only earbuds are asked for, and shown, the touch shortcut and
+/// in-ear detection.
+fn is_earbuds(product_id: u16) -> bool {
+    control::models::model_for(product_id)
+        .map_or(true, |m| m.category == control::models::Category::Earbuds)
+}
+
 /// The description the device is being driven by: its own, or — where the
 /// device answered that it has no modes and has a noise-cancellation level
 /// instead — that, with the level in place of the mode.
@@ -979,6 +1013,7 @@ fn mark_what_the_model_lacks(
     caps: &mut CapabilitySet,
     config: &::bmap::DeviceConfig,
     link: &LinkStatus,
+    earbuds: bool,
 ) {
     let config = &effective(config, link);
     let model = config.info.name;
@@ -1015,6 +1050,33 @@ fn mark_what_the_model_lacks(
             link.noise_absent.clone().unwrap_or_default(),
         ),
         (
+            CapabilityKey::TouchControls,
+            !earbuds || refused(&link.shortcut_problem),
+            if earbuds {
+                format!("The {model} have no touch shortcut.")
+            } else {
+                "Touch controls are offered for earbuds.".to_string()
+            },
+        ),
+        (
+            CapabilityKey::InEarDetection,
+            !earbuds || refused(&link.auto_pause_problem),
+            if earbuds {
+                format!("The {model} have no in-ear detection.")
+            } else {
+                "In-ear detection is offered for earbuds.".to_string()
+            },
+        ),
+        (
+            CapabilityKey::AutoAnswer,
+            !earbuds || refused(&link.auto_answer_problem),
+            if earbuds {
+                format!("The {model} do not answer calls when put in.")
+            } else {
+                "Auto-answer is offered for earbuds.".to_string()
+            },
+        ),
+        (
             CapabilityKey::AwareMode,
             link.noise_absent.is_some(),
             link.noise_absent.clone().unwrap_or_default(),
@@ -1042,6 +1104,9 @@ fn mark_what_the_model_lacks(
         CapabilityKey::Multipoint => answered(&link.multipoint_problem),
         CapabilityKey::DeviceRename => answered(&link.name_problem),
         CapabilityKey::PairedDevices => answered(&link.paired_problem),
+        CapabilityKey::TouchControls => answered(&link.shortcut_problem),
+        CapabilityKey::InEarDetection => answered(&link.auto_pause_problem),
+        CapabilityKey::AutoAnswer => answered(&link.auto_answer_problem),
         _ => String::new(),
     };
     for (key, absent, why) in lacks {
@@ -1057,7 +1122,87 @@ fn mark_what_the_model_lacks(
 /// Multipoint and renaming. Each is READY once the headphones have reported
 /// the state in the shape that was observed, and VERIFIED once they have
 /// confirmed a change to it.
+/// A setting's capability: VERIFIED once the device confirmed a change to
+/// it, READY once it has reported it, UNKNOWN with the reason otherwise.
+fn apply_setting_capability(
+    caps: &mut CapabilitySet,
+    key: CapabilityKey,
+    what: &str,
+    reported: Option<String>,
+    problem: &Option<String>,
+    change: &Option<control::link::SettingProof>,
+    where_from: &str,
+) {
+    match (problem, reported) {
+        (Some(problem), _) => {
+            *caps.get_mut(key) = Capability::unknown(
+                key,
+                format!("The earbuds' {what} could not be read as documented, so it is left alone. {problem}"),
+            );
+        }
+        (None, None) => {
+            *caps.get_mut(key) =
+                Capability::unknown(key, format!("The earbuds' {what} has not been read yet."));
+        }
+        (None, Some(now)) => match change {
+            Some(change) => {
+                if let Some(proof) = HardwareProof::observed_at(
+                    key,
+                    &change.before,
+                    &change.after,
+                    &change.after,
+                    change.at.clone(),
+                ) {
+                    let _ = caps
+                        .get_mut(key)
+                        .verify_with_hardware(&proof, Mechanism::RfcommVendor);
+                }
+            }
+            None => {
+                let _ = caps.get_mut(key).mark_ready(
+                    Mechanism::RfcommVendor,
+                    format!(
+                        "The earbuds report their {what} as {now} ({where_from}). A change is \
+                         checked by reading it back; none has been confirmed this session yet."
+                    ),
+                );
+            }
+        },
+    }
+}
+
 fn apply_unit_capabilities(caps: &mut CapabilitySet, link: &LinkStatus, where_from: &str) {
+    let on_off = |on: bool| if on { "on" } else { "off" }.to_string();
+    apply_setting_capability(
+        caps,
+        CapabilityKey::TouchControls,
+        "touch shortcut",
+        link.shortcut
+            .as_ref()
+            .map(|r| control::controls::action_name(r.shortcut.action).to_string()),
+        &link.shortcut_problem,
+        &link.shortcut_change,
+        where_from,
+    );
+    apply_setting_capability(
+        caps,
+        CapabilityKey::InEarDetection,
+        "in-ear detection",
+        link.auto_pause.as_ref().map(|r| on_off(r.on)),
+        &link.auto_pause_problem,
+        &link.auto_pause_change,
+        where_from,
+    );
+    apply_setting_capability(
+        caps,
+        CapabilityKey::AutoAnswer,
+        "auto-answer",
+        link.auto_answer.as_ref().map(|r| on_off(r.on)),
+        &link.auto_answer_problem,
+        &link.auto_answer_change,
+        where_from,
+    );
+
     let on_off = |on: bool| if on { "on" } else { "off" };
 
     let key = CapabilityKey::Multipoint;
@@ -1232,6 +1377,16 @@ fn connection_outcome(change: &ConnectionChange) -> CommandOutcome {
 }
 
 /// What to tell the user about a switch of multipoint.
+fn setting_outcome<V>(change: &control::controls::SettingChange<V>) -> CommandOutcome {
+    match &change.verdict {
+        Verdict::Verified | Verdict::AlreadyActive => CommandOutcome::applied(),
+        Verdict::Unverified { reason } => CommandOutcome::sent_unverified(reason.clone()),
+        Verdict::Rejected { reason } => CommandOutcome::Rejected {
+            reason: format!("The earbuds refused the change ({reason})."),
+        },
+    }
+}
+
 fn multipoint_outcome(change: &MultipointChange) -> CommandOutcome {
     match &change.verdict {
         Verdict::Verified | Verdict::AlreadyActive => CommandOutcome::applied(),
@@ -1567,6 +1722,53 @@ fn level_outcome(change: &LevelChange) -> CommandOutcome {
     }
 }
 
+/// What the headphones said they are playing from, for the UI. The
+/// source's address stays in the link: only its name comes out.
+fn headphones_playing(playing: control::playing::Playing, headphones: String) -> HeadphonesPlaying {
+    use control::playing::{PlayState, PlayingFrom};
+    let (device, this_device, cable) = match playing.from {
+        PlayingFrom::Device { name, this_device } => (Some(name), this_device, false),
+        PlayingFrom::Unnamed => (None, false, false),
+        PlayingFrom::Cable => (None, false, true),
+    };
+    HeadphonesPlaying {
+        headphones,
+        device,
+        this_device,
+        cable,
+        state: match playing.state {
+            PlayState::Playing => SourcePlayState::Playing,
+            PlayState::Paused => SourcePlayState::Paused,
+            PlayState::Stopped => SourcePlayState::Stopped,
+        },
+    }
+}
+
+/// Applied only for play or pause the headphones then reported. A skip is
+/// passed on and cannot be confirmed: the track is not known.
+fn playback_outcome(change: &control::playing::PlaybackChange) -> CommandOutcome {
+    use control::playing::{Control, PlayState};
+    if change.is_confirmed() {
+        return CommandOutcome::applied();
+    }
+    match change.control {
+        Control::Play | Control::Pause => {
+            let now = match change.after.unwrap_or(change.before) {
+                PlayState::Playing => "playing",
+                PlayState::Paused => "paused",
+                PlayState::Stopped => "stopped",
+            };
+            CommandOutcome::sent_unverified(format!(
+                "The headphones passed it on, and then still reported it {now}."
+            ))
+        }
+        Control::Next | Control::Previous => CommandOutcome::sent_unverified(
+            "The headphones passed it on. They do not say which track is playing, so the skip \
+             is not confirmed.",
+        ),
+    }
+}
+
 fn device_error(e: LinkError) -> DeviceError {
     match e.kind {
         LinkErrorKind::Unreachable => DeviceError::Unreachable,
@@ -1728,6 +1930,38 @@ impl BoseDevice for RealBoseDevice {
                 Some(target) if obs.connected => noise_modes(&target.config, &link),
                 _ => None,
             },
+            shortcut: match (&target, &link.shortcut) {
+                (Some(_), Some(reading)) if obs.connected => {
+                    let s = &reading.shortcut;
+                    let name = |a: u8| control::controls::action_name(a).to_string();
+                    Some(ShortcutState {
+                        control: control::controls::button_name(s.button).to_string(),
+                        gesture: control::controls::gesture_name(s.gesture).to_string(),
+                        action: s.action,
+                        action_name: name(s.action),
+                        options: s
+                            .offered
+                            .iter()
+                            .flatten()
+                            .map(|&action| ShortcutOption { action, name: name(action) })
+                            .collect(),
+                        read_at: reading.at.clone(),
+                    })
+                }
+                _ => None,
+            },
+            wear: match &target {
+                Some(_)
+                    if obs.connected
+                        && (link.auto_pause.is_some() || link.auto_answer.is_some()) =>
+                {
+                    Some(WearState {
+                        auto_pause: link.auto_pause.as_ref().map(|r| r.on),
+                        auto_answer: link.auto_answer.as_ref().map(|r| r.on),
+                    })
+                }
+                _ => None,
+            },
             multipoint: match (&target, &link.multipoint) {
                 (Some(_), Some(reading)) if obs.connected => Some(MultipointState {
                     enabled: reading.enabled,
@@ -1859,6 +2093,14 @@ impl BoseDevice for RealBoseDevice {
             return None;
         }
         self.link_status.read().battery.as_ref().map(|b| b.percent)
+    }
+
+    fn reported_category(&self) -> Option<control::models::Category> {
+        self.observed
+            .read()
+            .product_id
+            .and_then(control::models::model_for)
+            .map(|m| m.category)
     }
 
     fn reported_noise_control(&self) -> Option<NoiseControlState> {
@@ -2144,6 +2386,29 @@ impl BoseDevice for RealBoseDevice {
         Ok(multipoint_outcome(&change))
     }
 
+    async fn set_shortcut(&self, action: u8) -> DeviceResult<CommandOutcome> {
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        if !is_earbuds(target.product_id) {
+            return Ok(CommandOutcome::unsupported("Touch controls are offered for earbuds."));
+        }
+        let change = self
+            .with_link(target, move |link| link.set_shortcut(action))
+            .await?
+            .map_err(device_error)?;
+        Ok(setting_outcome(&change))
+    }
+
+    async fn set_auto_pause(&self, enabled: bool) -> DeviceResult<CommandOutcome> {
+        self.set_wear_setting(true, enabled).await
+    }
+
+    async fn set_auto_answer(&self, enabled: bool) -> DeviceResult<CommandOutcome> {
+        self.set_wear_setting(false, enabled).await
+    }
+
     async fn select_noise_mode(&self, index: u8) -> DeviceResult<CommandOutcome> {
         let target = match self.control_target_now()? {
             Ok(target) => target,
@@ -2190,6 +2455,47 @@ impl BoseDevice for RealBoseDevice {
             .await?
             .map_err(device_error)?;
         Ok(connection_outcome(&change))
+    }
+
+    async fn playing(&self) -> DeviceResult<Option<HeadphonesPlaying>> {
+        if !self.is_attached() {
+            return Ok(None);
+        }
+        let obs = self.observed.read().clone();
+        if !obs.connected {
+            return Ok(None);
+        }
+        let Ok(target) = control_target(&obs) else {
+            return Ok(None);
+        };
+        let headphones = obs.name.clone().unwrap_or_else(|| "The headphones".to_string());
+        let playing = self
+            .with_link(target, |link| link.read_playing())
+            .await?
+            .map_err(device_error)?;
+        Ok(playing.map(|p| headphones_playing(p, headphones)))
+    }
+
+    async fn control_playback(&self, request: PlaybackControl) -> DeviceResult<CommandOutcome> {
+        let target = match self.control_target_now()? {
+            Ok(target) => target,
+            Err(why) => return Ok(CommandOutcome::unsupported(why)),
+        };
+        let request = match request {
+            PlaybackControl::PlayPause => control::playing::PlaybackRequest::PlayPause,
+            PlaybackControl::Next => control::playing::PlaybackRequest::Next,
+            PlaybackControl::Previous => control::playing::PlaybackRequest::Previous,
+        };
+        match self
+            .with_link(target, move |link| link.control_playback(request))
+            .await?
+        {
+            Ok(change) => Ok(playback_outcome(&change)),
+            Err(e) if matches!(e.kind, LinkErrorKind::Unsupported) => {
+                Ok(CommandOutcome::unsupported(e.message))
+            }
+            Err(e) => Err(device_error(e)),
+        }
     }
 
     async fn set_device_name(&self, name: &str) -> DeviceResult<CommandOutcome> {
@@ -3443,6 +3749,54 @@ mod tests {
             caps(&aurora(), &open_link(0)).get(CapabilityKey::Equalizer).status,
             CapabilityStatus::Unsupported
         );
+    }
+
+    // --- the earbuds' controls -----------------------------------------------
+
+    fn shortcut_link() -> LinkStatus {
+        LinkStatus {
+            shortcut: Some(control::link::ShortcutReading {
+                shortcut: control::controls::Shortcut {
+                    button: 0x80,
+                    gesture: 9,
+                    action: 3,
+                    offered: Some(vec![3, 14, 16]),
+                },
+                at: "2026-10-17T10:00:00Z".into(),
+            }),
+            ..open_link(0)
+        }
+    }
+
+    /// Headphones never show the earbuds' controls, even with a reading.
+    #[test]
+    fn headphones_do_not_show_earbud_controls() {
+        let caps = caps(&aurora(), &shortcut_link());
+        for key in [
+            CapabilityKey::TouchControls,
+            CapabilityKey::InEarDetection,
+            CapabilityKey::AutoAnswer,
+        ] {
+            assert_eq!(caps.get(key).status, CapabilityStatus::Unsupported, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn earbuds_show_what_they_answered_for() {
+        let link = LinkStatus {
+            auto_pause_problem: Some("[1.24] ERROR: FuncNotSupp (04)".into()),
+            ..shortcut_link()
+        };
+        let caps = caps(&observed_as(0x4062), &link);
+        let touch = caps.get(CapabilityKey::TouchControls);
+        assert_eq!(touch.status, CapabilityStatus::Ready);
+        assert!(touch.evidence.contains("Battery level"), "{}", touch.evidence);
+        assert_eq!(
+            caps.get(CapabilityKey::InEarDetection).status,
+            CapabilityStatus::Unsupported,
+            "answered FuncNotSupp"
+        );
+        assert_eq!(caps.get(CapabilityKey::AutoAnswer).status, CapabilityStatus::Unknown, "not read yet");
     }
 
     // --- the backend as a whole, without hardware ---------------------------

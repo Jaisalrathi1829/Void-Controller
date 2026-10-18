@@ -75,6 +75,9 @@ export const CAPABILITY_KEYS = [
   'sidetone',
   'deviceRename',
   'pairedDevices',
+  'touchControls',
+  'inEarDetection',
+  'autoAnswer',
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

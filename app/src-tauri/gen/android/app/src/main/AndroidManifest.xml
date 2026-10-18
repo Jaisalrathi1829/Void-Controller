@@ -7,6 +7,10 @@
 
     <!-- Talking to the paired headphones. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- "Find my buds": where the phone was when the earbuds were last connected.
+         Asked for only when that is switched on. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
     <!-- Connection and low-battery notifications, and the notification

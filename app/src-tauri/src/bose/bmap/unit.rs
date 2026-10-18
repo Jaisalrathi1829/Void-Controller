@@ -516,6 +516,15 @@ fn read_one<T: Transport>(raw: &T, address: &[u8; 6]) -> BmapResult<PairedDevice
     parse_paired(address, &reply)
 }
 
+/// One paired device, asked for by its address: what the headphones call
+/// it, and whether it is connected and the one asking.
+pub(super) fn read_paired_device<T: Transport>(
+    raw: &T,
+    address: &[u8; 6],
+) -> BmapResult<PairedDevice> {
+    read_one(raw, address)
+}
+
 /// Reads the devices the headphones are paired with, and which of them are
 /// connected. One request for the list, and one for each device on it.
 pub fn read_paired<T: Transport>(raw: &T) -> BmapResult<Vec<PairedDevice>> {

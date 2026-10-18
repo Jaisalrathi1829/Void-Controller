@@ -1425,3 +1425,103 @@ Builds, replacing the two above:
 | --- | --- |
 | Windows installer | `Setups\Void_0.1.0_x64-setup.exe`, 2026-10-17 00:07, 105,396,251 bytes, with the voice model, SHA-256 `173a8940e5d61799cf65b75dde4167d3cfa9e57823472dd778528e3ce0bfd8ee`. Not run by anyone |
 | Phone | `Setups\Void-0.1.0-android-arm64.apk`, 2026-10-17 00:05, 139,750,042 bytes, SHA-256 `3e66ce4c7228ce51d29d803961afec20c3c49932562f223b51730602e66dc8f1`. Not run by anyone |
+## 22. Earbuds: touch controls, in-ear detection, Find my buds (2026-10-17)
+
+Asked for by the owner: touch-control shortcuts, in-ear detection, the
+ear-tip fit test and Find my buds — for earbuds, not the tested headphones,
+"since aurora does not support touch and in ear detection". Held
+uncommitted at the owner's word, and committed with §23 on 2026-10-18.
+
+| Asked | Done |
+| --- | --- |
+| Touch-control shortcuts | `bose/bmap/controls.rs`: `[1.9]` read as button, gesture, action and the actions the button takes (Experiment 16). Set once with `SETGET`, only to an action the earbuds list, confirmed by read-back; a device that lists none is not written to. Device page, earbuds only |
+| In-ear detection | `[1.24]` auto play/pause and `[1.27]` auto-answer, one byte each, read and set the same way. Each shown only where the earbuds answer for it |
+| Ear-tip fit test | **Not built.** Nothing documents it; finding it would mean sending undocumented requests |
+| Find my buds | `last_seen.rs`: with the switch on (off by default), while earbuds are connected the time is noted every two minutes, and when they go; on the phone also the phone's last known location (Android `LocationManager`, no new fix asked for), with the location permission, asked for when the switch goes on. Kept in the settings file; "Open in Maps" hands the place to the phone's maps application. Switching it off forgets the note. On a computer only the time |
+
+Earbuds only: the link asks for `[1.9]`, `[1.24]` and `[1.27]` only when the
+model is earbuds (or not in the catalogue); headphones are never asked, and
+their capabilities for these are `UNSUPPORTED`.
+
+### Checked
+
+| What | How | Result |
+| --- | --- | --- |
+| Reading and writing the shortcut and the two switches; refusals; nothing sent for an action not listed | `controls.rs` tests | pass |
+| Earbuds read them with the rest; headphones are not asked | `link.rs` tests | pass |
+| What is shown for earbuds and for headphones | `real.rs`, `EarbudPanels.test.tsx` | 642 Rust and 287 frontend tests pass; clippy clean |
+| The panels | Browser preview, simulated QC Ultra Earbuds | Touch controls with its five actions, the two in-ear switches, Find my buds |
+| What the tested headphones answer | `hw_diag_controls_read` (read-only) | Experiment 16 |
+
+### Not checked
+
+- Anything on earbuds: none was available.
+- Find my buds on a phone: the location permission prompt, the place noted,
+  Maps opening. Android gives a location to an application in the background
+  only with a further permission that is not asked for; when the earbuds go
+  while Void is in the background, the place may be the last one noted while
+  they were connected.
+- The hardware regression on the tested headphones: they were not connected
+  to the PC when it was tried.
+## 23. Now playing, on Windows (2026-10-17)
+
+Asked for by the owner, with screenshots of the phone's own media card: show
+what is being played, with a smoothly moving position bar, in the Windows
+application and its desktop widget (not the phone's widget), for headphones
+as for earbuds — "not ai slop but decent looking".
+
+| Part | Done |
+| --- | --- |
+| Reading | `media.rs`: Windows' `GlobalSystemMediaTransportControlsSessionManager`, current session: title, artist, album, artwork (read from the session as a `data:` URL, cached per track), application (named from its id), playing/paused, position with the moment it was true, length, and which controls the application enables |
+| Controls | Play/pause, previous, next, seek, shuffle, repeat — each only where the application enables it. The `MediaPlayPause`/`MediaNext`/`MediaPrevious` device commands, which had said "not implemented", now go here too |
+| Card | `NowPlayingCard`: the artwork blurred as a still backdrop (no animated blur), crossfading with the track; the track's details fade in on a change (CSS, entrance only, so the new title is there at once); playing bars; the headphones' own name when they are the output; a position bar carried forward on every animation frame by transform, the times changing once a second, draggable and arrow-keyable to seek where allowed; play/pause swapping with a small rotate-and-scale |
+| Widget | `NowPlayingRow` at the top, shown whether or not the headphones are connected; the widget is 94 px taller (446) |
+| Phone | Not shown: the dashboard leaves it out on Android |
+
+Nothing is fetched: the artwork is the session's own. A control is shown as
+done only when the next reading says so (read again 80 ms, 400 ms and 1.1 s
+after it).
+
+Checked: `media.rs` tests (application names, base64, Windows time); the card,
+row and helpers (`NowPlayingCard.test.tsx`), the widget (`WidgetApp.test.tsx`)
+— 646 Rust and 295 frontend tests pass, clippy clean; by eye in the browser
+preview with a stand-in player at desktop width and widget size: playing,
+paused, seeking by keyboard, next track. On this PC, with nothing playing,
+`print_now_playing` read "nothing playing". Not checked: a real application
+playing — Spotify, a browser — through the installed application.
+
+Built, with §22: `Setups\Void_0.1.0_x64-setup.exe` (101 MB, 2026-10-17 22:12)
+and `Setups\Void-0.1.0-android-arm64.apk` (133 MB, 22:08); replaced by the builds of §23a.
+### 23a. What another device is playing, through the headphones (2026-10-17)
+
+Then asked: "no matter it is playing through computer or through phone …
+if I am playing something from phone then it should be shown here on
+windows app … so it should be cross connection too."
+
+The headphones know which of their connections they are playing from, and
+the Bose app's own traffic showed them telling it the track (Experiment 3).
+Asked by Void (Experiment 17) they name the source ("Jaisal's S24 Ultra"),
+say whether it plays (`[5.4]`: `01` playing, `02` paused), and pass play,
+pause, next and previous on to it (`START [5.3]`) — but answer a request for
+the track with "authentication required". Getting past that is a non-goal,
+so the title is not shown. The owner chose to build what the headphones give
+now, and to leave a direct phone-to-PC link for the track for later.
+
+| Part | Done |
+| --- | --- |
+| Reading | `bose/bmap/playing.rs`: `[5.1]` source, named once by `[4.5]` and kept by address inside the link; `[5.4]` play state. A model that answers "not supported" or "not without signing in", or does not answer twice, is not asked again until it has gone and come back |
+| Controls | `START [5.3]`: play or pause (chosen from the state read first, and read back), next, previous (passed on; not confirmed) |
+| Shown | `get_now_playing` returns both readings; the frontend chooses: what plays wins over what is paused, and between two of a kind the headphones' source. The computer's own playback is shown from Windows' reading (it has the track). `PlayingElsewhereCard` on the dashboard, `PlayingElsewhereRow` on the widget: the device, its state, the headphones, the three controls, a soft light that drifts while it plays; no title, artwork or position |
+| Phone | The dashboard now shows it on Android too, from the headphones only, and only when there is something to show |
+
+Checked: `playing.rs` and link tests (named once; a model that says no is not
+asked again; play/pause read back; a skip never called confirmed); the
+choosing rule and the card (`NowPlayingCard.test.tsx`), the widget
+(`WidgetApp.test.tsx`) — 663 Rust and 304 frontend tests pass; by eye in the
+browser preview with a simulated other device (`?np=elsewhere`): the card,
+pausing, the widget row; on the test headphones with the owner's phone, the
+three experiments above. Not checked: the installed application against the
+headphones, and the phone application's side.
+
+Built: `Setups\Void_0.1.0_x64-setup.exe` (101 MB, 2026-10-17 22:54) and
+`Setups\Void-0.1.0-android-arm64.apk` (133 MB, 22:50). Committed with §22 and §23 on 2026-10-18.

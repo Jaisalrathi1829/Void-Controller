@@ -10,10 +10,10 @@
 //! type to say so.
 
 use super::capability::CapabilitySet;
-use super::command::CommandOutcome;
+use super::command::{CommandOutcome, PlaybackControl};
 use super::state::{
     BatteryReading, DeviceIdentity, DeviceSnapshot, DeviceSource, EqSettings, EqState,
-    NoiseControlMode, NoiseControlState,
+    HeadphonesPlaying, NoiseControlMode, NoiseControlState,
 };
 use super::DeviceResult;
 use async_trait::async_trait;
@@ -40,6 +40,12 @@ pub trait BoseDevice: Send + Sync {
     async fn battery(&self) -> DeviceResult<Option<BatteryReading>>;
 
     async fn noise_control(&self) -> DeviceResult<Option<NoiseControlState>>;
+
+    /// Whether the device is headphones or earbuds, where the backend knows.
+    /// Costs nothing: nothing is asked of the device.
+    fn reported_category(&self) -> Option<crate::bose::bmap::models::Category> {
+        None
+    }
 
     /// The battery level the device itself last reported, if the backend
     /// has one in hand. Costs nothing: nothing is asked of the device.
@@ -108,6 +114,18 @@ pub trait BoseDevice: Send + Sync {
     /// connection has still applied the change.
     async fn set_multipoint(&self, enabled: bool) -> DeviceResult<CommandOutcome>;
 
+    /// Sets what an earbud's touch shortcut does, to one of the actions the
+    /// earbuds list for it. Applied only when they then report it.
+    async fn set_shortcut(&self, action: u8) -> DeviceResult<CommandOutcome>;
+
+    /// Whether the earbuds pause when taken out. Applied only when they then
+    /// report it.
+    async fn set_auto_pause(&self, enabled: bool) -> DeviceResult<CommandOutcome>;
+
+    /// Whether the earbuds answer a call when put in. Applied only when they
+    /// then report it.
+    async fn set_auto_answer(&self, enabled: bool) -> DeviceResult<CommandOutcome>;
+
     /// Connects the device to one of the hosts it is paired with, or
     /// disconnects it from one. `device` is the id the snapshot gave for
     /// that host. `Applied` only when the device then reports it so — or,
@@ -118,6 +136,23 @@ pub trait BoseDevice: Send + Sync {
         device: &str,
         connected: bool,
     ) -> DeviceResult<CommandOutcome>;
+
+    /// What the device is playing from — which of the devices it is
+    /// connected to — and whether it is playing. `Ok(None)` when there is
+    /// nothing to ask, it has no source, or it does not say.
+    async fn playing(&self) -> DeviceResult<Option<HeadphonesPlaying>> {
+        Ok(None)
+    }
+
+    /// Passes play/pause, next or previous on to the device it is playing
+    /// from. `Applied` only for play or pause that the device then reports;
+    /// a skip cannot be confirmed, the track not being known.
+    async fn control_playback(&self, control: PlaybackControl) -> DeviceResult<CommandOutcome> {
+        let _ = control;
+        Ok(CommandOutcome::unsupported(
+            "This backend cannot pass controls on through the headphones.",
+        ))
+    }
 
     /// Renames the device. `Applied` only when it then reports that name.
     async fn set_device_name(&self, name: &str) -> DeviceResult<CommandOutcome>;

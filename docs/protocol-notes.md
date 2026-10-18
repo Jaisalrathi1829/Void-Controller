@@ -1224,3 +1224,70 @@ what the characteristic carries, cannot be found out from this PC: it would
 take an application running on an iPhone, which takes a Mac to build.
 
 For an iPhone version: still no route to the controls shown.
+## Experiment 16 — the shortcut, auto-pause and auto-answer, read (2026-10-17)
+
+Asked: which of the touch shortcut `[1.9]`, auto play/pause `[1.24]` and
+auto-answer `[1.27]` — the three upstream describes for the QC Ultra (2nd
+Gen) and not for the test model — does the test model answer? Three `GET`s
+(`hw_diag_controls_read`); nothing written.
+
+| Request | Reply | Read as |
+| --- | --- | --- |
+| `GET [1.9]` | `01 09 03 0B` `80 09 03 00 01 40 08 00 00 00 80` | button `0x80` "Shortcut", gesture 9 (press and hold), action 3 (battery level); then `00 01 40 08`, read as the actions the button takes, one bit each with the most significant byte first: 3 battery level, 14 off, 16 Spotify Tap — the three the Bose app offers for this model; then `00 00 00 80`, not read |
+| `GET [1.24]` | `01 18 04 01 04` | `ERROR FuncNotSupp`: no auto play/pause |
+| `GET [1.27]` | `01 1B 04 01 04` | `ERROR FuncNotSupp`: no auto-answer |
+
+The owner then asked for these to be offered for earbuds and not for the
+test headphones, which have no touch surface and no wear sensor: the
+application asks only earbuds for them. Nothing was written to `[1.9]` on any
+device.
+## Experiment 17 — what the headphones play from, and play/pause through them (2026-10-17)
+
+Asked by the owner: show in the Windows application what the phone is
+playing through the headphones, "cross connection". The headphones are
+connected to both; the PC cannot see the phone's media, but the headphones
+know which of the two they are playing from.
+
+**From the capture of Experiment 3**, re-read for function block 5: each
+time the Bose app's product page opened it sent, in one write, `START [5.6]`,
+`GET [5.4]`, `GET [5.3]`, `GET [5.1]`, and the headphones answered
+
+| Asked | Answered | Read as |
+| --- | --- | --- |
+| `GET [5.1]` | `00 02 01` and six bytes | source Bluetooth, and its address — the phone's, which `[4.5]` then named |
+| `GET [5.4]` | `00 FF FF` | the play state; later sent unprompted as `01 FF FF` and `00 FF FF` |
+| `GET [5.3]` | `01 FF` | not read |
+| `START [5.6]` | `[5.6] PROCESSING`, `STATUS 00 "<title>"`, `STATUS 01`, `STATUS 02 "Unknown Album"`, `RESULT` | the track: field 0 title, 1 artist (empty), 2 album |
+
+**Asked by this application** (`hw_diag_now_playing_read`,
+`hw_diag_now_playing_track_probe`, `hw_diag_now_playing_control`), the
+headphones connected to this PC and to the owner's phone, music playing on
+the phone; the owner paused, played and skipped on the phone during the
+watch. Every address below was printed as "not shown".
+
+| Asked | Answered | Read as |
+| --- | --- | --- |
+| `GET [5.1]`, then `GET [4.5]` for its address | Bluetooth; "Jaisal's S24 Ultra", not this device | the source, named |
+| `GET [5.4]` every 400 ms for 45 s | `01 FF FF`, then `02 FF FF` / `01 FF FF` at each pause and play, three times each | **`01` playing, `02` paused** (and `00` stopped, from the capture) |
+| `GET [5.3]` | `01 FF` | not read |
+| `GET [5.5]` | `20 18` | read as 24 of 32, not used |
+| `GET [5.6]` | `05 06 04 01 05` | **`ERROR` 5: authentication required** |
+| `START [5.6]`, waited 3 s, then 10 s | nothing | not answered |
+| `START [5.3] 02` (pause) | `[5.3] PROCESSING 02` | `[5.4]` read `02` within 500 ms |
+| `START [5.3] 01` (play) | `[5.3] PROCESSING 01` | `[5.4]` read `01` within 500 ms |
+| `START [5.3] 03`, `04` (next, previous) | `[5.3] PROCESSING 03`, `04` | the owner saw the phone skip; not readable here |
+
+Nothing was sent unprompted to this connection, where the Bose app's was
+sent the play state as it changed.
+
+What it shows: **the track is kept for a signed-in connection.** The Bose
+app has one (function block 18 runs in its capture); this application does
+not, and getting one is a non-goal. What any connection is given is which
+device is playing, whether it plays, and the volume; and the controls —
+`[5.3]`'s codes are upstream's (bosectl `NOTES.md`) — are taken without
+signing in, play and pause confirmed by `[5.4]`.
+
+Built on it: `bose/bmap/playing.rs`. The Windows application shows what the
+phone plays as the phone's name and whether it plays, with play/pause, next
+and previous through the headphones; the phone application the same for
+the PC. No title, artwork or position for another device: none is known.

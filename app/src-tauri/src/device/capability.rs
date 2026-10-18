@@ -78,10 +78,16 @@ pub enum CapabilityKey {
     /// Connecting the device to, and disconnecting it from, the hosts it is
     /// paired with.
     PairedDevices,
+    /// What an earbud's touch shortcut does.
+    TouchControls,
+    /// Earbuds pausing when taken out, and playing again when put back.
+    InEarDetection,
+    /// Earbuds answering a call when put in.
+    AutoAnswer,
 }
 
 impl CapabilityKey {
-    pub const ALL: [CapabilityKey; 15] = [
+    pub const ALL: [CapabilityKey; 18] = [
         Self::Battery,
         Self::Volume,
         Self::Playback,
@@ -97,6 +103,9 @@ impl CapabilityKey {
         Self::Sidetone,
         Self::DeviceRename,
         Self::PairedDevices,
+        Self::TouchControls,
+        Self::InEarDetection,
+        Self::AutoAnswer,
     ];
 }
 

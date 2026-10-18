@@ -28,7 +28,7 @@ pub const WIDGET_WINDOW: &str = "widget";
 /// The window's size, in the units the interface is laid out in. The card
 /// inside it leaves a margin for its own shadow.
 const WIDTH: f64 = 316.0;
-const HEIGHT: f64 = 352.0;
+const HEIGHT: f64 = 446.0;
 
 /// How far from the corner of the screen the widget is first put.
 const MARGIN: i32 = 24;

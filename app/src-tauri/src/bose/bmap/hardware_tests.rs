@@ -1040,3 +1040,283 @@ fn hw_diag_paired_disconnect_and_reconnect() {
     );
     println!("    connected again: {back}");
 }
+
+/// Read-only: what the headphones answer for the touch shortcut `[1.9]`,
+/// auto play/pause `[1.24]` and auto-answer `[1.27]` — the three settings
+/// upstream describes for the QC Ultra (2nd Gen) and not for this model.
+/// Three `GET`s; nothing is written.
+#[test]
+#[ignore = "requires the physical headphones; diagnostic output only"]
+fn hw_diag_controls_read() {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{hex, StreamTransport, Timing};
+    use bmap::protocol::parse_all_responses;
+    use bmap::transport::Transport;
+
+    let hp = find_headphones();
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+
+    for (what, packet) in [
+        ("GET [1.9]  shortcut   ", vec![0x01, 0x09, 0x01, 0x00]),
+        ("GET [1.24] auto-pause ", vec![0x01, 0x18, 0x01, 0x00]),
+        ("GET [1.27] auto-answer", vec![0x01, 0x1B, 0x01, 0x00]),
+    ] {
+        match transport.send_recv(&packet) {
+            Ok(bytes) => {
+                println!("  {what} -> {}", hex(&bytes));
+                for frame in parse_all_responses(&bytes) {
+                    println!("      {}", frame.fmt());
+                }
+            }
+            Err(e) => println!("  {what} failed: {e}"),
+        }
+    }
+}
+
+/// Opens a bare BMAP transport to the headphones, for the tests below that
+/// look at single frames.
+fn open_transport(
+    hp: &Headphones,
+) -> super::stream::StreamTransport<<WinsockConnector as super::endpoint::Connector>::Stream> {
+    use super::endpoint::{Connector, Route};
+    use super::stream::{StreamTransport, Timing};
+    let opened = WinsockConnector::new(hp.address)
+        .connect(Route::SerialPortService)
+        .unwrap_or_else(|f| panic!("could not open: {}", f.message));
+    let transport = StreamTransport::new(opened.stream, Timing::standard());
+    transport.drain_greeting();
+    transport
+}
+
+/// One frame for printing, with a paired device's address left out: the
+/// source `[5.1]` and the device management block carry them.
+fn frame_line(frame: &bmap::protocol::BmapResponse) -> String {
+    use super::stream::hex;
+    let addressed = frame.fblock == 4 || (frame.fblock, frame.func) == (5, 1);
+    let payload = if addressed {
+        format!("{} byte(s), not shown", frame.payload.len())
+    } else {
+        let text: String = frame
+            .payload
+            .iter()
+            .map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' })
+            .collect();
+        format!("{} |{text}|", hex(&frame.payload))
+    };
+    format!("[{}.{}] {:<10} {payload}", frame.fblock, frame.func, frame.op.name())
+}
+
+fn describe_source<T: bmap::Transport>(raw: &T) -> String {
+    use super::playing::{self, Source};
+    match playing::read_source(raw) {
+        Ok(Source::Bluetooth(address)) => match playing::identify(raw, &address) {
+            Ok(device) => format!(
+                "Bluetooth: \"{}\"{}",
+                device.name,
+                if device.this_device { " (this PC)" } else { "" }
+            ),
+            Err(e) => format!("Bluetooth, a device not identified: {e}"),
+        },
+        Ok(other) => format!("{other:?}"),
+        Err(e) => format!("not read: {e}"),
+    }
+}
+
+/// Experiment 17: what the headphones say is playing, and from which of the
+/// devices connected to them. Read-only: `GET`s, and the `START [5.6]` the
+/// Bose app sends to be told the track.
+///
+/// Before running: the headphones connected to this PC and to a phone, and
+/// something playing on the phone. During the 45-second watch, pause it,
+/// play it, and skip to the next track, a few seconds apart.
+#[test]
+#[ignore = "requires the physical headphones; diagnostic output only"]
+fn hw_diag_now_playing_read() {
+    use super::playing;
+    use super::stream::{hex, WireDir};
+    use bmap::protocol::{bmap_packet, parse_all_responses, Operator};
+    use bmap::transport::Transport;
+    use std::time::{Duration, Instant};
+
+    let hp = find_headphones();
+    let transport = open_transport(&hp);
+
+    println!("  source : {}", describe_source(&transport));
+    for (what, func) in [("control", 3u8), ("state  ", 4), ("volume ", 5)] {
+        match transport.send_recv(&bmap_packet(5, func, Operator::Get, &[])) {
+            Ok(bytes) => {
+                for frame in parse_all_responses(&bytes) {
+                    println!("  {what}: {}", frame_line(&frame));
+                }
+            }
+            Err(e) => println!("  {what}: failed: {e}"),
+        }
+    }
+    let start = bmap_packet(5, 6, Operator::Start, &[]);
+    match transport.send_recv_drain(&start) {
+        Ok(bytes) => {
+            for frame in parse_all_responses(&bytes) {
+                println!("  track  : {}", frame_line(&frame));
+            }
+            println!("  read as: {:?}", playing::parse_track(&bytes));
+        }
+        Err(e) => println!("  track  : failed: {e}"),
+    }
+    transport.take_wire_log();
+
+    println!("\n  Watching for 45 s: pause, play and skip on the phone now.\n");
+    let began = Instant::now();
+    let mut last_state: Option<Vec<u8>> = None;
+    let mut last_track: Option<Result<playing::Track, String>> = None;
+    let mut last_source = String::new();
+    let mut last_track_read = Instant::now();
+    while began.elapsed() < Duration::from_secs(45) {
+        std::thread::sleep(Duration::from_millis(400));
+        let t = began.elapsed().as_secs_f32();
+        let state = transport
+            .send_recv(&bmap_packet(5, 4, Operator::Get, &[]))
+            .ok()
+            .and_then(|bytes| {
+                parse_all_responses(&bytes)
+                    .into_iter()
+                    .find(|f| (f.fblock, f.func) == (5, 4))
+                    .map(|f| f.payload)
+            });
+        for event in transport.take_wire_log() {
+            if event.dir == WireDir::Stale {
+                for frame in parse_all_responses(&event.bytes) {
+                    println!("  {t:5.1}s unprompted: {}", frame_line(&frame));
+                }
+            }
+        }
+        let changed = state != last_state;
+        if changed {
+            let shown = state.as_deref().map(hex).unwrap_or_else(|| "no answer".into());
+            println!("  {t:5.1}s state  : {shown}");
+            last_state = state;
+        }
+        if changed || last_track_read.elapsed() > Duration::from_secs(3) {
+            last_track_read = Instant::now();
+            let track = transport
+                .send_recv_drain(&start)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| playing::parse_track(&bytes).map_err(|e| e.to_string()));
+            if last_track.as_ref() != Some(&track) {
+                println!("  {t:5.1}s track  : {track:?}");
+                last_track = Some(track);
+            }
+            let source = describe_source(&transport);
+            if source != last_source {
+                println!("  {t:5.1}s source : {source}");
+                last_source = source;
+            }
+            transport.take_wire_log();
+        }
+    }
+}
+
+/// Experiment 17, second part: play, pause and skip, passed on through the
+/// headphones to whatever is playing. Sends `START [5.3]` four times —
+/// pause, play, next, previous — each followed by two seconds of readings
+/// of the play state and the track.
+///
+/// Before running: something playing on a device connected to the
+/// headphones. It will pause, play, and skip forward and back.
+#[test]
+#[ignore = "requires the physical headphones; pauses, plays and skips what is playing"]
+fn hw_diag_now_playing_control() {
+    use super::playing::{self, Control};
+    use bmap::protocol::{bmap_packet, parse_all_responses, Operator};
+    use bmap::transport::Transport;
+    use std::time::Duration;
+
+    let hp = find_headphones();
+    let transport = open_transport(&hp);
+    println!("  source : {}", describe_source(&transport));
+    let start = bmap_packet(5, 6, Operator::Start, &[]);
+    let show = |label: &str| {
+        let state = transport
+            .send_recv(&bmap_packet(5, 4, Operator::Get, &[]))
+            .map(|bytes| {
+                parse_all_responses(&bytes)
+                    .iter()
+                    .map(frame_line)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_else(|e| e.to_string());
+        let title = transport
+            .send_recv_drain(&start)
+            .map(|bytes| match playing::parse_track(&bytes) {
+                Ok(track) => format!("\"{}\"", track.title),
+                Err(e) => e.to_string(),
+            })
+            .unwrap_or_else(|e| e.to_string());
+        println!("    {label:<7} state {state}; title {title}");
+    };
+
+    show("before");
+    for control in [Control::Pause, Control::Play, Control::Next, Control::Previous] {
+        let packet = bmap_packet(5, 3, Operator::Start, &[control.code()]);
+        println!("\n  {control:?}: sending {}", super::stream::hex(&packet));
+        match transport.send_recv(&packet) {
+            Ok(bytes) => {
+                for frame in parse_all_responses(&bytes) {
+                    println!("    reply   {}", frame_line(&frame));
+                }
+            }
+            Err(e) => println!("    reply   failed: {e}"),
+        }
+        for i in 1..=4 {
+            std::thread::sleep(Duration::from_millis(500));
+            show(&format!("+{}ms", i * 500));
+        }
+    }
+}
+
+/// Experiment 17, third part: the track asked for other ways, every byte
+/// shown. Read-only: `GET [5.6]`, and `START [5.6]` waited on for ten
+/// seconds rather than three.
+#[test]
+#[ignore = "requires the physical headphones; diagnostic output only"]
+fn hw_diag_now_playing_track_probe() {
+    use super::stream::{StreamTransport, Timing};
+    use bmap::protocol::{bmap_packet, Operator};
+    use bmap::transport::Transport;
+    use std::time::Duration;
+
+    let hp = find_headphones();
+    let opened = {
+        use super::endpoint::{Connector, Route};
+        WinsockConnector::new(hp.address)
+            .connect(Route::SerialPortService)
+            .unwrap_or_else(|f| panic!("could not open: {}", f.message))
+    };
+    let mut timing = Timing::standard();
+    timing.reply_timeout = Duration::from_secs(10);
+    let transport = StreamTransport::new(opened.stream, timing);
+    transport.drain_greeting();
+    transport.take_wire_log();
+
+    for (what, packet, drain) in [
+        ("GET   [5.6]", bmap_packet(5, 6, Operator::Get, &[]), false),
+        ("START [5.6]", bmap_packet(5, 6, Operator::Start, &[]), true),
+    ] {
+        let began = std::time::Instant::now();
+        let result = if drain {
+            transport.send_recv_drain(&packet)
+        } else {
+            transport.send_recv(&packet)
+        };
+        println!("  {what} after {} ms: {:?}", began.elapsed().as_millis(), result.as_ref().map(|_| "answered"));
+        for event in transport.take_wire_log() {
+            for frame in bmap::protocol::parse_all_responses(&event.bytes) {
+                println!("      {:?} {}", event.dir, frame_line(&frame));
+            }
+        }
+    }
+}
